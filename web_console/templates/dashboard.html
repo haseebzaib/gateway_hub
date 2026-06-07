@@ -1,0 +1,204 @@
+{% extends "console_layout.html" %}
+
+{% block page_eyebrow %}Current Gateway State{% endblock %}
+{% block page_title %}Overview{% endblock %}
+
+{% block console_content %}
+    {# ── Gateway visual + Connectivity summary ─────────────────────────── #}
+    <section class="overview-grid" data-overview-shell>
+
+        {# Left: Gateway stage card (visual identity) #}
+        <article class="gateway-stage-card">
+            <div class="hero-band-copy">
+                <p class="hero-band-eyebrow">Gateway</p>
+            </div>
+
+            <div class="gateway-stage-visual">
+                <div class="gateway-halo"></div>
+                <div class="gateway-unit">
+                    <span class="gateway-led{% if not overview_visual.gateway_online %} is-offline{% endif %}" data-overview-led></span>
+                    <div class="gateway-iface-box" data-gateway-iface="eth0">
+                        <span class="gateway-iface-led" data-gateway-iface-led></span>
+                        <span class="gateway-iface-name">ETH0</span>
+                        <strong data-gateway-iface-state>—</strong>
+                        <small data-gateway-iface-detail>Waiting</small>
+                    </div>
+                    <div class="gateway-iface-box" data-gateway-iface="eth1">
+                        <span class="gateway-iface-led" data-gateway-iface-led></span>
+                        <span class="gateway-iface-name">ETH1</span>
+                        <strong data-gateway-iface-state>—</strong>
+                        <small data-gateway-iface-detail>Waiting</small>
+                    </div>
+                    <div class="gateway-iface-box" data-gateway-iface="wifi">
+                        <span class="gateway-iface-led" data-gateway-iface-led></span>
+                        <span class="gateway-iface-name">WIFI</span>
+                        <strong data-gateway-iface-state>—</strong>
+                        <small data-gateway-iface-detail>Waiting</small>
+                    </div>
+                    <div class="gateway-iface-box" data-gateway-iface="cellular">
+                        <span class="gateway-iface-led" data-gateway-iface-led></span>
+                        <span class="gateway-iface-name">CELL</span>
+                        <strong data-gateway-iface-state>—</strong>
+                        <small data-gateway-iface-detail>Waiting</small>
+                    </div>
+                </div>
+            </div>
+
+            <div class="gw-identity-strip">
+                <div class="gw-identity-row">
+                    <span class="gw-identity-label">Gateway ID</span>
+                    <code class="gw-identity-val">{{ gateway_id }}</code>
+                </div>
+                <div class="gw-identity-row">
+                    <span class="gw-identity-label">Uptime</span>
+                    <code class="gw-identity-val">{{ system_uptime }}</code>
+                </div>
+            </div>
+        </article>
+
+        {# Right: Connectivity summary (clickable → /connectivity) #}
+        <a href="/connectivity" class="ov-connect-card">
+            <div class="ov-connect-head">
+                <p class="ov-section-eyebrow">Network &amp; Connectivity</p>
+                <span class="ov-card-open-link">Open →</span>
+            </div>
+
+            {# Active uplink banner #}
+            <div class="ov-active-uplink-row">
+                <span class="ov-uplink-label-text">Active uplink</span>
+                <span class="ov-uplink-badge" data-ov-uplink-badge>—</span>
+            </div>
+            <p class="ov-uplink-since" data-ov-uplink-since></p>
+            <div class="ov-outage-alert" data-ov-outage-alert hidden>
+                <div>
+                    <strong data-ov-outage-title>No outage now</strong>
+                    <span data-ov-outage-time>—</span>
+                </div>
+                <p data-ov-outage-reason></p>
+            </div>
+
+            {# Interface rows: ETH / Wi-Fi / Cellular #}
+            <div class="ov-connect-iface-list">
+                {% for item in connectivity_items[:3] %}
+                <div class="ov-connect-iface-row" data-overview-item="{{ item.label|lower|replace(' ', '-') }}">
+                    <div class="ov-iface-header">
+                        <span class="connectivity-badge is-{{ item.tone }}" data-overview-badge></span>
+                        <span class="ov-iface-name">{{ item.label }}</span>
+                        <strong class="ov-iface-state" data-overview-state>{{ item.state }}</strong>
+                    </div>
+                    <p class="ov-iface-detail" data-overview-detail>{{ item.detail }}</p>
+                </div>
+                {% endfor %}
+            </div>
+
+            {# ISP failover footer #}
+            <div class="ov-connect-footer">
+                <span class="ov-footer-label">Outage audit</span>
+                <span class="ov-footer-val" data-ov-failover-summary>No data yet</span>
+            </div>
+        </a>
+    </section>
+
+    {# ── Domain Summary Grid ──────────────────────────────────────────── #}
+    <section class="ov-domain-summary-grid">
+
+        {# System Health → /monitor #}
+        <a href="/monitor" class="ov-domain-summary-card" data-system-metrics-shell>
+            <div class="ov-dsc-head">
+                <p class="ov-section-eyebrow">System</p>
+                <span class="ov-dsc-open">Monitor →</span>
+            </div>
+            <div class="ov-dsc-metrics-row">
+                <div class="ov-dsc-metric">
+                    <strong data-system-cpu-summary>
+                        {% if system_metrics and system_metrics.cpu %}{{ system_metrics.cpu.total_percent }}%{% else %}—{% endif %}
+                    </strong>
+                    <span>CPU</span>
+                </div>
+                <div class="ov-dsc-metric">
+                    <strong data-system-memory-summary>
+                        {% if system_metrics and system_metrics.memory %}{{ system_metrics.memory.memory_bytes.used_percent }}%{% else %}—{% endif %}
+                    </strong>
+                    <span>Memory</span>
+                </div>
+                <div class="ov-dsc-metric{% if system_metrics and system_metrics.temperature_c is not none and system_metrics.temperature_c | float > 70 %} is-warn{% endif %}">
+                    <strong data-system-temp-summary>
+                        {% if system_metrics and system_metrics.temperature_c is not none %}{{ system_metrics.temperature_c }}&nbsp;°C{% else %}—{% endif %}
+                    </strong>
+                    <span>Temp</span>
+                </div>
+                <div class="ov-dsc-metric{% if disk.pct > 85 %} is-warn{% endif %}">
+                    <strong>{{ disk.pct }}%</strong>
+                    <span>Disk</span>
+                </div>
+            </div>
+            <p class="ov-dsc-footer">Uptime: {{ system_uptime }} · {{ disk.used_gb }} GB / {{ disk.total_gb }} GB used</p>
+        </a>
+
+        {# Data Forwarding → /forwarding #}
+        <a href="/forwarding" class="ov-domain-summary-card" data-overview-item="data-forwarding">
+            <div class="ov-dsc-head">
+                <p class="ov-section-eyebrow">Data Forwarding</p>
+                <span class="ov-dsc-open">Open →</span>
+            </div>
+            <div class="ov-dsc-status-row">
+                <span class="connectivity-badge is-standby" data-overview-badge></span>
+                <strong class="ov-dsc-state-val" data-overview-state>Loading…</strong>
+            </div>
+            <p class="ov-dsc-detail-text" data-overview-detail>Checking profile status</p>
+            {# Pipeline stats: shown once data is loaded #}
+            <div class="ov-fw-pipeline" data-ov-fw-pipeline style="display:none">
+                <div class="ov-fw-pipe-stat">
+                    <strong data-ov-fw-sent>—</strong>
+                    <span>Sent</span>
+                </div>
+                <div class="ov-fw-pipe-stat" data-ov-fw-buf-wrap>
+                    <strong data-ov-fw-buffered>—</strong>
+                    <span>Buffered</span>
+                </div>
+                <div class="ov-fw-pipe-stat" data-ov-fw-rec-wrap>
+                    <strong data-ov-fw-recovered>—</strong>
+                    <span>Recovered</span>
+                </div>
+            </div>
+        </a>
+
+        {# Sensor Insights → /insights #}
+        <a href="/insights" class="ov-domain-summary-card">
+            <div class="ov-dsc-head">
+                <p class="ov-section-eyebrow">Sensor Insights</p>
+                <span class="ov-dsc-open">Open →</span>
+            </div>
+            <div class="ov-dsc-metrics-row">
+                <div class="ov-dsc-metric">
+                    <strong data-ov-insights-devices>—</strong>
+                    <span>Active Devices</span>
+                </div>
+                <div class="ov-dsc-metric">
+                    <strong data-ov-insights-anomalies>—</strong>
+                    <span>Anomalies</span>
+                </div>
+            </div>
+            <p class="ov-dsc-footer" data-ov-insights-sub>Loading sensor data…</p>
+        </a>
+    </section>
+
+    {# ── Quick navigation ─────────────────────────────────────────────── #}
+    <section class="domain-grid ov-feature-grid">
+        <a href="/interfaces" class="domain-card ov-feature-card">
+            <p class="ov-feature-eyebrow">Open →</p>
+            <h3>Field Interfaces</h3>
+            <p>RS232, RS485, Modbus RTU and TCP — field device configuration and port mapping.</p>
+        </a>
+        <article class="domain-card ov-feature-card is-disabled">
+            <p class="ov-feature-eyebrow">Coming soon</p>
+            <h3>Network Probe</h3>
+            <p>Ping, SNMP, discovery, interface statistics, and flow visibility.</p>
+        </article>
+        <article class="domain-card ov-feature-card is-disabled">
+            <p class="ov-feature-eyebrow">Coming soon</p>
+            <h3>Security</h3>
+            <p>Gateway access, certificates, keys, firewall policy, and trust controls.</p>
+        </article>
+    </section>
+{% endblock %}

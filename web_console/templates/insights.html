@@ -1,0 +1,217 @@
+{% extends "console_layout.html" %}
+
+{% block page_eyebrow %}Sensor Analytics{% endblock %}
+{% block page_title %}Insights{% endblock %}
+
+{% block console_content %}
+<section class="ov-shell" data-insights-shell>
+
+    {# ── Tab navigation ─────────────────────────────────────────────── #}
+    <nav class="ov-tabs" data-ov-tabs>
+        <button class="ov-tab is-current" data-ov-tab="overview">Overview</button>
+        <button class="ov-tab" data-ov-tab="sensors">Sensors</button>
+        <button class="ov-tab" data-ov-tab="events">Events</button>
+    </nav>
+
+    {# ── No-sensors disabled state ───────────────────────────────────── #}
+    <div class="ov-no-sensors ov-hidden" data-ov-no-sensors>
+        <div class="ov-no-sensors-inner">
+            <svg width="48" height="48" viewBox="0 0 48 48" fill="none" style="opacity:.35">
+                <circle cx="24" cy="24" r="22" stroke="currentColor" stroke-width="2"/>
+                <path d="M14 24h4M30 24h4M24 14v4M24 30v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                <circle cx="24" cy="24" r="4" stroke="currentColor" stroke-width="2"/>
+            </svg>
+            <h3 class="ov-no-sensors-title">No Active Sensors</h3>
+            <p class="ov-no-sensors-desc">
+                No sensor interfaces are currently enabled.<br>
+                Configure your interfaces to begin collecting data.
+            </p>
+            <a href="/interfaces" class="ov-no-sensors-action">Go to Interfaces &rarr;</a>
+        </div>
+    </div>
+
+    {# ── Overview panel ──────────────────────────────────────────────── #}
+    <div class="ov-panel" data-ov-panel="overview">
+
+        {# KPI strip #}
+        <div class="ov-kpi-strip">
+            <article class="ov-kpi-card">
+                <p class="ov-kpi-label">Active Devices</p>
+                <p class="ov-kpi-value" data-ov-kpi="devices">--</p>
+                <p class="ov-kpi-sub" data-ov-kpi-sub="devices">of -- configured</p>
+            </article>
+            <article class="ov-kpi-card">
+                <p class="ov-kpi-label">Data Quality</p>
+                <p class="ov-kpi-value" data-ov-kpi="quality">--%</p>
+                <div class="ov-kpi-bar"><div class="ov-kpi-bar-fill" data-ov-kpi-bar="quality"></div></div>
+                <p class="ov-kpi-sub" data-ov-kpi-sub="quality">Good / total readings</p>
+            </article>
+            <article class="ov-kpi-card">
+                <p class="ov-kpi-label">Anomalies</p>
+                <p class="ov-kpi-value" data-ov-kpi="anomalies">--</p>
+                <p class="ov-kpi-sub" data-ov-kpi-sub="anomalies">Across all devices</p>
+            </article>
+            <article class="ov-kpi-card">
+                <p class="ov-kpi-label">System Health</p>
+                <p class="ov-kpi-value" data-ov-kpi="health">--%</p>
+                <div class="ov-kpi-bar"><div class="ov-kpi-bar-fill" data-ov-kpi-bar="health"></div></div>
+                <p class="ov-kpi-sub">Good readings / last hour</p>
+            </article>
+        </div>
+
+        {# Device card grid — populated by JS. Issues now appear inline per card. #}
+        <div class="ov-device-grid" data-ov-device-grid></div>
+
+    </div>
+
+    {# ── Sensors panel ────────────────────────────────────────────── #}
+    <div class="ov-panel ov-hidden" data-ov-panel="sensors">
+
+        {# Device selector tabs — populated by JS #}
+        <div class="sv-device-tabs" data-sv-device-tabs></div>
+
+        {# No-device state (shown when nothing is configured) #}
+        <div class="sv-no-device ov-hidden" data-sv-no-device>
+            No sensors configured. <a href="/interfaces" style="color:var(--accent-cool);margin-left:.4rem">Go to Interfaces →</a>
+        </div>
+
+        {# Two-column body: metric list (left) + chart area (right) #}
+        <div class="sv-body" data-sv-body>
+
+            {# Left: device header + metric rows — populated by JS #}
+            <aside class="sv-metric-col">
+                <div class="sv-device-header" data-sv-device-header></div>
+                <div class="sv-metric-list"   data-sv-metric-list></div>
+            </aside>
+
+            {# Right: window picker + chart + legend + stats #}
+            <div class="sv-chart-col">
+                <div class="sv-top-bar">
+                    <div class="sv-window-bar" data-sv-window-bar>
+                        <button class="sv-win-btn is-current" data-sv-win="1h">1 h</button>
+                        <button class="sv-win-btn"            data-sv-win="6h">6 h</button>
+                        <button class="sv-win-btn"            data-sv-win="24h">24 h</button>
+                        <button class="sv-win-btn"            data-sv-win="7d">7 d</button>
+                    </div>
+                    <button class="sv-export-btn" data-sv-export-btn title="Download data as CSV">
+                        ↓ Export CSV
+                    </button>
+                </div>
+                <div class="sv-chart-wrap">
+                    <svg class="sv-chart-svg" data-sv-chart preserveAspectRatio="none"></svg>
+                    <div class="sv-chart-empty" data-sv-chart-empty>
+                        Toggle metrics ON to see the chart.
+                    </div>
+                </div>
+                <div class="sv-chart-legend" data-sv-legend></div>
+
+                {# Analytics panel: Rolling Stats + Trend Analysis tabs #}
+                <div class="sv-analytics-panel">
+                    <nav class="sv-analytics-tabs">
+                        <button class="sv-analytics-tab is-current" data-sv-atab="stats">📊 Rolling Stats</button>
+                        <button class="sv-analytics-tab"            data-sv-atab="trends">📈 Trends</button>
+                    </nav>
+
+                    {# Rolling stats tab #}
+                    <div class="sv-analytics-body" data-sv-abody="stats">
+                        <div class="sv-stats-window-bar">
+                            <button class="sv-stats-win-btn is-current" data-sv-swin="5min">5 min</button>
+                            <button class="sv-stats-win-btn"            data-sv-swin="1hr">1 hr</button>
+                            <button class="sv-stats-win-btn"            data-sv-swin="24hr">24 hr</button>
+                        </div>
+                        <div class="sv-stats-table-wrap" data-sv-stats-table></div>
+                        <p class="sv-analytics-empty ov-hidden" data-sv-stats-empty>
+                            Stats are computed after the first few ticks — check back shortly.
+                        </p>
+                    </div>
+
+                    {# Trends tab #}
+                    <div class="sv-analytics-body ov-hidden" data-sv-abody="trends">
+                        <div class="sv-trends-config">
+                            <span class="sv-trends-config-label">Sensitivity</span>
+                            <div class="sv-sensitivity-bar">
+                                <button class="sv-sens-btn" data-sv-sens="low">Low</button>
+                                <button class="sv-sens-btn is-current" data-sv-sens="medium">Medium</button>
+                                <button class="sv-sens-btn" data-sv-sens="high">High</button>
+                            </div>
+                        </div>
+                        <div class="sv-trends-list" data-sv-trends-list></div>
+                        <p class="sv-analytics-empty ov-hidden" data-sv-trends-empty>
+                            Trends are computed from the last ~5 min of data — collecting samples…
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    {# ── Events panel ─────────────────────────────────────────────── #}
+    <div class="ov-panel ov-hidden" data-ov-panel="events">
+
+        {# Alert rules card #}
+        <div class="ev-rules-card" data-ev-rules-card>
+            <header class="ev-rules-head">
+                <span class="ev-section-title">Alert Rules</span>
+                <span class="ev-rules-badge" data-ev-rules-badge>0</span>
+                <button class="ev-add-btn" data-ev-add-btn>+ Add Rule</button>
+            </header>
+            {# Add-rule form (hidden by default) #}
+            <div class="ev-add-form ev-hidden" data-ev-add-form>
+                <select class="ev-form-sel" data-ev-form-device>
+                    <option value="">Device…</option>
+                </select>
+                <select class="ev-form-sel" data-ev-form-metric>
+                    <option value="">Metric…</option>
+                </select>
+                <select class="ev-form-sel" data-ev-form-cond>
+                    <option value="gt">&gt;</option>
+                    <option value="lt">&lt;</option>
+                    <option value="gte">&ge;</option>
+                    <option value="lte">&le;</option>
+                    <option value="eq">=</option>
+                </select>
+                <input  class="ev-form-input" type="number" step="any" placeholder="Threshold" data-ev-form-threshold>
+                <select class="ev-form-sel" data-ev-form-severity>
+                    <option value="warning">Warning</option>
+                    <option value="critical">Critical</option>
+                </select>
+                <button class="ev-form-save-btn" data-ev-form-save>Save</button>
+                <button class="ev-form-cancel-btn" data-ev-form-cancel>Cancel</button>
+            </div>
+            <div class="ev-rules-list" data-ev-rules-list></div>
+        </div>
+
+        {# Filter bar #}
+        <div class="ev-filter-bar">
+            <select class="ev-filter-sel" data-ev-filter-sev>
+                <option value="">All severities</option>
+                <option value="warning">Warning +</option>
+                <option value="error">Error only</option>
+            </select>
+            <select class="ev-filter-sel" data-ev-filter-device>
+                <option value="">All devices</option>
+            </select>
+            <div class="ev-window-bar">
+                <button class="ev-win-btn" data-ev-win="1h">1 h</button>
+                <button class="ev-win-btn is-current" data-ev-win="24h">24 h</button>
+                <button class="ev-win-btn" data-ev-win="7d">7 d</button>
+            </div>
+        </div>
+
+        {# Event timeline #}
+        <div class="ev-timeline" data-ev-timeline></div>
+
+        {# Empty state #}
+        <div class="ev-empty ov-hidden" data-ev-empty>
+            <svg width="40" height="40" viewBox="0 0 40 40" fill="none" style="opacity:.3">
+                <circle cx="20" cy="20" r="18" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M20 12v9M20 27v2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            <p>No events in this time window.</p>
+        </div>
+
+    </div>
+
+</section>
+{% endblock %}

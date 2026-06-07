@@ -1,0 +1,12 @@
+build/
+.cache/
+.venv/
+__pycache__/
+*.py[cod]
+*.sqlite
+*.db
+*.db-shm
+*.db-wal
+*.log
+compile_commands.json
+

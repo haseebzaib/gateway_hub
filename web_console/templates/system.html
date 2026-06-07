@@ -1,0 +1,65 @@
+{% extends "console_layout.html" %}
+
+{% block page_eyebrow %}Gateway Administration{% endblock %}
+{% block page_title %}System{% endblock %}
+
+{% block console_content %}
+<section class="system-shell" data-system-shell>
+    <div class="system-tabs" role="tablist" aria-label="System sections">
+        {% for tab in system_tabs %}
+        <button
+            type="button"
+            class="system-tab{% if tab.active %} is-current{% endif %}{% if tab.disabled %} is-disabled{% endif %}"
+            data-system-tab="{{ tab.id }}"
+            role="tab"
+            aria-selected="{{ 'true' if tab.active else 'false' }}"
+            {% if tab.disabled %}disabled{% endif %}
+        >
+            {{ tab.label }}
+        </button>
+        {% endfor %}
+    </div>
+
+    <section class="system-panel-grid">
+        <article class="system-panel system-panel-wide" data-system-panel="access">
+            <div class="system-panel-head">
+                <div>
+                    <p class="hero-band-eyebrow">Access</p>
+                    <h2>Login credentials</h2>
+                </div>
+                <div class="status-pill">Active</div>
+            </div>
+
+            <form class="system-form" data-access-form>
+                <label class="field">
+                    <span>Current username</span>
+                    <input type="text" name="current_username" value="{{ current_username }}" readonly>
+                </label>
+
+                <label class="field">
+                    <span>New username</span>
+                    <input type="text" name="new_username" value="{{ current_username }}" autocomplete="username">
+                </label>
+
+                <label class="field">
+                    <span>Current password</span>
+                    <input type="password" name="current_password" autocomplete="current-password">
+                </label>
+
+                <label class="field">
+                    <span>New password</span>
+                    <input type="password" name="new_password" autocomplete="new-password">
+                </label>
+
+                <label class="field">
+                    <span>Confirm new password</span>
+                    <input type="password" name="confirm_password" autocomplete="new-password">
+                </label>
+
+                <p class="form-error" data-access-message></p>
+                <button type="submit" class="primary-action system-save">Save credentials</button>
+            </form>
+        </article>
+    </section>
+</section>
+{% endblock %}
