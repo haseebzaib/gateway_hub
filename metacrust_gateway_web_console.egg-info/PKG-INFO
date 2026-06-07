@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: metacrust-gateway-web-console
+Version: 0.1.0
+Summary: MetaCrust Gateway web console for the v2 C++ engine
+Requires-Python: >=3.11
+Requires-Dist: fastapi<1.0,>=0.115
+Requires-Dist: httpx<1.0,>=0.27
+Requires-Dist: itsdangerous<3.0,>=2.2
+Requires-Dist: jinja2<4.0,>=3.1
+Requires-Dist: uvicorn[standard]<1.0,>=0.30

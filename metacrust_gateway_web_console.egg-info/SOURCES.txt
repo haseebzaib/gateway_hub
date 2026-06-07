@@ -1,0 +1,10 @@
+pyproject.toml
+metacrust_gateway_web_console.egg-info/PKG-INFO
+metacrust_gateway_web_console.egg-info/SOURCES.txt
+metacrust_gateway_web_console.egg-info/dependency_links.txt
+metacrust_gateway_web_console.egg-info/requires.txt
+metacrust_gateway_web_console.egg-info/top_level.txt
+web_console/__init__.py
+web_console/engine_client.py
+web_console/main.py
+web_console/routes.py
