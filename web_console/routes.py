@@ -878,3 +878,33 @@ async def export_insights_csv(request: Request) -> PlainTextResponse:
 async def engine_health(request: Request) -> JSONResponse:
     client = request.app.state.engine_client
     return JSONResponse(await client.health())
+
+
+@router.get("/api/core-ipc/status")
+async def core_ipc_status(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    ipc = getattr(request.app.state, "core_ipc", None)
+    if ipc is None:
+        return JSONResponse({"enabled": False, "connected": False, "state": "not_started"})
+    return JSONResponse(ipc.snapshot())
+
+
+@router.post("/api/core-ipc/send")
+async def core_ipc_send(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    ipc = getattr(request.app.state, "core_ipc", None)
+    if ipc is None:
+        return JSONResponse({"ok": False, "message": "IPC task is not started."}, status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    payload = await request.json()
+    message = str(payload.get("message", ""))
+    if not message:
+        return JSONResponse({"ok": False, "message": "message is required."}, status_code=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        await ipc.send_text(message)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "message": str(exc)}, status_code=status.HTTP_503_SERVICE_UNAVAILABLE)
+    return JSONResponse({"ok": True, "status": ipc.snapshot()})
