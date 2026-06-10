@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import secrets
 import time
 from datetime import UTC, datetime
@@ -11,6 +13,8 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from gateway_ipc import build_config_message, encode_message
+
 
 router = APIRouter()
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -19,6 +23,12 @@ templates = Jinja2Templates(directory=str(PACKAGE_DIR / "templates"))
 GATEWAY_ID = "metacrust_v2_dev"
 DEFAULT_USERNAME = "gateway"
 DEFAULT_PASSWORD = "gateway"
+SENSOR_CONFIG_STORAGE_DIR = Path(os.environ.get("GATEWAY_SENSOR_CONFIG_DIR", "/opt/metacrust/sensorconfigs"))
+SENSOR_CONFIG_FILES = {
+    "rs232": "rs232.json",
+    "rs485": "rs485.json",
+    "modbus_tcp": "modbus_tcp.json",
+}
 
 
 def _file_hash(path: Path) -> str:
@@ -48,6 +58,82 @@ def _json_auth_required(request: Request) -> JSONResponse | None:
     if _is_authenticated(request):
         return None
     return JSONResponse({"ok": False, "message": "Authentication required."}, status_code=status.HTTP_401_UNAUTHORIZED)
+
+
+async def _send_config_to_core(request: Request, config_name: str, payload: dict[str, Any]) -> dict[str, object]:
+    ipc = getattr(request.app.state, "core_ipc", None)
+    return await _send_config_payload_to_core(ipc, config_name, payload)
+
+
+async def _send_config_payload_to_core(ipc: object, config_name: str, payload: dict[str, Any]) -> dict[str, object]:
+    message = build_config_message(config_name, payload, ack_required=True)
+    result: dict[str, object] = {
+        "sent": False,
+        "message_id": message["message_id"],
+        "message_type": message["message_type"],
+    }
+
+    if ipc is None:
+        result["reason"] = "gateway core IPC task is not started"
+        return result
+
+    try:
+        await ipc.send_text(encode_message(message))
+    except Exception as exc:
+        result["reason"] = str(exc)
+        return result
+
+    result["sent"] = True
+    return result
+
+
+def _sensor_config_path(config_name: str) -> Path:
+    file_name = SENSOR_CONFIG_FILES.get(config_name)
+    if file_name is None:
+        raise ValueError(f"Unsupported sensor config: {config_name}")
+    return SENSOR_CONFIG_STORAGE_DIR / file_name
+
+
+def _save_sensor_config(config_name: str, payload: dict[str, Any]) -> dict[str, object]:
+    SENSOR_CONFIG_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    path = _sensor_config_path(config_name)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp_path.replace(path)
+    return {"saved": True, "path": str(path)}
+
+
+def _load_sensor_config(config_name: str) -> dict[str, Any] | None:
+    path = _sensor_config_path(config_name)
+    if not path.exists():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"Invalid sensor config in {path}")
+    return payload
+
+
+def load_saved_sensor_configs() -> list[str]:
+    loaded: list[str] = []
+    for config_name in SENSOR_CONFIG_FILES:
+        try:
+            payload = _load_sensor_config(config_name)
+        except Exception as exc:
+            print(f"[sensor-config] failed to load {config_name}: {exc}", flush=True)
+            continue
+        if payload is None:
+            continue
+        CONFIGS[config_name] = payload
+        loaded.append(config_name)
+    return loaded
+
+
+async def send_saved_sensor_configs_to_core(ipc: object, config_names: list[str] | None = None) -> list[dict[str, object]]:
+    names = config_names or list(SENSOR_CONFIG_FILES)
+    results: list[dict[str, object]] = []
+    for config_name in names:
+        results.append(await _send_config_payload_to_core(ipc, config_name, CONFIGS[config_name]))
+    return results
 
 
 def _primary_sections(active_label: str) -> list[dict[str, object]]:
@@ -661,7 +747,9 @@ async def save_rs232_config(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     CONFIGS["rs232"] = await request.json()
-    return JSONResponse({"ok": True, "message": "RS232 config saved in hub mock state."})
+    storage = _save_sensor_config("rs232", CONFIGS["rs232"])
+    core_ipc = await _send_config_to_core(request, "rs232", CONFIGS["rs232"])
+    return JSONResponse({"ok": True, "message": "RS232 config saved.", "storage": storage, "core_ipc": core_ipc})
 
 
 @router.get("/api/interfaces/rs485/config")
@@ -678,7 +766,9 @@ async def save_rs485_config(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     CONFIGS["rs485"] = await request.json()
-    return JSONResponse({"ok": True, "message": "RS485 config saved in hub mock state."})
+    storage = _save_sensor_config("rs485", CONFIGS["rs485"])
+    core_ipc = await _send_config_to_core(request, "rs485", CONFIGS["rs485"])
+    return JSONResponse({"ok": True, "message": "RS485 config saved.", "storage": storage, "core_ipc": core_ipc})
 
 
 @router.get("/api/interfaces/modbus-tcp/config")
@@ -695,7 +785,9 @@ async def save_modbus_tcp_config(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     CONFIGS["modbus_tcp"] = await request.json()
-    return JSONResponse({"ok": True, "message": "Modbus TCP config saved in hub mock state."})
+    storage = _save_sensor_config("modbus_tcp", CONFIGS["modbus_tcp"])
+    core_ipc = await _send_config_to_core(request, "modbus_tcp", CONFIGS["modbus_tcp"])
+    return JSONResponse({"ok": True, "message": "Modbus TCP config saved.", "storage": storage, "core_ipc": core_ipc})
 
 
 @router.get("/api/forwarding/config")

@@ -21,6 +21,7 @@ class IpcStatus:
     last_rx_text: str | None = None
     rx_count: int = 0
     tx_count: int = 0
+    heartbeat_count: int = 0
 
 
 class GatewayCoreIpcTask:
@@ -62,7 +63,7 @@ class GatewayCoreIpcTask:
     async def send_text(self, message: str) -> None:
         await self.client.send_text(message)
         self.status.tx_count += 1
-        _console(f"TX {message}")
+        _console(f"TX ipc_payload={message}")
 
     def snapshot(self) -> dict[str, object]:
         return {
@@ -78,6 +79,7 @@ class GatewayCoreIpcTask:
             "last_rx_text": self.status.last_rx_text,
             "rx_count": self.status.rx_count,
             "tx_count": self.status.tx_count,
+            "heartbeat_count": self.status.heartbeat_count,
         }
 
     async def _run(self) -> None:
@@ -114,7 +116,6 @@ class GatewayCoreIpcTask:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=self.config.reconnect_delay_s)
             except TimeoutError:
                 continue
-
 
 def _utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
