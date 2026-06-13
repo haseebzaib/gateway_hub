@@ -3,10 +3,6 @@
 {% block page_eyebrow %}Inbound Services{% endblock %}
 {% block page_title %}Edge Server{% endblock %}
 
-{% block page_actions %}
-<button type="button" class="ghost-action" data-es-save>Save Configuration</button>
-{% endblock %}
-
 {% block console_content %}
 <section class="es-shell" data-edge-server-shell>
 
@@ -18,18 +14,20 @@
     </div>
 
     <div class="system-tabs es-tabs" role="tablist" aria-label="Edge Server sections">
-        <button type="button" class="system-tab is-current" data-es-tab="status" role="tab" aria-selected="true">Live Status</button>
-        <button type="button" class="system-tab" data-es-tab="listeners" role="tab" aria-selected="false">Listeners</button>
-        <button type="button" class="system-tab" data-es-tab="http" role="tab" aria-selected="false">HTTP Endpoints</button>
-        <button type="button" class="system-tab" data-es-tab="mqtt" role="tab" aria-selected="false">MQTT Topics</button>
-        <button type="button" class="system-tab" data-es-tab="storage" role="tab" aria-selected="false">Storage &amp; Routing</button>
+        <button type="button" class="system-tab is-current" data-es-tab="overview" role="tab" aria-selected="true">Overview</button>
+        <button type="button" class="system-tab" data-es-tab="http" role="tab" aria-selected="false">Live HTTP</button>
+        <button type="button" class="system-tab" data-es-tab="mqtt" role="tab" aria-selected="false">Live MQTT</button>
+        <button type="button" class="system-tab" data-es-tab="alerts" role="tab" aria-selected="false">Alerts</button>
+        <button type="button" class="system-tab" data-es-tab="listeners" role="tab" aria-selected="false">Listener Config</button>
+        <button type="button" class="system-tab" data-es-tab="routes" role="tab" aria-selected="false">Route Config</button>
+        <button type="button" class="system-tab" data-es-tab="storage" role="tab" aria-selected="false">Storage</button>
     </div>
 
-    <div class="es-panel" data-es-panel="status">
+    <div class="es-panel" data-es-panel="overview">
         <div class="es-section-head">
             <div>
-                <h2>Live Status</h2>
-                <p>Inbound listener health, connected devices, local buffer, and server-side events.</p>
+                <h2>Overview</h2>
+                <p>Inbound service health, recent devices, message buffer, and current alerts.</p>
             </div>
             <span class="es-save-msg" data-es-status-ts></span>
         </div>
@@ -41,33 +39,33 @@
                 <p data-es-live-services-detail>No listeners enabled</p>
             </article>
             <article class="es-live-card">
-                <span class="es-kicker">Connected Devices</span>
+                <span class="es-kicker">Active Devices</span>
                 <strong data-es-live-devices>0</strong>
-                <p>HTTP clients and MQTT sessions</p>
+                <p>sending data or connected now</p>
             </article>
             <article class="es-live-card">
-                <span class="es-kicker">Buffered Messages</span>
+                <span class="es-kicker">Saved Messages</span>
                 <strong data-es-live-buffered>0</strong>
-                <p>Stored locally before processing</p>
+                <p>stored locally before forwarding</p>
             </article>
             <article class="es-live-card">
-                <span class="es-kicker">Audit Events</span>
+                <span class="es-kicker">Alerts</span>
                 <strong data-es-live-events>0</strong>
-                <p>Outages, errors, auth failures</p>
+                <p>warnings and rejected traffic</p>
             </article>
         </div>
 
         <div class="es-live-panels">
             <section class="es-live-panel">
                 <div class="es-live-panel-head">
-                    <strong>Message Buffer</strong>
-                    <span>SQLCipher store</span>
+                    <strong>Message Handling</strong>
+                    <span>current process counters</span>
                 </div>
                 <div class="es-buffer-grid">
-                    <span><strong data-es-buffer-pending>0</strong><small>Pending anomaly pipeline</small></span>
-                    <span><strong data-es-buffer-processed>0</strong><small>Processed this session</small></span>
+                    <span><strong data-es-buffer-pending>0</strong><small>Accepted by gateway</small></span>
+                    <span><strong data-es-buffer-processed>0</strong><small>Checked for alerts</small></span>
                     <span><strong data-es-buffer-forwarded>0</strong><small>Forwarded upstream</small></span>
-                    <span><strong data-es-buffer-dropped>0</strong><small>Dropped / rejected</small></span>
+                    <span><strong data-es-buffer-dropped>0</strong><small>Rejected or dropped</small></span>
                 </div>
             </section>
 
@@ -82,11 +80,11 @@
 
             <section class="es-live-panel es-live-panel-wide">
                 <div class="es-live-panel-head">
-                    <strong>Outage &amp; Error Audit</strong>
+                    <strong>Recent Alerts</strong>
                     <span data-es-audit-summary>No events</span>
                 </div>
                 <div class="es-audit-list" data-es-audit-list></div>
-                <div class="es-empty-line" data-es-audit-empty>No outages or errors recorded.</div>
+                <div class="es-empty-line" data-es-audit-empty>No alerts recorded.</div>
             </section>
         </div>
     </div>
@@ -229,172 +227,363 @@
     <div class="es-panel is-hidden" data-es-panel="http">
         <div class="es-section-head">
             <div>
-                <h2>HTTP / HTTPS Endpoints</h2>
-                <p>Devices can POST telemetry, events, alarms, or custom payloads to these paths.</p>
+                <h2>HTTP Device Activity</h2>
+                <p>Devices that send data through HTTP or HTTPS, their last contact time, and request health.</p>
             </div>
-            <button type="button" class="ghost-action" data-es-add-http>+ Add Endpoint</button>
-        </div>
-
-        <div class="es-form es-hidden" data-es-http-form>
-            <div class="es-form-grid">
-                <label class="fw-field">
-                    <span class="fw-label">Name</span>
-                    <input class="fw-input" data-es-http-name maxlength="64" placeholder="Air quality ingest">
-                </label>
-                <label class="fw-field">
-                    <span class="fw-label">Protocol</span>
-                    <select class="fw-select" data-es-http-protocol>
-                        <option value="http">HTTP</option>
-                        <option value="https">HTTPS</option>
-                    </select>
-                </label>
-                <label class="fw-field">
-                    <span class="fw-label">Method</span>
-                    <select class="fw-select" data-es-http-method>
-                        <option value="POST">POST</option>
-                        <option value="PUT">PUT</option>
-                    </select>
-                </label>
-                <label class="fw-field fw-field-lg">
-                    <span class="fw-label">Path</span>
-                    <input class="fw-input" data-es-http-path maxlength="160" placeholder="/devices/air-quality">
-                </label>
-                <label class="fw-field">
-                    <span class="fw-label">Auth</span>
-                    <select class="fw-select" data-es-http-auth>
-                        <option value="none">None</option>
-                        <option value="token">Bearer token</option>
-                        <option value="mtls">mTLS identity</option>
-                    </select>
-                </label>
-                <label class="fw-field">
-                    <span class="fw-label">Payload</span>
-                    <select class="fw-select" data-es-http-payload>
-                        <option value="json">JSON</option>
-                        <option value="raw">Raw body</option>
-                        <option value="form">Form data</option>
-                    </select>
-                </label>
-                <label class="fw-field">
-                    <span class="fw-label">Device ID Source</span>
-                    <select class="fw-select" data-es-http-device-source>
-                        <option value="payload">Payload field</option>
-                        <option value="header">HTTP header</option>
-                        <option value="path">Path segment</option>
-                        <option value="fixed">Fixed mapping</option>
-                    </select>
-                </label>
-                <label class="fw-field">
-                    <span class="fw-label">Device ID Key</span>
-                    <input class="fw-input" data-es-http-device-key maxlength="80" placeholder="device_id">
-                </label>
-                <label class="fw-field">
-                    <span class="fw-label">Pipeline</span>
-                    <select class="fw-select" data-es-http-forwarding></select>
-                </label>
-            </div>
-            <div class="es-field-help">
-                <span><strong>Protocol</strong> selects the listener. HTTPS uses TLS and requires the HTTPS listener to be enabled; mTLS can additionally verify device certificates.</span>
-                <span><strong>Method</strong> POST records new telemetry/events. PUT is for devices that update one current state object.</span>
-                <span><strong>Path</strong> is one URL route for this endpoint. Add another endpoint later when another path is needed.</span>
-                <span><strong>Payload</strong> JSON is parsed into fields, raw is stored as bytes/text, form reads key-value fields.</span>
-                <span><strong>Device ID source</strong> chooses where the gateway gets the device identity: payload field, header, path segment, or fixed value.</span>
-                <span><strong>Pipeline</strong> stores first, runs anomaly detection, then forwards only when a Data Forwarding profile is selected.</span>
-            </div>
-            <a class="es-forwarding-link" href="/forwarding">Configure Data Forwarding profiles</a>
-            <div class="es-form-actions">
-                <button type="button" class="fw-btn-cancel" data-es-cancel-http>Cancel</button>
-                <button type="button" class="fw-btn-save" data-es-save-http>Save Endpoint</button>
+            <div class="es-head-actions">
+                <a class="ghost-action" href="/api/edge-server/messages.csv?protocol_group=http">Download CSV</a>
+                <a class="ghost-action" href="/api/edge-server/messages.jsonl?protocol_group=http">JSONL</a>
             </div>
         </div>
 
-        <div class="es-list" data-es-http-list></div>
-        <div class="fw-empty ov-hidden" data-es-http-empty>
-            <h3 class="fw-empty-title">No HTTP endpoints</h3>
-            <p class="fw-empty-desc">Add a route that devices can call on the gateway.</p>
-            <button class="fw-empty-action" data-es-add-http>+ Add endpoint</button>
+        <div class="es-metrics-grid">
+            <article class="es-live-card">
+                <span class="es-kicker">Received</span>
+                <strong data-es-http-total>0</strong>
+                <p>accepted device messages</p>
+            </article>
+            <article class="es-live-card">
+                <span class="es-kicker">Seen Devices</span>
+                <strong data-es-http-devices>0</strong>
+                <p>unique senders</p>
+            </article>
+            <article class="es-live-card">
+                <span class="es-kicker">Unknown Routes</span>
+                <strong data-es-http-missing>0</strong>
+                <p>requests to paths not configured</p>
+            </article>
+            <article class="es-live-card">
+                <span class="es-kicker">Rejected</span>
+                <strong data-es-http-auth-fail>0</strong>
+                <p>failed authentication</p>
+            </article>
+        </div>
+
+        <div class="es-protocol-grid">
+            <section class="es-live-panel">
+                <div class="es-live-panel-head">
+                    <strong>HTTP Traffic by Minute</strong>
+                    <span>each bar is accepted HTTP requests in that minute</span>
+                </div>
+                <div class="es-chart-bars" data-es-http-chart></div>
+                <div class="es-empty-line" data-es-http-chart-empty>No HTTP traffic yet.</div>
+            </section>
+            <section class="es-live-panel">
+                <div class="es-live-panel-head">
+                    <strong>Endpoint Activity</strong>
+                    <span data-es-http-route-count>accepted requests by path</span>
+                </div>
+                <div class="es-route-list" data-es-http-routes></div>
+                <div class="es-empty-line" data-es-http-routes-empty>No HTTP route traffic yet.</div>
+            </section>
+            <section class="es-live-panel es-live-panel-wide">
+                <div class="es-live-panel-head">
+                    <strong>HTTP Device Health</strong>
+                    <span>HTTP is request based, so status means last receive health</span>
+                </div>
+                <div class="es-device-list" data-es-http-devices-list></div>
+                <div class="es-empty-line" data-es-http-devices-empty>No HTTP devices have sent data yet.</div>
+            </section>
+            <section class="es-live-panel es-live-panel-wide">
+                <div class="es-live-panel-head">
+                    <strong>Latest HTTP Messages</strong>
+                    <span>most recent accepted records</span>
+                </div>
+                <div class="es-message-list" data-es-http-recent></div>
+                <div class="es-empty-line" data-es-http-recent-empty>No HTTP messages recorded.</div>
+            </section>
         </div>
     </div>
 
     <div class="es-panel is-hidden" data-es-panel="mqtt">
         <div class="es-section-head">
             <div>
-                <h2>MQTT / MQTTS Topics</h2>
-                <p>Devices publish to configured topic filters. The gateway stores and routes messages.</p>
+                <h2>MQTT Device Activity</h2>
+                <p>Devices connected through MQTT or MQTTS, latest publish time, and topic health.</p>
             </div>
-            <button type="button" class="ghost-action" data-es-add-mqtt>+ Add Topic</button>
-        </div>
-
-        <div class="es-form es-hidden" data-es-mqtt-form>
-            <div class="es-form-grid">
-                <label class="fw-field">
-                    <span class="fw-label">Name</span>
-                    <input class="fw-input" data-es-mqtt-name maxlength="64" placeholder="Factory telemetry">
-                </label>
-                <label class="fw-field">
-                    <span class="fw-label">Protocol</span>
-                    <select class="fw-select" data-es-mqtt-protocol>
-                        <option value="mqtt">MQTT</option>
-                        <option value="mqtts">MQTTS</option>
-                    </select>
-                </label>
-                <label class="fw-field fw-field-lg">
-                    <span class="fw-label">Topic Filter</span>
-                    <input class="fw-input" data-es-mqtt-topic maxlength="180" placeholder="devices/+/data">
-                </label>
-                <label class="fw-field">
-                    <span class="fw-label">QoS</span>
-                    <select class="fw-select" data-es-mqtt-qos>
-                        <option value="0">0</option>
-                        <option value="1">1</option>
-                        <option value="2">2</option>
-                    </select>
-                </label>
-                <label class="fw-field">
-                    <span class="fw-label">Payload</span>
-                    <select class="fw-select" data-es-mqtt-payload>
-                        <option value="json">JSON</option>
-                        <option value="raw">Raw payload</option>
-                    </select>
-                </label>
-                <label class="fw-field">
-                    <span class="fw-label">Device ID Source</span>
-                    <select class="fw-select" data-es-mqtt-device-source>
-                        <option value="topic_segment">Topic segment</option>
-                        <option value="payload">Payload field</option>
-                        <option value="client_id">Client ID</option>
-                        <option value="fixed">Fixed mapping</option>
-                    </select>
-                </label>
-                <label class="fw-field">
-                    <span class="fw-label">Device ID Key</span>
-                    <input class="fw-input" data-es-mqtt-device-key maxlength="80" placeholder="1">
-                </label>
-                <label class="fw-field">
-                    <span class="fw-label">Pipeline</span>
-                    <select class="fw-select" data-es-mqtt-forwarding></select>
-                </label>
-            </div>
-            <div class="es-field-help">
-                <span><strong>Protocol</strong> MQTT is plain broker traffic. MQTTS uses TLS and requires the MQTTS listener to be enabled.</span>
-                <span><strong>Topic filter</strong> is one subscription pattern devices publish to, such as <code>devices/+/data</code>.</span>
-                <span><strong>QoS</strong> controls MQTT delivery guarantee from device to gateway.</span>
-                <span><strong>Payload</strong> JSON is parsed into fields; raw stores the original payload.</span>
-                <span><strong>Device ID source</strong> maps messages using a topic segment, payload field, client ID, or fixed value.</span>
-                <span><strong>Pipeline</strong> stores first, runs anomaly detection, then forwards only when a Data Forwarding profile is selected.</span>
-            </div>
-            <a class="es-forwarding-link" href="/forwarding">Configure Data Forwarding profiles</a>
-            <div class="es-form-actions">
-                <button type="button" class="fw-btn-cancel" data-es-cancel-mqtt>Cancel</button>
-                <button type="button" class="fw-btn-save" data-es-save-mqtt>Save Topic</button>
+            <div class="es-head-actions">
+                <a class="ghost-action" href="/api/edge-server/messages.csv?protocol_group=mqtt">Download CSV</a>
+                <a class="ghost-action" href="/api/edge-server/messages.jsonl?protocol_group=mqtt">JSONL</a>
             </div>
         </div>
 
-        <div class="es-list" data-es-mqtt-list></div>
-        <div class="fw-empty ov-hidden" data-es-mqtt-empty>
-            <h3 class="fw-empty-title">No MQTT topics</h3>
-            <p class="fw-empty-desc">Add a topic filter that devices can publish to.</p>
-            <button class="fw-empty-action" data-es-add-mqtt>+ Add topic</button>
+        <div class="es-metrics-grid">
+            <article class="es-live-card">
+                <span class="es-kicker">Received</span>
+                <strong data-es-mqtt-total>0</strong>
+                <p>accepted device messages</p>
+            </article>
+            <article class="es-live-card">
+                <span class="es-kicker">Seen Devices</span>
+                <strong data-es-mqtt-devices>0</strong>
+                <p>unique clients/devices</p>
+            </article>
+            <article class="es-live-card">
+                <span class="es-kicker">Unknown Topics</span>
+                <strong data-es-mqtt-missing>0</strong>
+                <p>publishes not matched</p>
+            </article>
+            <article class="es-live-card">
+                <span class="es-kicker">Rejected</span>
+                <strong data-es-mqtt-auth-fail>0</strong>
+                <p>failed authentication</p>
+            </article>
+        </div>
+
+        <div class="es-protocol-grid">
+            <section class="es-live-panel">
+                <div class="es-live-panel-head">
+                    <strong>MQTT Traffic by Minute</strong>
+                    <span>each bar is accepted MQTT publishes in that minute</span>
+                </div>
+                <div class="es-chart-bars" data-es-mqtt-chart></div>
+                <div class="es-empty-line" data-es-mqtt-chart-empty>No MQTT traffic yet.</div>
+            </section>
+            <section class="es-live-panel">
+                <div class="es-live-panel-head">
+                    <strong>Topic Routes</strong>
+                    <span data-es-mqtt-route-count>accepted publishes by topic</span>
+                </div>
+                <div class="es-route-list" data-es-mqtt-routes></div>
+                <div class="es-empty-line" data-es-mqtt-routes-empty>No MQTT topic traffic yet.</div>
+            </section>
+            <section class="es-live-panel es-live-panel-wide">
+                <div class="es-live-panel-head">
+                    <strong>MQTT Device Health</strong>
+                    <span>connected, recent, or stale</span>
+                </div>
+                <div class="es-device-list" data-es-mqtt-devices-list></div>
+                <div class="es-empty-line" data-es-mqtt-devices-empty>No MQTT devices have sent data yet.</div>
+            </section>
+            <section class="es-live-panel es-live-panel-wide">
+                <div class="es-live-panel-head">
+                    <strong>Latest MQTT Messages</strong>
+                    <span>most recent accepted records</span>
+                </div>
+                <div class="es-message-list" data-es-mqtt-recent></div>
+                <div class="es-empty-line" data-es-mqtt-recent-empty>No MQTT messages recorded.</div>
+            </section>
+        </div>
+    </div>
+
+    <div class="es-panel is-hidden" data-es-panel="routes">
+        <div class="es-section-head">
+            <div>
+                <h2>Route Configuration</h2>
+                <p>Define the HTTP paths and MQTT topics that devices are allowed to send data to.</p>
+            </div>
+        </div>
+
+        <section class="es-live-panel">
+            <div class="es-live-panel-head">
+                <strong>HTTP / HTTPS Endpoints</strong>
+                <button type="button" class="ghost-action" data-es-add-http>+ Add Endpoint</button>
+            </div>
+
+            <div class="es-form es-hidden" data-es-http-form>
+                <div class="es-form-grid">
+                    <label class="fw-field">
+                        <span class="fw-label">Name</span>
+                        <input class="fw-input" data-es-http-name maxlength="64" placeholder="Air quality ingest">
+                    </label>
+                    <label class="fw-field">
+                        <span class="fw-label">Protocol</span>
+                        <select class="fw-select" data-es-http-protocol>
+                            <option value="http">HTTP</option>
+                            <option value="https">HTTPS</option>
+                        </select>
+                    </label>
+                    <label class="fw-field">
+                        <span class="fw-label">Method</span>
+                        <select class="fw-select" data-es-http-method>
+                            <option value="POST">POST</option>
+                            <option value="PUT">PUT</option>
+                        </select>
+                    </label>
+                    <label class="fw-field fw-field-lg">
+                        <span class="fw-label">Path</span>
+                        <input class="fw-input" data-es-http-path maxlength="160" placeholder="/devices/air-quality">
+                    </label>
+                    <label class="fw-field">
+                        <span class="fw-label">Auth</span>
+                        <select class="fw-select" data-es-http-auth>
+                            <option value="none">None</option>
+                            <option value="token">Bearer token</option>
+                            <option value="mtls">mTLS identity</option>
+                        </select>
+                    </label>
+                    <label class="fw-field">
+                        <span class="fw-label">Payload</span>
+                        <select class="fw-select" data-es-http-payload>
+                            <option value="json">JSON</option>
+                            <option value="raw">Raw body</option>
+                            <option value="form">Form data</option>
+                        </select>
+                    </label>
+                    <label class="fw-field">
+                        <span class="fw-label">Device ID Source</span>
+                        <select class="fw-select" data-es-http-device-source>
+                            <option value="payload">Payload field</option>
+                            <option value="header">HTTP header</option>
+                            <option value="path">Path segment</option>
+                            <option value="fixed">Fixed mapping</option>
+                        </select>
+                    </label>
+                    <label class="fw-field">
+                        <span class="fw-label">Device ID Key</span>
+                        <input class="fw-input" data-es-http-device-key maxlength="80" placeholder="device_id">
+                    </label>
+                    <label class="fw-field">
+                        <span class="fw-label">Pipeline</span>
+                        <select class="fw-select" data-es-http-forwarding></select>
+                    </label>
+                </div>
+                <div class="es-field-help">
+                    <span><strong>Protocol</strong> selects the listener. HTTPS uses TLS and requires the HTTPS listener to be enabled; mTLS can additionally verify device certificates.</span>
+                    <span><strong>Method</strong> POST records new telemetry/events. PUT is for devices that update one current state object.</span>
+                    <span><strong>Path</strong> is one URL route for this endpoint. Add another endpoint later when another path is needed.</span>
+                    <span><strong>Payload</strong> JSON is parsed into fields, raw is stored as bytes/text, form reads key-value fields.</span>
+                    <span><strong>Device ID source</strong> chooses where the gateway gets the device identity: payload field, header, path segment, or fixed value.</span>
+                    <span><strong>Pipeline</strong> stores first, runs anomaly detection, then forwards only when a Data Forwarding profile is selected.</span>
+                </div>
+                <a class="es-forwarding-link" href="/forwarding">Configure Data Forwarding profiles</a>
+                <div class="es-form-actions">
+                    <button type="button" class="fw-btn-cancel" data-es-cancel-http>Cancel</button>
+                    <button type="button" class="fw-btn-save" data-es-save-http>Save Endpoint</button>
+                </div>
+            </div>
+
+            <div class="es-list" data-es-http-list></div>
+            <div class="fw-empty ov-hidden" data-es-http-empty>
+                <h3 class="fw-empty-title">No HTTP endpoints</h3>
+                <p class="fw-empty-desc">Add a path that HTTP devices can call on the gateway.</p>
+                <button class="fw-empty-action" data-es-add-http>+ Add endpoint</button>
+            </div>
+        </section>
+
+        <section class="es-live-panel">
+            <div class="es-live-panel-head">
+                <strong>MQTT / MQTTS Topics</strong>
+                <button type="button" class="ghost-action" data-es-add-mqtt>+ Add Topic</button>
+            </div>
+
+            <div class="es-form es-hidden" data-es-mqtt-form>
+                <div class="es-form-grid">
+                    <label class="fw-field">
+                        <span class="fw-label">Name</span>
+                        <input class="fw-input" data-es-mqtt-name maxlength="64" placeholder="Factory telemetry">
+                    </label>
+                    <label class="fw-field">
+                        <span class="fw-label">Protocol</span>
+                        <select class="fw-select" data-es-mqtt-protocol>
+                            <option value="mqtt">MQTT</option>
+                            <option value="mqtts">MQTTS</option>
+                        </select>
+                    </label>
+                    <label class="fw-field fw-field-lg">
+                        <span class="fw-label">Topic Filter</span>
+                        <input class="fw-input" data-es-mqtt-topic maxlength="180" placeholder="devices/+/data">
+                    </label>
+                    <label class="fw-field">
+                        <span class="fw-label">QoS</span>
+                        <select class="fw-select" data-es-mqtt-qos>
+                            <option value="0">0</option>
+                            <option value="1">1</option>
+                            <option value="2">2</option>
+                        </select>
+                    </label>
+                    <label class="fw-field">
+                        <span class="fw-label">Payload</span>
+                        <select class="fw-select" data-es-mqtt-payload>
+                            <option value="json">JSON</option>
+                            <option value="raw">Raw payload</option>
+                        </select>
+                    </label>
+                    <label class="fw-field">
+                        <span class="fw-label">Device ID Source</span>
+                        <select class="fw-select" data-es-mqtt-device-source>
+                            <option value="topic_segment">Topic segment</option>
+                            <option value="payload">Payload field</option>
+                            <option value="client_id">Client ID</option>
+                            <option value="fixed">Fixed mapping</option>
+                        </select>
+                    </label>
+                    <label class="fw-field">
+                        <span class="fw-label">Device ID Key</span>
+                        <input class="fw-input" data-es-mqtt-device-key maxlength="80" placeholder="1">
+                    </label>
+                    <label class="fw-field">
+                        <span class="fw-label">Pipeline</span>
+                        <select class="fw-select" data-es-mqtt-forwarding></select>
+                    </label>
+                </div>
+                <div class="es-field-help">
+                    <span><strong>Protocol</strong> MQTT is plain broker traffic. MQTTS uses TLS and requires the MQTTS listener to be enabled.</span>
+                    <span><strong>Topic filter</strong> is one subscription pattern devices publish to, such as <code>devices/+/data</code>.</span>
+                    <span><strong>QoS</strong> controls MQTT delivery guarantee from device to gateway.</span>
+                    <span><strong>Payload</strong> JSON is parsed into fields; raw stores the original payload.</span>
+                    <span><strong>Device ID source</strong> maps messages using a topic segment, payload field, client ID, or fixed value.</span>
+                    <span><strong>Pipeline</strong> stores first, runs anomaly detection, then forwards only when a Data Forwarding profile is selected.</span>
+                </div>
+                <a class="es-forwarding-link" href="/forwarding">Configure Data Forwarding profiles</a>
+                <div class="es-form-actions">
+                    <button type="button" class="fw-btn-cancel" data-es-cancel-mqtt>Cancel</button>
+                    <button type="button" class="fw-btn-save" data-es-save-mqtt>Save Topic</button>
+                </div>
+            </div>
+
+            <div class="es-list" data-es-mqtt-list></div>
+            <div class="fw-empty ov-hidden" data-es-mqtt-empty>
+                <h3 class="fw-empty-title">No MQTT topics</h3>
+                <p class="fw-empty-desc">Add a topic filter that devices can publish to.</p>
+                <button class="fw-empty-action" data-es-add-mqtt>+ Add topic</button>
+            </div>
+        </section>
+    </div>
+
+    <div class="es-panel is-hidden" data-es-panel="alerts">
+        <div class="es-section-head">
+            <div>
+                <h2>Alerts</h2>
+                <p>Metadata anomalies, disconnects, route misses, auth failures, and storage/server faults.</p>
+            </div>
+            <div class="es-head-actions">
+                <a class="ghost-action" href="/api/edge-server/events.csv">Download CSV</a>
+                <a class="ghost-action" href="/api/edge-server/events.jsonl">JSONL</a>
+                <span class="es-save-msg" data-es-alert-summary>0 alerts</span>
+            </div>
+        </div>
+
+        <div class="es-metrics-grid">
+            <article class="es-live-card">
+                <span class="es-kicker">Total Alerts</span>
+                <strong data-es-alert-total>0</strong>
+                <p>stored warning/error events</p>
+            </article>
+            <article class="es-live-card">
+                <span class="es-kicker">Warnings</span>
+                <strong data-es-alert-warning>0</strong>
+                <p>anomalies and disconnects</p>
+            </article>
+            <article class="es-live-card">
+                <span class="es-kicker">Errors</span>
+                <strong data-es-alert-error>0</strong>
+                <p>auth/storage/server faults</p>
+            </article>
+            <article class="es-live-card">
+                <span class="es-kicker">Critical</span>
+                <strong data-es-alert-critical>0</strong>
+                <p>reserved for severe faults</p>
+            </article>
+        </div>
+
+        <div class="es-live-panel">
+            <div class="es-live-panel-head">
+                <strong>Alert Timeline</strong>
+                <span>latest 100 events</span>
+            </div>
+            <div class="es-audit-list" data-es-alert-list></div>
+            <div class="es-empty-line" data-es-alert-empty>No alerts recorded.</div>
         </div>
     </div>
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import csv
+import io
 import json
 import logging
 import os
@@ -12,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Request, status
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from gateway_ipc import build_config_message, encode_message
@@ -675,6 +677,81 @@ def _load_edge_server_config() -> dict[str, Any] | None:
     return _normalise_edge_server_config(payload)
 
 
+def _edge_export_filters(request: Request) -> dict[str, Any]:
+    query = request.query_params
+    return {
+        "protocol": query.get("protocol"),
+        "protocol_group": query.get("protocol_group"),
+        "device_id": query.get("device_id"),
+        "route": query.get("route"),
+        "event_type": query.get("event_type"),
+        "severity": query.get("severity"),
+        "payload_type": query.get("payload_type"),
+        "accepted": query.get("accepted"),
+        "from": query.get("from"),
+        "to": query.get("to"),
+        "limit": query.get("limit") or 1000,
+        "include_payload": query.get("include_payload"),
+    }
+
+
+def _edge_export_rows(request: Request, export_type: str, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    edge_server = getattr(request.app.state, "edge_server", None)
+    if edge_server is None:
+        return []
+    active_filters = filters or _edge_export_filters(request)
+    if export_type == "messages":
+        return edge_server.export_messages(active_filters)
+    return edge_server.export_events(active_filters)
+
+
+def _csv_download(filename: str, rows: list[dict[str, Any]], fields: list[str]) -> Response:
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({field: _export_cell(row.get(field)) for field in fields})
+    return Response(
+        output.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _jsonl_download(filename: str, rows: list[dict[str, Any]]) -> Response:
+    lines = [
+        json.dumps(_export_json_row(row), separators=(",", ":"), ensure_ascii=False)
+        for row in rows
+    ]
+    return Response(
+        "\n".join(lines) + ("\n" if lines else ""),
+        media_type="application/x-ndjson; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _export_cell(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    return str(value)
+
+
+def _export_json_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {key: _export_json_value(value) for key, value in row.items()}
+
+
+def _export_json_value(value: Any) -> Any:
+    if isinstance(value, bytes):
+        return value.hex()
+    return value
+
+
+def _truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "include"}
+
+
 def _forwarding_status() -> dict[str, Any]:
     mqtt = []
     https = []
@@ -1204,6 +1281,77 @@ async def get_edge_server_events(request: Request) -> JSONResponse:
     if edge_server is not None:
         return JSONResponse({"ok": True, "events": edge_server.events()})
     return JSONResponse({"ok": True, "events": []})
+
+
+@router.get("/api/edge-server/http/metrics")
+async def get_edge_server_http_metrics(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    edge_server = getattr(request.app.state, "edge_server", None)
+    if edge_server is not None:
+        return JSONResponse(edge_server.protocol_metrics("http"))
+    return JSONResponse({"ok": True, "protocol_group": "http", "total_messages": 0, "device_count": 0, "routes": [], "minute_series": [], "recent_messages": []})
+
+
+@router.get("/api/edge-server/mqtt/metrics")
+async def get_edge_server_mqtt_metrics(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    edge_server = getattr(request.app.state, "edge_server", None)
+    if edge_server is not None:
+        return JSONResponse(edge_server.protocol_metrics("mqtt"))
+    return JSONResponse({"ok": True, "protocol_group": "mqtt", "total_messages": 0, "device_count": 0, "routes": [], "minute_series": [], "recent_messages": []})
+
+
+@router.get("/api/edge-server/alerts")
+async def get_edge_server_alerts(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    edge_server = getattr(request.app.state, "edge_server", None)
+    if edge_server is not None:
+        return JSONResponse(edge_server.alert_metrics())
+    return JSONResponse({"ok": True, "summary": {"total": 0, "warning": 0, "error": 0, "critical": 0}, "events": []})
+
+
+@router.get("/api/edge-server/events.csv")
+async def export_edge_server_events_csv(request: Request) -> Response:
+    if not _is_authenticated(request):
+        return PlainTextResponse("Authentication required.", status_code=status.HTTP_401_UNAUTHORIZED)
+    rows = _edge_export_rows(request, "events")
+    fields = ["created_at", "severity", "event_type", "protocol", "device_id", "route", "source", "message", "details_json"]
+    return _csv_download("edge-server-events.csv", rows, fields)
+
+
+@router.get("/api/edge-server/events.jsonl")
+async def export_edge_server_events_jsonl(request: Request) -> Response:
+    if not _is_authenticated(request):
+        return PlainTextResponse("Authentication required.", status_code=status.HTTP_401_UNAUTHORIZED)
+    rows = _edge_export_rows(request, "events")
+    return _jsonl_download("edge-server-events.jsonl", rows)
+
+
+@router.get("/api/edge-server/messages.csv")
+async def export_edge_server_messages_csv(request: Request) -> Response:
+    if not _is_authenticated(request):
+        return PlainTextResponse("Authentication required.", status_code=status.HTTP_401_UNAUTHORIZED)
+    filters = _edge_export_filters(request)
+    rows = _edge_export_rows(request, "messages", filters)
+    fields = [
+        "id", "received_at", "protocol", "device_id", "identity_source", "source_ip", "route",
+        "endpoint_name", "payload_type", "payload_size", "payload_hash", "device_timestamp",
+        "sequence", "accepted", "reject_reason", "details_json",
+    ]
+    if _truthy(filters.get("include_payload")):
+        fields.extend(["payload_json", "payload_raw_hex"])
+    return _csv_download("edge-server-messages.csv", rows, fields)
+
+
+@router.get("/api/edge-server/messages.jsonl")
+async def export_edge_server_messages_jsonl(request: Request) -> Response:
+    if not _is_authenticated(request):
+        return PlainTextResponse("Authentication required.", status_code=status.HTTP_401_UNAUTHORIZED)
+    rows = _edge_export_rows(request, "messages")
+    return _jsonl_download("edge-server-messages.jsonl", rows)
 
 
 @router.get("/api/insights/configured")

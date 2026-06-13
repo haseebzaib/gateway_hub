@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import socket
@@ -14,6 +15,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+from .storage import EdgeServerStorage
 
 
 LOGGER = logging.getLogger("edge_server")
@@ -55,9 +58,19 @@ class EdgeServerTask:
         self._interface_state: dict[str, Any] = {}
         self._interface_signature = ""
         self._last_config_generation = 0
+        self._storage = EdgeServerStorage()
+        self._storage_enabled = True
+        self._mqtt_sessions: dict[str, dict[str, Any]] = {}
+        self._mqtt_client_devices: dict[str, set[str]] = {}
 
     def start(self, config: dict[str, Any]) -> None:
         self._config = deepcopy(config)
+        if self._storage_enabled:
+            try:
+                self._storage.open()
+            except Exception as exc:
+                self._storage_enabled = False
+                LOGGER.error("storage_open_failed error=%s", exc)
         if self._task is None or self._task.done():
             self._stop_event.clear()
             self._task = asyncio.create_task(self._run(), name="gateway-edge-server")
@@ -77,6 +90,7 @@ class EdgeServerTask:
             except asyncio.CancelledError:
                 pass
         await self._stop_all()
+        self._storage.close()
         LOGGER.info("task_stopped")
 
     async def apply_config(self, config: dict[str, Any]) -> None:
@@ -113,6 +127,21 @@ class EdgeServerTask:
         errors = [state.error for state in self._listeners.values() if state.error]
         audit_events = list(self._events)[-20:]
         config = self._config or {}
+        stored_records = len(self._records)
+        devices = list(self._devices.values())[-30:]
+        if self._storage_enabled:
+            try:
+                stored_records = self._storage.message_count()
+                stored_devices = self._storage.recent_devices(30)
+                if stored_devices:
+                    devices = stored_devices
+            except Exception as exc:
+                self._storage_enabled = False
+                LOGGER.error("storage_snapshot_failed error=%s", exc)
+        active_devices = sum(
+            1 for device in devices
+            if device.get("health") == "active" or device.get("online") or "health" not in device
+        )
         return {
             "ok": True,
             "state": "running" if enabled_services else "error" if errors else "standby",
@@ -131,11 +160,12 @@ class EdgeServerTask:
             "interfaces": self._interface_state,
             "active_http_endpoints": sum(1 for item in config.get("http_endpoints", []) if item.get("enabled")),
             "active_mqtt_topics": sum(1 for item in config.get("mqtt_topics", []) if item.get("enabled")),
-            "stored_records": len(self._records),
+            "stored_records": stored_records,
             "pending_forward": self._buffer["pending"],
-            "connected_devices": len(self._devices),
+            "connected_devices": active_devices,
             "buffer": dict(self._buffer),
-            "devices": list(self._devices.values())[-30:],
+            "devices": devices,
+            "mqtt_sessions": list(self._mqtt_sessions.values())[-30:],
             "audit": {
                 "total": len(self._events),
                 "outages": sum(1 for event in self._events if event.get("type") == "outage"),
@@ -151,6 +181,88 @@ class EdgeServerTask:
 
     def events(self) -> list[dict[str, Any]]:
         return list(self._events)
+
+    def protocol_metrics(self, protocol_group: str) -> dict[str, Any]:
+        if self._storage_enabled:
+            try:
+                return self._storage.protocol_metrics(protocol_group)
+            except Exception as exc:
+                self._storage_enabled = False
+                LOGGER.error("storage_protocol_metrics_failed group=%s error=%s", protocol_group, exc)
+        protocols = {"http": {"HTTP", "HTTPS"}, "mqtt": {"MQTT", "MQTTS"}}.get(protocol_group, set())
+        records = [record for record in self._records if record.get("protocol") in protocols]
+        route_counts: dict[str, dict[str, Any]] = {}
+        for record in records:
+            route = str(record.get("route") or "")
+            route_counts.setdefault(route, {"route": route, "count": 0, "devices": set(), "last_seen": ""})
+            route_counts[route]["count"] += 1
+            route_counts[route]["devices"].add(str(record.get("device_id") or "unknown"))
+            route_counts[route]["last_seen"] = str(record.get("received_at") or "")
+        routes = [
+            {**item, "devices": len(item["devices"])}
+            for item in sorted(route_counts.values(), key=lambda row: row["count"], reverse=True)
+        ]
+        return {
+            "ok": True,
+            "protocol_group": protocol_group,
+            "total_messages": len(records),
+            "device_count": len({record.get("device_id") for record in records}),
+            "avg_payload_size": 0,
+            "max_payload_size": 0,
+            "route_missing": 0,
+            "auth_failures": 0,
+            "routes": routes[:20],
+            "minute_series": [],
+            "recent_messages": [_export_memory_message(row, include_payload=False) for row in records[-20:]],
+            "devices": _memory_protocol_devices(records),
+        }
+
+    def alert_metrics(self) -> dict[str, Any]:
+        if self._storage_enabled:
+            try:
+                events = self._storage.alert_events(100)
+                return {"ok": True, "summary": self._storage.alert_summary(), "events": events}
+            except Exception as exc:
+                self._storage_enabled = False
+                LOGGER.error("storage_alert_metrics_failed error=%s", exc)
+        events = [
+            event for event in self._events
+            if event.get("severity") in {"warning", "error", "critical"}
+            or event.get("type") in {"auth_failure", "route_missing", "mqtt_disconnected"}
+        ][-100:]
+        return {
+            "ok": True,
+            "summary": {
+                "total": len(events),
+                "warning": sum(1 for event in events if event.get("severity") == "warning"),
+                "error": sum(1 for event in events if event.get("severity") == "error"),
+                "critical": sum(1 for event in events if event.get("severity") == "critical"),
+            },
+            "events": events,
+        }
+
+    def export_events(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
+        if self._storage_enabled:
+            try:
+                return self._storage.export_events(filters)
+            except Exception as exc:
+                self._storage_enabled = False
+                LOGGER.error("storage_export_events_failed error=%s", exc)
+        events = list(self._events)
+        return [_export_memory_event(row) for row in _filter_export_rows(events, filters, timestamp_key="timestamp")]
+
+    def export_messages(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
+        if self._storage_enabled:
+            try:
+                return self._storage.export_messages(filters)
+            except Exception as exc:
+                self._storage_enabled = False
+                LOGGER.error("storage_export_messages_failed error=%s", exc)
+        include_payload = _truthy(filters.get("include_payload"))
+        rows = _filter_export_rows(list(self._records), filters, timestamp_key="received_at")
+        if include_payload:
+            return [_export_memory_message(row, include_payload=True) for row in rows]
+        return [_export_memory_message(row, include_payload=False) for row in rows]
 
     async def _run(self) -> None:
         LOGGER.info("task_loop_started")
@@ -239,7 +351,7 @@ class EdgeServerTask:
         self._server_keys[server_id] = key
         self._failed_keys.pop(server_id, None)
         state.state = "running"
-        self._audit("listener", name, f"{name.upper()} listening on {host}:{port}")
+        LOGGER.info("listener_started listener=%s host=%s port=%d", name, host, port)
 
     def _ssl_context(self, listener_name: str, mtls_required: bool) -> ssl.SSLContext | None:
         tls = (self._config or {}).get("tls") or {}
@@ -294,26 +406,36 @@ class EdgeServerTask:
             endpoint = self._match_http_endpoint(protocol, method, urlsplit(target).path)
             if endpoint is None:
                 self._buffer["dropped"] += 1
-                self._audit("error", peer, f"no HTTP endpoint for {method} {target}")
+                self._record_event("route_missing", "warning", protocol.upper(), "unknown", urlsplit(target).path, peer, f"No HTTP endpoint for {method} {target}")
                 await _http_response(writer, 404, {"ok": False, "message": "endpoint not found"})
                 return
             if not self._http_authorized(endpoint, headers, writer):
                 self._buffer["dropped"] += 1
-                self._audit("auth_failure", peer, f"HTTP auth failed for {endpoint.get('name')}")
+                self._record_event(
+                    "auth_failure",
+                    "error",
+                    protocol.upper(),
+                    "unknown",
+                    str(endpoint.get("path") or urlsplit(target).path),
+                    peer,
+                    f"HTTP auth failed for {endpoint.get('name')}",
+                )
                 await _http_response(writer, 401, {"ok": False, "message": "unauthorized"})
                 return
             payload = _decode_payload(body, endpoint.get("payload_type"))
             device_id = _http_device_id(endpoint, headers, target, payload)
-            record = {
-                "kind": "http",
-                "protocol": protocol.upper(),
-                "endpoint": endpoint.get("name"),
-                "path": endpoint.get("path"),
-                "device_id": device_id,
-                "payload": payload,
-                "received_at": _utc_now(),
-                "peer": peer,
-            }
+            record = _message_record(
+                kind="http",
+                protocol=protocol.upper(),
+                device_id=device_id,
+                identity_source=f"http:{endpoint.get('device_id_source') or 'payload'}",
+                source_ip=peer,
+                route=str(endpoint.get("path") or urlsplit(target).path),
+                endpoint_name=str(endpoint.get("name") or ""),
+                payload_type=str(endpoint.get("payload_type") or "json"),
+                payload=payload,
+                raw_payload=body,
+            )
             self._record(record)
             LOGGER.info(
                 "http_ingest accepted protocol=%s peer=%s device_id=%s endpoint=%s path=%s",
@@ -363,6 +485,7 @@ class EdgeServerTask:
     async def _handle_mqtt(self, protocol: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer = _peer_name(writer)
         client_id = peer
+        clean_disconnect = False
         try:
             packet_type, _flags, body = await _read_mqtt_packet(reader)
             if packet_type != 1:
@@ -373,11 +496,19 @@ class EdgeServerTask:
             if protocol == "mqtt" and not listener_cfg.get("allow_anonymous") and not connect.get("username"):
                 writer.write(b"\x20\x02\x00\x04")
                 await writer.drain()
-                self._audit("auth_failure", client_id, "MQTT anonymous connection rejected")
+                self._record_event("auth_failure", "error", protocol.upper(), client_id, "", client_id, "MQTT anonymous connection rejected")
                 return
             writer.write(b"\x20\x02\x00\x00")
             await writer.drain()
-            self._upsert_device(client_id, protocol.upper(), "", peer)
+            self._mqtt_sessions[client_id] = {
+                "client_id": client_id,
+                "protocol": protocol.upper(),
+                "peer": peer,
+                "connected_at": _utc_now(),
+                "status": "online",
+            }
+            self._mqtt_client_devices[client_id] = set()
+            LOGGER.info("mqtt_client_connected protocol=%s client_id=%s peer=%s", protocol, client_id, peer)
 
             while True:
                 packet_type, flags, body = await _read_mqtt_packet(reader)
@@ -386,20 +517,24 @@ class EdgeServerTask:
                     matched = self._match_mqtt_topic(protocol, topic)
                     if matched is None:
                         self._buffer["dropped"] += 1
-                        self._audit("error", client_id, f"no MQTT topic filter for {topic}")
+                        self._record_event("route_missing", "warning", protocol.upper(), client_id, topic, client_id, f"No MQTT topic filter for {topic}")
                     else:
                         decoded = _decode_payload(payload, matched.get("payload_type"))
                         device_id = _mqtt_device_id(matched, topic, decoded, client_id)
-                        record = {
-                            "kind": "mqtt",
-                            "protocol": protocol.upper(),
-                            "topic": topic,
-                            "filter": matched.get("topic_filter"),
-                            "device_id": device_id,
-                            "payload": decoded,
-                            "received_at": _utc_now(),
-                            "peer": peer,
-                        }
+                        self._mqtt_client_devices.setdefault(client_id, set()).add(device_id)
+                        record = _message_record(
+                            kind="mqtt",
+                            protocol=protocol.upper(),
+                            device_id=device_id,
+                            identity_source=f"mqtt:{matched.get('device_id_source') or 'topic_segment'}",
+                            source_ip=peer,
+                            route=topic,
+                            endpoint_name=str(matched.get("name") or matched.get("topic_filter") or ""),
+                            payload_type=str(matched.get("payload_type") or "json"),
+                            payload=decoded,
+                            raw_payload=payload,
+                            extra={"client_id": client_id, "topic_filter": matched.get("topic_filter")},
+                        )
                         self._record(record)
                         LOGGER.info(
                             "mqtt_ingest accepted protocol=%s peer=%s client_id=%s device_id=%s topic=%s",
@@ -424,6 +559,7 @@ class EdgeServerTask:
                     writer.write(b"\xd0\x00")
                     await writer.drain()
                 elif packet_type == 14:
+                    clean_disconnect = True
                     return
         except asyncio.IncompleteReadError:
             return
@@ -431,6 +567,12 @@ class EdgeServerTask:
             self._buffer["dropped"] += 1
             self._audit("error", client_id, f"MQTT ingest failed: {exc}")
         finally:
+            if client_id in self._mqtt_sessions:
+                self._mqtt_sessions[client_id]["status"] = "disconnected"
+                self._mqtt_sessions[client_id]["disconnected_at"] = _utc_now()
+            device_ids = sorted(self._mqtt_client_devices.pop(client_id, set()))
+            if client_id != peer:
+                self._record_mqtt_disconnect(client_id, protocol.upper(), peer, clean_disconnect, device_ids)
             writer.close()
             await _wait_closed(writer)
 
@@ -448,20 +590,32 @@ class EdgeServerTask:
         self._records.append(record)
         self._buffer["pending"] += 1
         self._buffer["processed"] += 1
+        if self._storage_enabled:
+            try:
+                record["record_id"], events = self._storage.save_message(record)
+                for event in events:
+                    self._append_event(event)
+            except Exception as exc:
+                self._storage_enabled = False
+                LOGGER.error("storage_save_message_failed error=%s", exc)
         self._upsert_device(
             str(record.get("device_id") or "unknown"),
             str(record.get("protocol") or "unknown"),
-            str(record.get("path") or record.get("topic") or ""),
-            str(record.get("peer") or ""),
+            str(record.get("route") or ""),
+            str(record.get("source_ip") or ""),
         )
 
     def _upsert_device(self, device_id: str, protocol: str, endpoint: str, peer: str) -> None:
+        is_mqtt = protocol.upper() in {"MQTT", "MQTTS"}
         self._devices[device_id] = {
             "device_id": device_id,
             "protocol": protocol,
             "endpoint": endpoint,
             "peer": peer,
             "last_seen": _utc_now(),
+            "online": is_mqtt,
+            "health": "active",
+            "health_label": "Connected" if is_mqtt else "Receiving data",
         }
 
     def _audit(self, event_type: str, source: str, message: str) -> None:
@@ -470,10 +624,104 @@ class EdgeServerTask:
             "source": source,
             "message": message,
             "timestamp": _utc_now(),
+            "severity": _event_severity(event_type),
         }
         self._events.append(event)
         level = logging.ERROR if event_type in {"error", "auth_failure", "outage"} else logging.INFO
         LOGGER.log(level, "audit type=%s source=%s message=%s", event_type, source, message)
+        if self._storage_enabled:
+            try:
+                self._storage.save_event(event)
+            except Exception as exc:
+                self._storage_enabled = False
+                LOGGER.error("storage_save_event_failed error=%s", exc)
+
+    def _append_event(self, event: dict[str, Any]) -> None:
+        self._events.append({
+            "type": event.get("type") or event.get("event_type"),
+            "source": event.get("source") or event.get("device_id"),
+            "message": event.get("message"),
+            "timestamp": event.get("timestamp") or event.get("created_at") or _utc_now(),
+            "severity": event.get("severity") or "info",
+            "protocol": event.get("protocol"),
+            "device_id": event.get("device_id"),
+            "route": event.get("route"),
+        })
+        level = logging.WARNING if event.get("severity") == "warning" else logging.INFO
+        LOGGER.log(
+            level,
+            "event type=%s source=%s message=%s",
+            event.get("type") or event.get("event_type"),
+            event.get("source") or event.get("device_id"),
+            event.get("message"),
+        )
+
+    def _record_mqtt_disconnect(
+        self,
+        client_id: str,
+        protocol: str,
+        peer: str,
+        clean: bool,
+        device_ids: list[str] | None = None,
+    ) -> None:
+        targets = sorted({client_id, *(device_ids or [])})
+        event = {
+            "type": "mqtt_disconnected",
+            "event_type": "mqtt_disconnected",
+            "severity": "info" if clean else "warning",
+            "protocol": protocol,
+            "device_id": client_id,
+            "route": "",
+            "source": client_id,
+            "message": f"MQTT client {'cleanly disconnected' if clean else 'disconnected'}: {client_id}",
+            "timestamp": _utc_now(),
+            "details": {"source_ip": peer, "clean": clean, "device_ids": targets},
+        }
+        for device_id in targets:
+            if device_id in self._devices:
+                self._devices[device_id]["online"] = False
+                self._devices[device_id]["health"] = "disconnected"
+                self._devices[device_id]["health_label"] = "Disconnected"
+                self._devices[device_id]["last_disconnected_at"] = event["timestamp"]
+        if not clean:
+            self._append_event(event)
+        if self._storage_enabled:
+            try:
+                self._storage.mark_mqtt_disconnected(client_id, protocol, peer, clean, targets)
+            except Exception as exc:
+                self._storage_enabled = False
+                LOGGER.error("storage_mqtt_disconnect_failed error=%s", exc)
+
+    def _record_event(
+        self,
+        event_type: str,
+        severity: str,
+        protocol: str,
+        device_id: str,
+        route: str,
+        source: str,
+        message: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        event = {
+            "type": event_type,
+            "event_type": event_type,
+            "severity": severity,
+            "protocol": protocol,
+            "device_id": device_id,
+            "route": route,
+            "source": source,
+            "message": message,
+            "timestamp": _utc_now(),
+            "details": details or {},
+        }
+        self._append_event(event)
+        if self._storage_enabled:
+            try:
+                self._storage.save_event(event)
+            except Exception as exc:
+                self._storage_enabled = False
+                LOGGER.error("storage_record_event_failed error=%s", exc)
 
     def _log_interface_changes(self) -> None:
         parts = []
@@ -510,6 +758,190 @@ def _interfaces() -> dict[str, Any]:
     return result
 
 
+def _filter_export_rows(rows: list[dict[str, Any]], filters: dict[str, Any], *, timestamp_key: str) -> list[dict[str, Any]]:
+    protocol_group = str(filters.get("protocol_group") or "").lower()
+    protocol_set = {"HTTP", "HTTPS"} if protocol_group == "http" else {"MQTT", "MQTTS"} if protocol_group == "mqtt" else None
+    protocol = str(filters.get("protocol") or "").upper()
+    device_id = str(filters.get("device_id") or "")
+    route = str(filters.get("route") or "")
+    event_type = str(filters.get("event_type") or "")
+    severity = str(filters.get("severity") or "")
+    payload_type = str(filters.get("payload_type") or "")
+    from_value = str(filters.get("from") or "")
+    to_value = str(filters.get("to") or "")
+    accepted = filters.get("accepted")
+    accepted_value = None if accepted in (None, "") else _truthy(accepted)
+    limit = _limit(filters.get("limit"))
+    result = []
+    for row in reversed(rows):
+        row_protocol = str(row.get("protocol") or "").upper()
+        row_time = str(row.get(timestamp_key) or row.get("created_at") or "")
+        if protocol_set and row_protocol not in protocol_set:
+            continue
+        if protocol and row_protocol != protocol:
+            continue
+        if device_id and str(row.get("device_id") or "") != device_id:
+            continue
+        if route and str(row.get("route") or "") != route:
+            continue
+        if event_type and str(row.get("event_type") or row.get("type") or "") != event_type:
+            continue
+        if severity and str(row.get("severity") or "") != severity:
+            continue
+        if payload_type and str(row.get("payload_type") or "") != payload_type:
+            continue
+        if accepted_value is not None and bool(row.get("accepted", True)) != accepted_value:
+            continue
+        if from_value and row_time < from_value:
+            continue
+        if to_value and row_time > to_value:
+            continue
+        result.append(row)
+        if len(result) >= limit:
+            break
+    return result
+
+
+def _memory_protocol_devices(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    counts: dict[str, int] = {}
+    for row in rows:
+        device_id = str(row.get("device_id") or "unknown")
+        counts[device_id] = counts.get(device_id, 0) + 1
+        latest[device_id] = row
+    return [
+        {
+            "device_id": device_id,
+            "protocol": row.get("protocol"),
+            "endpoint": row.get("route"),
+            "peer": row.get("source_ip"),
+            "last_seen": row.get("received_at"),
+            "message_count": counts.get(device_id, 0),
+            "health": "active",
+            "health_label": "Connected" if str(row.get("protocol") or "").upper() in {"MQTT", "MQTTS"} else "Receiving data",
+            "anomaly_count": 0,
+        }
+        for device_id, row in latest.items()
+    ][-50:]
+
+
+def _export_memory_message(row: dict[str, Any], *, include_payload: bool) -> dict[str, Any]:
+    item = {
+        "received_at": row.get("received_at"),
+        "protocol": row.get("protocol"),
+        "device_id": row.get("device_id"),
+        "identity_source": row.get("identity_source"),
+        "source_ip": row.get("source_ip"),
+        "route": row.get("route"),
+        "endpoint_name": row.get("endpoint_name"),
+        "payload_type": row.get("payload_type"),
+        "payload_size": row.get("payload_size"),
+        "payload_hash": row.get("payload_hash"),
+        "device_timestamp": row.get("device_timestamp"),
+        "sequence": row.get("sequence"),
+        "accepted": row.get("accepted"),
+        "reject_reason": row.get("reject_reason"),
+        "details_json": row.get("details_json"),
+    }
+    if include_payload:
+        item["payload_json"] = row.get("payload_json")
+        raw = row.get("payload_raw")
+        if raw is not None:
+            item["payload_raw_hex"] = bytes(raw).hex()
+    return item
+
+
+def _export_memory_event(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "created_at": row.get("created_at") or row.get("timestamp"),
+        "severity": row.get("severity"),
+        "event_type": row.get("event_type") or row.get("type"),
+        "protocol": row.get("protocol"),
+        "device_id": row.get("device_id"),
+        "route": row.get("route"),
+        "source": row.get("source"),
+        "message": row.get("message"),
+        "details_json": row.get("details_json") or row.get("details"),
+    }
+
+
+def _limit(value: Any) -> int:
+    try:
+        return max(1, min(100_000, int(value or 1000)))
+    except (TypeError, ValueError):
+        return 1000
+
+
+def _truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "accepted", "include"}
+
+
+def _message_record(
+    *,
+    kind: str,
+    protocol: str,
+    device_id: str,
+    identity_source: str,
+    source_ip: str,
+    route: str,
+    endpoint_name: str,
+    payload_type: str,
+    payload: Any,
+    raw_payload: bytes,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    received_at = _utc_now()
+    record = {
+        "kind": kind,
+        "protocol": protocol,
+        "device_id": device_id or "unknown",
+        "identity_source": identity_source,
+        "source_ip": source_ip,
+        "peer": source_ip,
+        "route": route,
+        "endpoint_name": endpoint_name,
+        "payload_type": payload_type,
+        "payload_size": len(raw_payload),
+        "payload_hash": hashlib.sha256(raw_payload).hexdigest(),
+        "payload": payload,
+        "payload_json": payload if isinstance(payload, (dict, list)) else None,
+        "payload_raw": raw_payload,
+        "device_timestamp": _extract_device_timestamp(payload),
+        "sequence": _extract_sequence(payload),
+        "accepted": True,
+        "reject_reason": None,
+        "received_at": received_at,
+        "details_json": extra or {},
+    }
+    if kind == "http":
+        record["path"] = route
+        record["endpoint"] = endpoint_name
+    elif kind == "mqtt":
+        record["topic"] = route
+        record["filter"] = (extra or {}).get("topic_filter")
+    return record
+
+
+def _extract_sequence(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    for key in ("sequence", "seq", "message_id", "msg_id", "counter", "count"):
+        value = payload.get(key)
+        if value is not None:
+            return str(value)
+    return None
+
+
+def _extract_device_timestamp(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    for key in ("timestamp", "time", "ts", "created_at", "sent_at", "device_timestamp"):
+        value = payload.get(key)
+        if value is not None:
+            return str(value)
+    return None
+
+
 def _resolve_bind_hosts(listeners: dict[str, Any], interfaces: dict[str, Any]) -> list[str]:
     selected = listeners.get("bind_interfaces")
     allowed = {"eth0", "eth1", "wlan0", "wwan0"}
@@ -536,6 +968,24 @@ def _server_id(listener_name: str, host: str) -> str:
 
 def _default_port(name: str) -> int:
     return {"http": 8080, "https": 8443, "mqtt": 1883, "mqtts": 8883}[name]
+
+
+def _event_severity(event_type: str) -> str:
+    if event_type in {"error", "auth_failure", "outage", "storage_error"}:
+        return "error"
+    if event_type in {
+        "route_missing",
+        "message_gap",
+        "rate_slowdown",
+        "payload_size_change",
+        "sequence_duplicate",
+        "sequence_out_of_order",
+        "device_clock_drift",
+        "device_timestamp_stale",
+        "mqtt_disconnected",
+    }:
+        return "warning"
+    return "info"
 
 
 def _parse_headers(lines: list[str]) -> dict[str, str]:

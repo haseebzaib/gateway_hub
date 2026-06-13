@@ -6086,6 +6086,155 @@ document.addEventListener("DOMContentLoaded", () => {
             esRenderAll();
         };
 
+        const esSetText = (selector, value) => {
+            const el = edgeShell.querySelector(selector);
+            if (el) el.textContent = value;
+        };
+
+        const esShortTime = (value) => {
+            if (!value) return "";
+            const date = new Date(String(value).replace("Z", "+00:00"));
+            return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleTimeString();
+        };
+
+        const esAge = (value) => {
+            if (!value) return "not seen";
+            const date = new Date(String(value).replace("Z", "+00:00"));
+            if (Number.isNaN(date.getTime())) return String(value);
+            const seconds = Math.max(0, Math.round((Date.now() - date.getTime()) / 1000));
+            if (seconds < 60) return `${seconds}s ago`;
+            if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+            if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+            return `${Math.floor(seconds / 86400)}d ago`;
+        };
+
+        const esRenderBars = (selector, emptySelector, rows) => {
+            const wrap = edgeShell.querySelector(selector);
+            const empty = edgeShell.querySelector(emptySelector);
+            const items = Array.isArray(rows) ? rows : [];
+            if (empty) empty.classList.toggle("es-hidden", items.length > 0);
+            if (!wrap) return;
+            const max = Math.max(1, ...items.map((row) => Number(row.count || 0)));
+            wrap.innerHTML = items.map((row) => {
+                const count = Number(row.count || 0);
+                const pct = Math.max(4, Math.round((count / max) * 100));
+                return `
+                    <div class="es-chart-bar">
+                        <span>${esEsc(String(row.minute || "").slice(11, 16) || row.minute || "")}</span>
+                        <div class="es-chart-track"><div class="es-chart-fill" style="width:${pct}%"></div></div>
+                        <strong>${count}</strong>
+                    </div>`;
+            }).join("");
+        };
+
+        const esRenderRoutes = (selector, emptySelector, rows) => {
+            const wrap = edgeShell.querySelector(selector);
+            const empty = edgeShell.querySelector(emptySelector);
+            const items = Array.isArray(rows) ? rows : [];
+            if (empty) empty.classList.toggle("es-hidden", items.length > 0);
+            if (!wrap) return;
+            wrap.innerHTML = items.map((row) => `
+                <div class="es-route-row">
+                    <strong>${esEsc(row.route || "unknown")}</strong>
+                    <span>${Number(row.count || 0).toLocaleString()}</span>
+                    <small>${Number(row.devices || 0).toLocaleString()} devices</small>
+                    <em>${esEsc(esShortTime(row.last_seen))}</em>
+                </div>
+            `).join("");
+        };
+
+        const esRenderMessages = (selector, emptySelector, rows) => {
+            const wrap = edgeShell.querySelector(selector);
+            const empty = edgeShell.querySelector(emptySelector);
+            const items = Array.isArray(rows) ? rows : [];
+            if (empty) empty.classList.toggle("es-hidden", items.length > 0);
+            if (!wrap) return;
+            wrap.innerHTML = items.map((row) => `
+                <div class="es-message-row">
+                    <span>${esEsc(row.protocol || "")}</span>
+                    <strong>${esEsc(row.device_id || "unknown")}</strong>
+                    <small>${esEsc(row.route || "")}</small>
+                    <em>${Number(row.payload_size || 0).toLocaleString()} B</em>
+                    <em>${esEsc(esShortTime(row.received_at))}</em>
+                </div>
+            `).join("");
+        };
+
+        const esRenderProtocolDevices = (selector, emptySelector, rows, group) => {
+            const wrap = edgeShell.querySelector(selector);
+            const empty = edgeShell.querySelector(emptySelector);
+            const items = Array.isArray(rows) ? rows : [];
+            if (empty) empty.classList.toggle("es-hidden", items.length > 0);
+            if (!wrap) return;
+            wrap.innerHTML = items.map((device) => {
+                const health = device.health || (device.online ? "active" : group === "mqtt" ? "disconnected" : "recent");
+                const label = device.health_label || (
+                    group === "mqtt"
+                        ? (device.online ? "Connected" : "Disconnected")
+                        : (health === "active" ? "Receiving data" : "Recently seen")
+                );
+                const routeLabel = group === "http" ? "Path" : "Topic";
+                const count = Number(device.message_count || 0).toLocaleString();
+                const anomalies = Number(device.anomaly_count || 0);
+                return `
+                    <div class="es-device-row es-device-row-health is-${esEsc(health)}">
+                        <strong>${esEsc(device.device_id || "unknown")}</strong>
+                        <span>${esEsc(label)}</span>
+                        <small>${routeLabel}: ${esEsc(device.endpoint || device.last_route || "unknown")} · ${count} message${count === "1" ? "" : "s"}${anomalies ? ` · ${anomalies} alerts` : ""}</small>
+                        <em>${esEsc(esAge(device.last_seen))}</em>
+                    </div>`;
+            }).join("");
+        };
+
+        const esRefreshProtocolMetrics = async (group) => {
+            try {
+                const response = await fetch(`/api/edge-server/${group}/metrics`);
+                const data = await response.json();
+                const prefix = group === "http" ? "http" : "mqtt";
+                esSetText(`[data-es-${prefix}-total]`, Number(data.total_messages || 0).toLocaleString());
+                esSetText(`[data-es-${prefix}-devices]`, Number(data.device_count || 0).toLocaleString());
+                esSetText(`[data-es-${prefix}-missing]`, Number(data.route_missing || 0).toLocaleString());
+                esSetText(`[data-es-${prefix}-auth-fail]`, Number(data.auth_failures || 0).toLocaleString());
+                const routeLabel = group === "http" ? "paths with traffic" : "topics with traffic";
+                esSetText(`[data-es-${prefix}-route-count]`, `${(data.routes || []).length} ${routeLabel}`);
+                esRenderBars(`[data-es-${prefix}-chart]`, `[data-es-${prefix}-chart-empty]`, data.minute_series || []);
+                esRenderRoutes(`[data-es-${prefix}-routes]`, `[data-es-${prefix}-routes-empty]`, data.routes || []);
+                esRenderProtocolDevices(`[data-es-${prefix}-devices-list]`, `[data-es-${prefix}-devices-empty]`, data.devices || [], group);
+                esRenderMessages(`[data-es-${prefix}-recent]`, `[data-es-${prefix}-recent-empty]`, data.recent_messages || []);
+            } catch (error) {
+                console.warn(`[Edge Server] ${group} metrics fetch failed:`, error);
+            }
+        };
+
+        const esRefreshAlerts = async () => {
+            try {
+                const response = await fetch("/api/edge-server/alerts");
+                const data = await response.json();
+                const summary = data.summary || {};
+                const events = data.events || [];
+                esSetText("[data-es-alert-total]", Number(summary.total || 0).toLocaleString());
+                esSetText("[data-es-alert-warning]", Number(summary.warning || 0).toLocaleString());
+                esSetText("[data-es-alert-error]", Number(summary.error || 0).toLocaleString());
+                esSetText("[data-es-alert-critical]", Number(summary.critical || 0).toLocaleString());
+                esSetText("[data-es-alert-summary]", `${Number(summary.total || 0).toLocaleString()} alerts`);
+                const list = edgeShell.querySelector("[data-es-alert-list]");
+                const empty = edgeShell.querySelector("[data-es-alert-empty]");
+                if (empty) empty.classList.toggle("es-hidden", events.length > 0);
+                if (list) {
+                    list.innerHTML = events.map((event) => `
+                        <div class="es-audit-row">
+                            <strong>${esEsc(event.event_type || event.type || "event")}</strong>
+                            <span>${esEsc(event.severity || "info")}</span>
+                            <small>${esEsc(event.message || "")}</small>
+                            <em>${esEsc(esShortTime(event.created_at || event.timestamp))}</em>
+                        </div>
+                    `).join("");
+                }
+            } catch (error) {
+                console.warn("[Edge Server] alerts fetch failed:", error);
+            }
+        };
+
         const esRefreshStatus = async () => {
             try {
                 const response = await fetch("/api/edge-server/status");
@@ -6138,30 +6287,26 @@ document.addEventListener("DOMContentLoaded", () => {
                                 : "No listeners enabled";
                 }
                 if (liveDevices) liveDevices.textContent = status.connected_devices ?? devices.length ?? 0;
-                if (liveBuffered) liveBuffered.textContent = buffer.pending ?? 0;
+                if (liveBuffered) liveBuffered.textContent = Number(status.stored_records || 0).toLocaleString();
                 if (liveEvents) liveEvents.textContent = audit.total ?? 0;
 
-                const setText = (selector, value) => {
-                    const el = edgeShell.querySelector(selector);
-                    if (el) el.textContent = value;
-                };
-                setText("[data-es-buffer-pending]", buffer.pending ?? 0);
-                setText("[data-es-buffer-processed]", buffer.processed ?? 0);
-                setText("[data-es-buffer-forwarded]", buffer.forwarded ?? 0);
-                setText("[data-es-buffer-dropped]", buffer.dropped ?? 0);
-                setText("[data-es-device-count]", `${devices.length} device${devices.length === 1 ? "" : "s"}`);
-                setText("[data-es-audit-summary]", `${audit.outages ?? 0} outages · ${audit.errors ?? 0} errors · ${audit.auth_failures ?? 0} auth failures`);
+                esSetText("[data-es-buffer-pending]", buffer.pending ?? 0);
+                esSetText("[data-es-buffer-processed]", buffer.processed ?? 0);
+                esSetText("[data-es-buffer-forwarded]", buffer.forwarded ?? 0);
+                esSetText("[data-es-buffer-dropped]", buffer.dropped ?? 0);
+                esSetText("[data-es-device-count]", `${devices.length} device${devices.length === 1 ? "" : "s"}`);
+                esSetText("[data-es-audit-summary]", `${audit.outages ?? 0} outages · ${audit.errors ?? 0} errors · ${audit.auth_failures ?? 0} auth failures`);
 
                 const deviceList = edgeShell.querySelector("[data-es-device-list]");
                 const deviceEmpty = edgeShell.querySelector("[data-es-device-empty]");
                 if (deviceEmpty) deviceEmpty.classList.toggle("es-hidden", devices.length > 0);
                 if (deviceList) {
                     deviceList.innerHTML = devices.map((device) => `
-                        <div class="es-device-row">
+                        <div class="es-device-row es-device-row-health is-${esEsc(device.health || "active")}">
                             <strong>${esEsc(device.device_id || "unknown")}</strong>
-                            <span>${esEsc(device.protocol || "unknown")}</span>
+                            <span>${esEsc(device.health_label || device.protocol || "Receiving")}</span>
                             <small>${esEsc(device.endpoint || device.topic || "")}</small>
-                            <em>${esEsc(device.last_seen || "not seen")}</em>
+                            <em>${esEsc(esAge(device.last_seen))}</em>
                         </div>
                     `).join("");
                 }
@@ -6281,8 +6426,18 @@ document.addEventListener("DOMContentLoaded", () => {
         document.querySelectorAll("[data-es-save]").forEach((btn) => btn.addEventListener("click", esSaveConfig));
         edgeShell.querySelector("[data-es-save-certs]")?.addEventListener("click", esSaveCertificates);
 
-        esLoad().then(esRefreshStatus);
+        const esRefreshAllRuntime = async () => {
+            await esRefreshStatus();
+            await esRefreshProtocolMetrics("http");
+            await esRefreshProtocolMetrics("mqtt");
+            await esRefreshAlerts();
+        };
+
+        esLoad().then(esRefreshAllRuntime);
         window.setInterval(esRefreshStatus, 6000);
+        window.setInterval(() => esRefreshProtocolMetrics("http"), 8000);
+        window.setInterval(() => esRefreshProtocolMetrics("mqtt"), 8000);
+        window.setInterval(esRefreshAlerts, 10000);
     }
 
 });
