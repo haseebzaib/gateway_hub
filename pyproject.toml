@@ -14,3 +14,13 @@ dependencies = [
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["gateway_edge_server*", "gateway_ipc*", "web_console*"]
+
+[tool.setuptools.package-data]
+web_console = [
+    "templates/*.html",
+    "static/css/*.css",
+    "static/js/*.js",
+]

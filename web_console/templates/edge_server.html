@@ -1,0 +1,435 @@
+{% extends "console_layout.html" %}
+
+{% block page_eyebrow %}Inbound Services{% endblock %}
+{% block page_title %}Edge Server{% endblock %}
+
+{% block page_actions %}
+<button type="button" class="ghost-action" data-es-save>Save Configuration</button>
+{% endblock %}
+
+{% block console_content %}
+<section class="es-shell" data-edge-server-shell>
+
+    <div class="es-status-strip">
+        <span><strong data-es-state>Standby</strong><small data-es-message>Configuration ready</small></span>
+        <span><strong data-es-http-count>0</strong><small>HTTP routes</small></span>
+        <span><strong data-es-mqtt-count>0</strong><small>MQTT topics</small></span>
+        <span><strong data-es-stored>0</strong><small>stored records</small></span>
+    </div>
+
+    <div class="system-tabs es-tabs" role="tablist" aria-label="Edge Server sections">
+        <button type="button" class="system-tab is-current" data-es-tab="status" role="tab" aria-selected="true">Live Status</button>
+        <button type="button" class="system-tab" data-es-tab="listeners" role="tab" aria-selected="false">Listeners</button>
+        <button type="button" class="system-tab" data-es-tab="http" role="tab" aria-selected="false">HTTP Endpoints</button>
+        <button type="button" class="system-tab" data-es-tab="mqtt" role="tab" aria-selected="false">MQTT Topics</button>
+        <button type="button" class="system-tab" data-es-tab="storage" role="tab" aria-selected="false">Storage &amp; Routing</button>
+    </div>
+
+    <div class="es-panel" data-es-panel="status">
+        <div class="es-section-head">
+            <div>
+                <h2>Live Status</h2>
+                <p>Inbound listener health, connected devices, local buffer, and server-side events.</p>
+            </div>
+            <span class="es-save-msg" data-es-status-ts></span>
+        </div>
+
+        <div class="es-live-grid">
+            <article class="es-live-card">
+                <span class="es-kicker">Inbound Services</span>
+                <strong data-es-live-services>0</strong>
+                <p data-es-live-services-detail>No listeners enabled</p>
+            </article>
+            <article class="es-live-card">
+                <span class="es-kicker">Connected Devices</span>
+                <strong data-es-live-devices>0</strong>
+                <p>HTTP clients and MQTT sessions</p>
+            </article>
+            <article class="es-live-card">
+                <span class="es-kicker">Buffered Messages</span>
+                <strong data-es-live-buffered>0</strong>
+                <p>Stored locally before processing</p>
+            </article>
+            <article class="es-live-card">
+                <span class="es-kicker">Audit Events</span>
+                <strong data-es-live-events>0</strong>
+                <p>Outages, errors, auth failures</p>
+            </article>
+        </div>
+
+        <div class="es-live-panels">
+            <section class="es-live-panel">
+                <div class="es-live-panel-head">
+                    <strong>Message Buffer</strong>
+                    <span>SQLCipher store</span>
+                </div>
+                <div class="es-buffer-grid">
+                    <span><strong data-es-buffer-pending>0</strong><small>Pending anomaly pipeline</small></span>
+                    <span><strong data-es-buffer-processed>0</strong><small>Processed this session</small></span>
+                    <span><strong data-es-buffer-forwarded>0</strong><small>Forwarded upstream</small></span>
+                    <span><strong data-es-buffer-dropped>0</strong><small>Dropped / rejected</small></span>
+                </div>
+            </section>
+
+            <section class="es-live-panel">
+                <div class="es-live-panel-head">
+                    <strong>Device Connections</strong>
+                    <span data-es-device-count>0 devices</span>
+                </div>
+                <div class="es-device-list" data-es-device-list></div>
+                <div class="es-empty-line" data-es-device-empty>No device sessions yet.</div>
+            </section>
+
+            <section class="es-live-panel es-live-panel-wide">
+                <div class="es-live-panel-head">
+                    <strong>Outage &amp; Error Audit</strong>
+                    <span data-es-audit-summary>No events</span>
+                </div>
+                <div class="es-audit-list" data-es-audit-list></div>
+                <div class="es-empty-line" data-es-audit-empty>No outages or errors recorded.</div>
+            </section>
+        </div>
+    </div>
+
+    <div class="es-panel is-hidden" data-es-panel="listeners">
+        <div class="es-section-head">
+            <div>
+                <h2>Listener Settings</h2>
+                <p>These settings define where devices can connect to the gateway.</p>
+            </div>
+            <span class="es-save-msg" data-es-save-msg></span>
+        </div>
+
+        <div class="es-listener-grid es-listener-grid-compact">
+            <div class="fw-field es-bind-field">
+                <span class="fw-label">Listen On</span>
+                <div class="es-bind-options">
+                    <label class="es-check-row">
+                        <input type="checkbox" value="eth0" data-es-bind-interface>
+                        <span>eth0</span>
+                    </label>
+                    <label class="es-check-row">
+                        <input type="checkbox" value="eth1" data-es-bind-interface>
+                        <span>eth1</span>
+                    </label>
+                    <label class="es-check-row">
+                        <input type="checkbox" value="wlan0" data-es-bind-interface>
+                        <span>Wi-Fi</span>
+                    </label>
+                    <label class="es-check-row">
+                        <input type="checkbox" value="wwan0" data-es-bind-interface>
+                        <span>Modem</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="es-listener-card" data-es-listener="http">
+                <div class="es-listener-top">
+                    <strong>HTTP</strong>
+                    <button type="button" class="fw-toggle-btn" data-es-listener-enabled="http">OFF</button>
+                </div>
+                <label class="fw-field">
+                    <span class="fw-label">Port</span>
+                    <input class="fw-input" type="number" min="1" max="65535" data-es-port="http">
+                </label>
+                <p class="es-listener-note">Plain HTTP for trusted local networks or testing.</p>
+            </div>
+
+            <div class="es-listener-card" data-es-listener="https">
+                <div class="es-listener-top">
+                    <strong>HTTPS</strong>
+                    <button type="button" class="fw-toggle-btn" data-es-listener-enabled="https">OFF</button>
+                </div>
+                <div class="es-listener-fields">
+                    <label class="fw-field">
+                        <span class="fw-label">Port</span>
+                        <input class="fw-input" type="number" min="1" max="65535" data-es-port="https">
+                    </label>
+                    <label class="es-check-row">
+                        <input type="checkbox" data-es-mtls="https">
+                        <span>Require mTLS</span>
+                    </label>
+                </div>
+                <p class="es-listener-note">Without mTLS, HTTPS encrypts traffic and devices authenticate by token/header. With mTLS, devices must also present a trusted client certificate.</p>
+            </div>
+
+            <div class="es-listener-card" data-es-listener="mqtt">
+                <div class="es-listener-top">
+                    <strong>MQTT</strong>
+                    <button type="button" class="fw-toggle-btn" data-es-listener-enabled="mqtt">OFF</button>
+                </div>
+                <div class="es-listener-fields">
+                    <label class="fw-field">
+                        <span class="fw-label">Port</span>
+                        <input class="fw-input" type="number" min="1" max="65535" data-es-port="mqtt">
+                    </label>
+                    <label class="es-check-row">
+                        <input type="checkbox" data-es-anonymous>
+                        <span>Allow anonymous clients</span>
+                    </label>
+                </div>
+                <p class="es-listener-note">Plain MQTT listener. Disable anonymous clients when devices use credentials.</p>
+            </div>
+
+            <div class="es-listener-card" data-es-listener="mqtts">
+                <div class="es-listener-top">
+                    <strong>MQTTS</strong>
+                    <button type="button" class="fw-toggle-btn" data-es-listener-enabled="mqtts">OFF</button>
+                </div>
+                <div class="es-listener-fields">
+                    <label class="fw-field">
+                        <span class="fw-label">Port</span>
+                        <input class="fw-input" type="number" min="1" max="65535" data-es-port="mqtts">
+                    </label>
+                    <label class="es-check-row">
+                        <input type="checkbox" data-es-mtls="mqtts">
+                        <span>Require mTLS</span>
+                    </label>
+                </div>
+                <p class="es-listener-note">MQTT over TLS. Without mTLS, clients use encrypted transport plus MQTT credentials. With mTLS, client certificates are required.</p>
+            </div>
+        </div>
+
+        <div class="es-tls-panel">
+            <div class="es-tls-head">
+                <div>
+                    <h3>TLS / mTLS Certificates</h3>
+                    <p>Add the certificates used by HTTPS and MQTTS. Empty fields keep the current installed value.</p>
+                </div>
+                <span class="es-save-msg" data-es-cert-msg></span>
+            </div>
+            <div class="es-cert-summary">
+                <span><strong>Server Certificate</strong><small data-es-cert-status="server_cert">Not installed</small></span>
+                <span><strong>Server Private Key</strong><small data-es-cert-status="server_key">Not installed</small></span>
+                <span><strong>Client CA</strong><small data-es-cert-status="client_ca">Not installed</small></span>
+            </div>
+            <div class="es-cert-form">
+                <label class="fw-field">
+                    <span class="fw-label">Server Certificate</span>
+                    <input class="es-cert-file" type="file" data-es-cert-file="server_cert" accept=".pem,.crt,.cer">
+                    <textarea class="fw-input es-cert-input" data-es-cert-input="server_cert" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+                </label>
+                <label class="fw-field">
+                    <span class="fw-label">Server Private Key</span>
+                    <input class="es-cert-file" type="file" data-es-cert-file="server_key" accept=".pem,.key">
+                    <textarea class="fw-input es-cert-input" data-es-cert-input="server_key" spellcheck="false" placeholder="-----BEGIN PRIVATE KEY-----"></textarea>
+                </label>
+                <label class="fw-field">
+                    <span class="fw-label">Client CA for mTLS</span>
+                    <input class="es-cert-file" type="file" data-es-cert-file="client_ca" accept=".pem,.crt,.cer,.ca">
+                    <textarea class="fw-input es-cert-input" data-es-cert-input="client_ca" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+                </label>
+            </div>
+            <div class="es-form-actions">
+                <button type="button" class="fw-btn-save" data-es-save-certs>Save Certificates</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="es-panel is-hidden" data-es-panel="http">
+        <div class="es-section-head">
+            <div>
+                <h2>HTTP / HTTPS Endpoints</h2>
+                <p>Devices can POST telemetry, events, alarms, or custom payloads to these paths.</p>
+            </div>
+            <button type="button" class="ghost-action" data-es-add-http>+ Add Endpoint</button>
+        </div>
+
+        <div class="es-form es-hidden" data-es-http-form>
+            <div class="es-form-grid">
+                <label class="fw-field">
+                    <span class="fw-label">Name</span>
+                    <input class="fw-input" data-es-http-name maxlength="64" placeholder="Air quality ingest">
+                </label>
+                <label class="fw-field">
+                    <span class="fw-label">Protocol</span>
+                    <select class="fw-select" data-es-http-protocol>
+                        <option value="http">HTTP</option>
+                        <option value="https">HTTPS</option>
+                    </select>
+                </label>
+                <label class="fw-field">
+                    <span class="fw-label">Method</span>
+                    <select class="fw-select" data-es-http-method>
+                        <option value="POST">POST</option>
+                        <option value="PUT">PUT</option>
+                    </select>
+                </label>
+                <label class="fw-field fw-field-lg">
+                    <span class="fw-label">Path</span>
+                    <input class="fw-input" data-es-http-path maxlength="160" placeholder="/devices/air-quality">
+                </label>
+                <label class="fw-field">
+                    <span class="fw-label">Auth</span>
+                    <select class="fw-select" data-es-http-auth>
+                        <option value="none">None</option>
+                        <option value="token">Bearer token</option>
+                        <option value="mtls">mTLS identity</option>
+                    </select>
+                </label>
+                <label class="fw-field">
+                    <span class="fw-label">Payload</span>
+                    <select class="fw-select" data-es-http-payload>
+                        <option value="json">JSON</option>
+                        <option value="raw">Raw body</option>
+                        <option value="form">Form data</option>
+                    </select>
+                </label>
+                <label class="fw-field">
+                    <span class="fw-label">Device ID Source</span>
+                    <select class="fw-select" data-es-http-device-source>
+                        <option value="payload">Payload field</option>
+                        <option value="header">HTTP header</option>
+                        <option value="path">Path segment</option>
+                        <option value="fixed">Fixed mapping</option>
+                    </select>
+                </label>
+                <label class="fw-field">
+                    <span class="fw-label">Device ID Key</span>
+                    <input class="fw-input" data-es-http-device-key maxlength="80" placeholder="device_id">
+                </label>
+                <label class="fw-field">
+                    <span class="fw-label">Pipeline</span>
+                    <select class="fw-select" data-es-http-forwarding></select>
+                </label>
+            </div>
+            <div class="es-field-help">
+                <span><strong>Protocol</strong> selects the listener. HTTPS uses TLS and requires the HTTPS listener to be enabled; mTLS can additionally verify device certificates.</span>
+                <span><strong>Method</strong> POST records new telemetry/events. PUT is for devices that update one current state object.</span>
+                <span><strong>Path</strong> is one URL route for this endpoint. Add another endpoint later when another path is needed.</span>
+                <span><strong>Payload</strong> JSON is parsed into fields, raw is stored as bytes/text, form reads key-value fields.</span>
+                <span><strong>Device ID source</strong> chooses where the gateway gets the device identity: payload field, header, path segment, or fixed value.</span>
+                <span><strong>Pipeline</strong> stores first, runs anomaly detection, then forwards only when a Data Forwarding profile is selected.</span>
+            </div>
+            <a class="es-forwarding-link" href="/forwarding">Configure Data Forwarding profiles</a>
+            <div class="es-form-actions">
+                <button type="button" class="fw-btn-cancel" data-es-cancel-http>Cancel</button>
+                <button type="button" class="fw-btn-save" data-es-save-http>Save Endpoint</button>
+            </div>
+        </div>
+
+        <div class="es-list" data-es-http-list></div>
+        <div class="fw-empty ov-hidden" data-es-http-empty>
+            <h3 class="fw-empty-title">No HTTP endpoints</h3>
+            <p class="fw-empty-desc">Add a route that devices can call on the gateway.</p>
+            <button class="fw-empty-action" data-es-add-http>+ Add endpoint</button>
+        </div>
+    </div>
+
+    <div class="es-panel is-hidden" data-es-panel="mqtt">
+        <div class="es-section-head">
+            <div>
+                <h2>MQTT / MQTTS Topics</h2>
+                <p>Devices publish to configured topic filters. The gateway stores and routes messages.</p>
+            </div>
+            <button type="button" class="ghost-action" data-es-add-mqtt>+ Add Topic</button>
+        </div>
+
+        <div class="es-form es-hidden" data-es-mqtt-form>
+            <div class="es-form-grid">
+                <label class="fw-field">
+                    <span class="fw-label">Name</span>
+                    <input class="fw-input" data-es-mqtt-name maxlength="64" placeholder="Factory telemetry">
+                </label>
+                <label class="fw-field">
+                    <span class="fw-label">Protocol</span>
+                    <select class="fw-select" data-es-mqtt-protocol>
+                        <option value="mqtt">MQTT</option>
+                        <option value="mqtts">MQTTS</option>
+                    </select>
+                </label>
+                <label class="fw-field fw-field-lg">
+                    <span class="fw-label">Topic Filter</span>
+                    <input class="fw-input" data-es-mqtt-topic maxlength="180" placeholder="devices/+/data">
+                </label>
+                <label class="fw-field">
+                    <span class="fw-label">QoS</span>
+                    <select class="fw-select" data-es-mqtt-qos>
+                        <option value="0">0</option>
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                    </select>
+                </label>
+                <label class="fw-field">
+                    <span class="fw-label">Payload</span>
+                    <select class="fw-select" data-es-mqtt-payload>
+                        <option value="json">JSON</option>
+                        <option value="raw">Raw payload</option>
+                    </select>
+                </label>
+                <label class="fw-field">
+                    <span class="fw-label">Device ID Source</span>
+                    <select class="fw-select" data-es-mqtt-device-source>
+                        <option value="topic_segment">Topic segment</option>
+                        <option value="payload">Payload field</option>
+                        <option value="client_id">Client ID</option>
+                        <option value="fixed">Fixed mapping</option>
+                    </select>
+                </label>
+                <label class="fw-field">
+                    <span class="fw-label">Device ID Key</span>
+                    <input class="fw-input" data-es-mqtt-device-key maxlength="80" placeholder="1">
+                </label>
+                <label class="fw-field">
+                    <span class="fw-label">Pipeline</span>
+                    <select class="fw-select" data-es-mqtt-forwarding></select>
+                </label>
+            </div>
+            <div class="es-field-help">
+                <span><strong>Protocol</strong> MQTT is plain broker traffic. MQTTS uses TLS and requires the MQTTS listener to be enabled.</span>
+                <span><strong>Topic filter</strong> is one subscription pattern devices publish to, such as <code>devices/+/data</code>.</span>
+                <span><strong>QoS</strong> controls MQTT delivery guarantee from device to gateway.</span>
+                <span><strong>Payload</strong> JSON is parsed into fields; raw stores the original payload.</span>
+                <span><strong>Device ID source</strong> maps messages using a topic segment, payload field, client ID, or fixed value.</span>
+                <span><strong>Pipeline</strong> stores first, runs anomaly detection, then forwards only when a Data Forwarding profile is selected.</span>
+            </div>
+            <a class="es-forwarding-link" href="/forwarding">Configure Data Forwarding profiles</a>
+            <div class="es-form-actions">
+                <button type="button" class="fw-btn-cancel" data-es-cancel-mqtt>Cancel</button>
+                <button type="button" class="fw-btn-save" data-es-save-mqtt>Save Topic</button>
+            </div>
+        </div>
+
+        <div class="es-list" data-es-mqtt-list></div>
+        <div class="fw-empty ov-hidden" data-es-mqtt-empty>
+            <h3 class="fw-empty-title">No MQTT topics</h3>
+            <p class="fw-empty-desc">Add a topic filter that devices can publish to.</p>
+            <button class="fw-empty-action" data-es-add-mqtt>+ Add topic</button>
+        </div>
+    </div>
+
+    <div class="es-panel is-hidden" data-es-panel="storage">
+        <div class="es-section-head">
+            <div>
+                <h2>Storage &amp; Routing</h2>
+                <p>Inbound data is stored first, then routed to a forwarding profile when available.</p>
+            </div>
+        </div>
+
+        <div class="es-storage-grid">
+            <label class="es-check-card">
+                <input type="checkbox" data-es-storage-enabled>
+                <span>
+                    <strong>Store inbound records</strong>
+                    <small>Keep device payloads locally before forwarding.</small>
+                </span>
+            </label>
+            <label class="fw-field">
+                <span class="fw-label">Retention Days</span>
+                <input class="fw-input" type="number" min="1" max="3650" data-es-retention-days>
+            </label>
+            <label class="fw-field">
+                <span class="fw-label">Max Store Size (MB)</span>
+                <input class="fw-input" type="number" min="64" max="1048576" data-es-max-size>
+            </label>
+        </div>
+
+        <div class="es-pipeline-note">
+            <span>Inbound payload</span>
+            <span>Local SQLCipher store</span>
+            <span>Anomaly detection</span>
+            <span>Optional forwarding profile</span>
+        </div>
+    </div>
+</section>
+{% endblock %}

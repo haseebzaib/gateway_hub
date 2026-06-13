@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import secrets
 import time
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -16,6 +18,14 @@ from fastapi.templating import Jinja2Templates
 from gateway_ipc import build_config_message, encode_message
 
 
+LOGGER = logging.getLogger("edge_server")
+LOGGER.setLevel(logging.INFO)
+if not LOGGER.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(levelname)s edge_server %(message)s"))
+    LOGGER.addHandler(_handler)
+LOGGER.propagate = False
+
 router = APIRouter()
 PACKAGE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(PACKAGE_DIR / "templates"))
@@ -24,6 +34,7 @@ GATEWAY_ID = "metacrust_v2_dev"
 DEFAULT_USERNAME = "gateway"
 DEFAULT_PASSWORD = "gateway"
 SENSOR_CONFIG_STORAGE_DIR = Path(os.environ.get("GATEWAY_SENSOR_CONFIG_DIR", "/opt/metacrust/sensorconfigs"))
+EDGE_SERVER_CONFIG_PATH = Path(os.environ.get("GATEWAY_EDGE_SERVER_CONFIG_PATH", "/opt/metacrust/config/edge_server/config.json"))
 SENSOR_CONFIG_FILES = {
     "rs232": "rs232.json",
     "rs485": "rs485.json",
@@ -128,6 +139,17 @@ def load_saved_sensor_configs() -> list[str]:
     return loaded
 
 
+def load_saved_edge_server_config() -> dict[str, Any]:
+    try:
+        loaded = _load_edge_server_config()
+    except Exception as exc:
+        LOGGER.exception("config_load failed error=%s", exc)
+        loaded = None
+    if loaded is not None:
+        CONFIGS["edge_server"] = loaded
+    return CONFIGS["edge_server"]
+
+
 async def send_saved_sensor_configs_to_core(ipc: object, config_names: list[str] | None = None) -> list[dict[str, object]]:
     names = config_names or list(SENSOR_CONFIG_FILES)
     results: list[dict[str, object]] = []
@@ -143,6 +165,7 @@ def _primary_sections(active_label: str) -> list[dict[str, object]]:
         ("Insights", "Info", "/insights"),
         ("Interfaces", "I/O", "/interfaces"),
         ("Data Forwarding", "Fwd", "/forwarding"),
+        ("Edge Server", "Srv", "/edge-server"),
         ("Connectivity", "Conn", "/connectivity"),
         ("System", "Sys", "/system"),
     ]
@@ -414,12 +437,37 @@ def _default_modbus_tcp_config() -> dict[str, Any]:
     return {"version": 1, "max_connections": 10, "connections": []}
 
 
+def _default_edge_server_config() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "listeners": {
+            "bind_mode": "interfaces",
+            "bind_interfaces": ["eth0", "eth1", "wlan0", "wwan0"],
+            "http": {"enabled": False, "port": 8080},
+            "https": {"enabled": False, "port": 8443, "tls_mode": "server", "mtls_required": False},
+            "mqtt": {"enabled": False, "port": 1883, "allow_anonymous": False},
+            "mqtts": {"enabled": False, "port": 8883, "tls_mode": "server", "mtls_required": False},
+        },
+        "http_endpoints": [],
+        "mqtt_topics": [],
+        "storage": {"enabled": True, "retention_days": 30, "max_size_mb": 1024},
+        "tls": {
+            "use_secrets": True,
+            "secrets_dir": "/opt/metacrust/secrets/edge_server",
+            "server_cert": "server.crt",
+            "server_key": "server.key",
+            "client_ca": "client-ca.crt",
+        },
+    }
+
+
 CONFIGS: dict[str, dict[str, Any]] = {
     "network": _network_settings(),
     "rs232": _default_rs232_config(),
     "rs485": _default_rs485_config(),
     "modbus_tcp": _default_modbus_tcp_config(),
     "forwarding": {"version": 2, "profiles": []},
+    "edge_server": _default_edge_server_config(),
 }
 
 ALERT_RULES: list[dict[str, Any]] = []
@@ -455,6 +503,176 @@ def _normalise_forwarding_config(payload: dict[str, Any]) -> dict[str, Any]:
             profile.pop("mqtt", None)
         profiles.append(profile)
     return {"version": 2, "profiles": profiles[:6]}
+
+
+def _normalise_edge_server_config(payload: dict[str, Any]) -> dict[str, Any]:
+    defaults = _default_edge_server_config()
+    raw_listeners = dict(payload.get("listeners") or {})
+    listeners = dict(defaults["listeners"])
+    listeners["bind_mode"] = str(raw_listeners.get("bind_mode") or listeners["bind_mode"])
+    if listeners["bind_mode"] not in {"interfaces", "local", "all", "tailscale"}:
+        listeners["bind_mode"] = "interfaces"
+    allowed_interfaces = {"eth0", "eth1", "wlan0", "wwan0"}
+    raw_bind_interfaces = raw_listeners.get("bind_interfaces")
+    if isinstance(raw_bind_interfaces, list):
+        bind_interfaces = [
+            str(item)
+            for item in raw_bind_interfaces
+            if str(item) in allowed_interfaces
+        ]
+    else:
+        bind_interfaces = list(defaults["listeners"]["bind_interfaces"])
+    listeners["bind_interfaces"] = bind_interfaces
+    listeners["bind_mode"] = "interfaces"
+
+    for key in ("http", "https", "mqtt", "mqtts"):
+        item = dict(listeners[key])
+        item.update(dict(raw_listeners.get(key) or {}))
+        item["enabled"] = bool(item.get("enabled", False))
+        item["port"] = max(1, min(65535, int(item.get("port") or listeners[key]["port"])))
+        if key in {"https", "mqtts"}:
+            item["mtls_required"] = bool(item.get("mtls_required", False))
+            item["tls_mode"] = str(item.get("tls_mode") or "server")
+        if key == "mqtt":
+            item["allow_anonymous"] = bool(item.get("allow_anonymous", False))
+        listeners[key] = item
+
+    http_endpoints = []
+    for raw in payload.get("http_endpoints") or []:
+        if not isinstance(raw, dict):
+            continue
+        endpoint = dict(raw)
+        endpoint["id"] = str(endpoint.get("id") or secrets.token_hex(8))[:32]
+        endpoint["name"] = str(endpoint.get("name") or "HTTP Endpoint")[:64]
+        endpoint["enabled"] = bool(endpoint.get("enabled", True))
+        endpoint["protocol"] = str(endpoint.get("protocol") or "http")
+        if endpoint["protocol"] not in {"http", "https"}:
+            endpoint["protocol"] = "http"
+        endpoint["method"] = str(endpoint.get("method") or "POST").upper()
+        endpoint["path"] = str(endpoint.get("path") or "/ingest")[:160]
+        endpoint["auth"] = str(endpoint.get("auth") or "token")
+        endpoint["payload_type"] = str(endpoint.get("payload_type") or "json")
+        endpoint["device_id_source"] = str(endpoint.get("device_id_source") or "payload")
+        endpoint["device_id_key"] = str(endpoint.get("device_id_key") or "device_id")[:80]
+        endpoint["forwarding_profile"] = str(endpoint.get("forwarding_profile") or "store_only")
+        http_endpoints.append(endpoint)
+
+    mqtt_topics = []
+    for raw in payload.get("mqtt_topics") or []:
+        if not isinstance(raw, dict):
+            continue
+        topic = dict(raw)
+        topic["id"] = str(topic.get("id") or secrets.token_hex(8))[:32]
+        topic["name"] = str(topic.get("name") or "MQTT Topic")[:64]
+        topic["enabled"] = bool(topic.get("enabled", True))
+        topic["protocol"] = str(topic.get("protocol") or "mqtt")
+        if topic["protocol"] not in {"mqtt", "mqtts"}:
+            topic["protocol"] = "mqtt"
+        topic["topic_filter"] = str(topic.get("topic_filter") or "devices/+/data")[:180]
+        topic["qos"] = max(0, min(2, int(topic.get("qos") or 0)))
+        topic["payload_type"] = str(topic.get("payload_type") or "json")
+        topic["device_id_source"] = str(topic.get("device_id_source") or "topic_segment")
+        topic["device_id_key"] = str(topic.get("device_id_key") or "1")[:80]
+        topic["forwarding_profile"] = str(topic.get("forwarding_profile") or "store_only")
+        mqtt_topics.append(topic)
+
+    raw_storage = dict(payload.get("storage") or {})
+    storage = dict(defaults["storage"])
+    storage.update(raw_storage)
+    storage["enabled"] = bool(storage.get("enabled", True))
+    storage["retention_days"] = max(1, min(3650, int(storage.get("retention_days") or 30)))
+    storage["max_size_mb"] = max(64, min(1_048_576, int(storage.get("max_size_mb") or 1024)))
+
+    raw_tls = dict(payload.get("tls") or {})
+    tls = dict(defaults["tls"])
+    tls.update(raw_tls)
+    tls["use_secrets"] = bool(tls.get("use_secrets", True))
+    tls["secrets_dir"] = str(tls.get("secrets_dir") or defaults["tls"]["secrets_dir"])[:180]
+    tls["server_cert"] = str(tls.get("server_cert") or defaults["tls"]["server_cert"])[:120]
+    tls["server_key"] = str(tls.get("server_key") or defaults["tls"]["server_key"])[:120]
+    tls["client_ca"] = str(tls.get("client_ca") or defaults["tls"]["client_ca"])[:120]
+
+    return {
+        "version": 1,
+        "listeners": listeners,
+        "http_endpoints": http_endpoints[:32],
+        "mqtt_topics": mqtt_topics[:32],
+        "storage": storage,
+        "tls": tls,
+    }
+
+
+def _edge_server_public_config(config: dict[str, Any]) -> dict[str, Any]:
+    payload = deepcopy(config)
+    payload["tls"] = {"managed": True, "installed": _edge_server_tls_status(config)}
+    return payload
+
+
+def _edge_server_tls_paths(config: dict[str, Any]) -> dict[str, Path]:
+    tls = dict((_normalise_edge_server_config(config)).get("tls") or {})
+    cert_dir = Path(str(tls.get("secrets_dir") or "/opt/metacrust/secrets/edge_server"))
+    return {
+        "server_cert": cert_dir / str(tls.get("server_cert") or "server.crt"),
+        "server_key": cert_dir / str(tls.get("server_key") or "server.key"),
+        "client_ca": cert_dir / str(tls.get("client_ca") or "client-ca.crt"),
+    }
+
+
+def _edge_server_tls_status(config: dict[str, Any]) -> dict[str, bool]:
+    paths = _edge_server_tls_paths(config)
+    status_map: dict[str, bool] = {}
+    for name, path in paths.items():
+        try:
+            status_map[name] = path.exists() and path.stat().st_size > 0
+        except OSError:
+            status_map[name] = False
+    return status_map
+
+
+def _validate_pem(name: str, value: str) -> str:
+    pem = value.strip()
+    if not pem:
+        return ""
+    if name == "server_key":
+        valid = "-----BEGIN" in pem and "PRIVATE KEY-----" in pem and "-----END" in pem
+    else:
+        valid = "-----BEGIN CERTIFICATE-----" in pem and "-----END CERTIFICATE-----" in pem
+    if not valid:
+        raise ValueError(f"Invalid {name.replace('_', ' ')} PEM.")
+    return pem + "\n"
+
+
+def _save_edge_server_tls(payload: dict[str, Any], config: dict[str, Any]) -> dict[str, bool]:
+    paths = _edge_server_tls_paths(config)
+    paths["server_cert"].parent.mkdir(parents=True, exist_ok=True)
+    paths["server_cert"].parent.chmod(0o700)
+    for name, path in paths.items():
+        pem = _validate_pem(name, str(payload.get(name) or ""))
+        if not pem:
+            continue
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path.write_text(pem, encoding="utf-8")
+        tmp_path.chmod(0o600)
+        tmp_path.replace(path)
+        path.chmod(0o600)
+    return _edge_server_tls_status(config)
+
+
+def _save_edge_server_config(payload: dict[str, Any]) -> dict[str, object]:
+    EDGE_SERVER_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = EDGE_SERVER_CONFIG_PATH.with_suffix(EDGE_SERVER_CONFIG_PATH.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp_path.replace(EDGE_SERVER_CONFIG_PATH)
+    return {"saved": True, "path": str(EDGE_SERVER_CONFIG_PATH)}
+
+
+def _load_edge_server_config() -> dict[str, Any] | None:
+    if not EDGE_SERVER_CONFIG_PATH.exists():
+        return None
+    payload = json.loads(EDGE_SERVER_CONFIG_PATH.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"Invalid Edge Server config in {EDGE_SERVER_CONFIG_PATH}")
+    return _normalise_edge_server_config(payload)
 
 
 def _forwarding_status() -> dict[str, Any]:
@@ -499,6 +717,46 @@ def _forwarding_status() -> dict[str, Any]:
                 "buffer": {"pending": 0, "replayed": 0, "dropped": 0, "success_rate": 100},
             })
     return {"ok": True, "mqtt": mqtt, "https": https, "timestamp_ms": _now_ms()}
+
+
+def _edge_server_status() -> dict[str, Any]:
+    config = CONFIGS["edge_server"]
+    listeners = config.get("listeners", {})
+    http_count = sum(1 for item in config.get("http_endpoints", []) if item.get("enabled"))
+    mqtt_count = sum(1 for item in config.get("mqtt_topics", []) if item.get("enabled"))
+    enabled_services = [
+        name.upper()
+        for name in ("http", "https", "mqtt", "mqtts")
+        if listeners.get(name, {}).get("enabled")
+    ]
+    return {
+        "ok": True,
+        "state": "configured" if enabled_services else "standby",
+        "services": enabled_services,
+        "active_http_endpoints": http_count,
+        "active_mqtt_topics": mqtt_count,
+        "stored_records": 0,
+        "pending_forward": 0,
+        "connected_devices": 0,
+        "buffer": {
+            "pending": 0,
+            "processed": 0,
+            "forwarded": 0,
+            "dropped": 0,
+        },
+        "devices": [],
+        "audit": {
+            "total": 0,
+            "outages": 0,
+            "errors": 0,
+            "auth_failures": 0,
+            "events": [],
+        },
+        "last_received_at": None,
+        "tailscale_reachable": listeners.get("bind_mode") == "tailscale",
+        "message": "Configuration ready",
+        "timestamp_ms": _now_ms(),
+    }
 
 
 def _template_context(active: str, page_title: str) -> dict[str, Any]:
@@ -621,6 +879,13 @@ async def forwarding_page(request: Request) -> HTMLResponse:
     if not _is_authenticated(request):
         return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
     return templates.TemplateResponse(request, "forwarding.html", _template_context("Data Forwarding", "Data Forwarding"))
+
+
+@router.get("/edge-server", response_class=HTMLResponse)
+async def edge_server_page(request: Request) -> HTMLResponse:
+    if not _is_authenticated(request):
+        return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+    return templates.TemplateResponse(request, "edge_server.html", _template_context("Edge Server", "Edge Server"))
 
 
 @router.get("/insights", response_class=HTMLResponse)
@@ -852,6 +1117,93 @@ async def export_forwarding_events_csv(request: Request) -> PlainTextResponse:
     if not _is_authenticated(request):
         return PlainTextResponse("Authentication required.", status_code=status.HTTP_401_UNAUTHORIZED)
     return PlainTextResponse("timestamp,profile,protocol,event,severity,message\n", media_type="text/csv")
+
+
+@router.get("/api/edge-server/config")
+async def get_edge_server_config(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    previous = CONFIGS["edge_server"]
+    loaded = load_saved_edge_server_config()
+    if loaded is not previous:
+        edge_server = getattr(request.app.state, "edge_server", None)
+        if edge_server is not None:
+            await edge_server.apply_config(CONFIGS["edge_server"])
+            LOGGER.info("api_config_load applied_saved_config=true")
+    payload = _edge_server_public_config(CONFIGS["edge_server"])
+    payload["ok"] = True
+    payload["forwarding_profiles"] = [
+        {"id": profile.get("id"), "name": profile.get("name"), "protocol": profile.get("protocol")}
+        for profile in CONFIGS["forwarding"].get("profiles", [])
+    ]
+    return JSONResponse(payload)
+
+
+@router.post("/api/edge-server/config")
+async def save_edge_server_config(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    try:
+        CONFIGS["edge_server"] = _normalise_edge_server_config(await request.json())
+        _save_edge_server_config(CONFIGS["edge_server"])
+    except Exception as exc:
+        LOGGER.exception("api_config_save failed error=%s", exc)
+        return JSONResponse({"ok": False, "message": "Save failed."}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    edge_server = getattr(request.app.state, "edge_server", None)
+    if edge_server is not None:
+        await edge_server.apply_config(CONFIGS["edge_server"])
+    else:
+        LOGGER.error("api_config_save edge_server_task_missing")
+    listeners = CONFIGS["edge_server"].get("listeners") or {}
+    enabled = [name for name in ("http", "https", "mqtt", "mqtts") if (listeners.get(name) or {}).get("enabled")]
+    LOGGER.info(
+        "api_config_save ok enabled=%s http_endpoints=%d mqtt_topics=%d",
+        ",".join(enabled) if enabled else "none",
+        len(CONFIGS["edge_server"].get("http_endpoints") or []),
+        len(CONFIGS["edge_server"].get("mqtt_topics") or []),
+    )
+    return JSONResponse({"ok": True, "message": "Edge Server config saved."})
+
+
+@router.post("/api/edge-server/tls")
+async def save_edge_server_tls(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    try:
+        installed = _save_edge_server_tls(await request.json(), CONFIGS["edge_server"])
+    except ValueError as exc:
+        LOGGER.error("api_tls_save invalid_pem error=%s", exc)
+        return JSONResponse({"ok": False, "message": "Certificate save failed."}, status_code=status.HTTP_400_BAD_REQUEST)
+    except Exception as exc:
+        LOGGER.exception("api_tls_save failed error=%s", exc)
+        return JSONResponse({"ok": False, "message": "Certificate save failed."}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    edge_server = getattr(request.app.state, "edge_server", None)
+    if edge_server is not None:
+        await edge_server.reload_tls()
+    else:
+        LOGGER.error("api_tls_save edge_server_task_missing")
+    LOGGER.info("api_tls_save ok installed=%s", installed)
+    return JSONResponse({"ok": True, "message": "Certificates saved.", "installed": installed})
+
+
+@router.get("/api/edge-server/status")
+async def get_edge_server_status(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    edge_server = getattr(request.app.state, "edge_server", None)
+    if edge_server is not None:
+        return JSONResponse(edge_server.snapshot())
+    return JSONResponse(_edge_server_status())
+
+
+@router.get("/api/edge-server/events")
+async def get_edge_server_events(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    edge_server = getattr(request.app.state, "edge_server", None)
+    if edge_server is not None:
+        return JSONResponse({"ok": True, "events": edge_server.events()})
+    return JSONResponse({"ok": True, "events": []})
 
 
 @router.get("/api/insights/configured")

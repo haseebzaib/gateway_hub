@@ -5732,4 +5732,557 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
 
+    const edgeShell = document.querySelector("[data-edge-server-shell]");
+    if (edgeShell) {
+        let esConfig = null;
+        let esForwardingProfiles = [];
+        let esEditingHttpId = null;
+        let esEditingMqttId = null;
+
+        const esDefaultConfig = () => ({
+            version: 1,
+            listeners: {
+                bind_mode: "interfaces",
+                bind_interfaces: ["eth0", "eth1", "wlan0", "wwan0"],
+                http: { enabled: false, port: 8080 },
+                https: { enabled: false, port: 8443, tls_mode: "server", mtls_required: false },
+                mqtt: { enabled: false, port: 1883, allow_anonymous: false },
+                mqtts: { enabled: false, port: 8883, tls_mode: "server", mtls_required: false },
+            },
+            http_endpoints: [],
+            mqtt_topics: [],
+            storage: { enabled: true, retention_days: 30, max_size_mb: 1024 },
+            tls: { managed: true, installed: { server_cert: false, server_key: false, client_ca: false } },
+        });
+
+        const esEsc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+            "&": "&amp;",
+            "<": "&lt;",
+            ">": "&gt;",
+            '"': "&quot;",
+            "'": "&#39;",
+        }[ch]));
+
+        const esId = () => `${Date.now().toString(16)}${Math.random().toString(16).slice(2, 8)}`;
+
+        const esSetToggle = (btn, enabled) => {
+            if (!btn) return;
+            btn.textContent = enabled ? "ON" : "OFF";
+            btn.classList.toggle("is-on", Boolean(enabled));
+            btn.classList.toggle("is-active", Boolean(enabled));
+        };
+
+        const esFillForwardingSelect = (select, selected) => {
+            if (!select) return;
+            const storeOnlyLabel = esForwardingProfiles.length
+                ? "Store + anomaly detection only"
+                : "Store + anomaly detection only (no forwarding profile configured)";
+            const options = [
+                `<option value="store_only">${storeOnlyLabel}</option>`,
+                ...esForwardingProfiles.map((profile) =>
+                    `<option value="${esEsc(profile.id)}">Store + anomaly + forward to ${esEsc(profile.name || profile.id)}</option>`
+                ),
+            ];
+            select.innerHTML = options.join("");
+            select.value = selected || "store_only";
+        };
+
+        const esGetForwardingLabel = (id) => {
+            if (!id || id === "store_only") {
+                return esForwardingProfiles.length
+                    ? "Store + anomaly detection only"
+                    : "Store + anomaly detection only (no forwarding profile configured)";
+            }
+            const profile = esForwardingProfiles.find((item) => String(item.id) === String(id));
+            return profile ? `Store + anomaly + forward to ${profile.name || profile.id}` : id;
+        };
+
+        const esApplyCertStatus = () => {
+            const installed = esConfig?.tls?.installed || {};
+            const labels = {
+                server_cert: "Server certificate",
+                server_key: "Server private key",
+                client_ca: "Client CA",
+            };
+            Object.entries(labels).forEach(([key, label]) => {
+                const el = edgeShell.querySelector(`[data-es-cert-status="${key}"]`);
+                if (!el) return;
+                el.textContent = installed[key] ? `${label} installed` : `${label} missing`;
+                el.classList.toggle("is-installed", Boolean(installed[key]));
+            });
+        };
+
+        const esApplyListeners = () => {
+            const cfg = esConfig || esDefaultConfig();
+            const listeners = cfg.listeners || {};
+            const selectedIfaces = Array.isArray(listeners.bind_interfaces)
+                ? listeners.bind_interfaces
+                : esDefaultConfig().listeners.bind_interfaces;
+            edgeShell.querySelectorAll("[data-es-bind-interface]").forEach((input) => {
+                input.checked = selectedIfaces.includes(input.value);
+            });
+
+            ["http", "https", "mqtt", "mqtts"].forEach((key) => {
+                const item = listeners[key] || {};
+                const port = edgeShell.querySelector(`[data-es-port="${key}"]`);
+                if (port) port.value = item.port || ({ http: 8080, https: 8443, mqtt: 1883, mqtts: 8883 }[key]);
+                esSetToggle(edgeShell.querySelector(`[data-es-listener-enabled="${key}"]`), item.enabled);
+            });
+
+            const httpsMtls = edgeShell.querySelector('[data-es-mtls="https"]');
+            const mqttsMtls = edgeShell.querySelector('[data-es-mtls="mqtts"]');
+            const anonymous = edgeShell.querySelector("[data-es-anonymous]");
+            if (httpsMtls) httpsMtls.checked = Boolean(listeners.https?.mtls_required);
+            if (mqttsMtls) mqttsMtls.checked = Boolean(listeners.mqtts?.mtls_required);
+            if (anonymous) anonymous.checked = Boolean(listeners.mqtt?.allow_anonymous);
+
+            cfg.tls = cfg.tls || esDefaultConfig().tls;
+        };
+
+        const esReadListeners = () => {
+            const cfg = esConfig || esDefaultConfig();
+            cfg.listeners = cfg.listeners || {};
+            cfg.listeners.bind_mode = "interfaces";
+            cfg.listeners.bind_interfaces = Array.from(edgeShell.querySelectorAll("[data-es-bind-interface]"))
+                .filter((input) => input.checked)
+                .map((input) => input.value);
+            ["http", "https", "mqtt", "mqtts"].forEach((key) => {
+                cfg.listeners[key] = cfg.listeners[key] || {};
+                cfg.listeners[key].port = Number(edgeShell.querySelector(`[data-es-port="${key}"]`)?.value || cfg.listeners[key].port || 1);
+            });
+            cfg.listeners.https.mtls_required = Boolean(edgeShell.querySelector('[data-es-mtls="https"]')?.checked);
+            cfg.listeners.mqtt.allow_anonymous = Boolean(edgeShell.querySelector("[data-es-anonymous]")?.checked);
+            cfg.listeners.mqtts.mtls_required = Boolean(edgeShell.querySelector('[data-es-mtls="mqtts"]')?.checked);
+            cfg.tls = cfg.tls || esDefaultConfig().tls;
+        };
+
+        const esApplyStorage = () => {
+            const storage = (esConfig || esDefaultConfig()).storage || {};
+            const enabled = edgeShell.querySelector("[data-es-storage-enabled]");
+            const retention = edgeShell.querySelector("[data-es-retention-days]");
+            const maxSize = edgeShell.querySelector("[data-es-max-size]");
+            if (enabled) enabled.checked = storage.enabled !== false;
+            if (retention) retention.value = storage.retention_days || 30;
+            if (maxSize) maxSize.value = storage.max_size_mb || 1024;
+        };
+
+        const esReadStorage = () => {
+            const cfg = esConfig || esDefaultConfig();
+            cfg.storage = {
+                enabled: Boolean(edgeShell.querySelector("[data-es-storage-enabled]")?.checked),
+                retention_days: Number(edgeShell.querySelector("[data-es-retention-days]")?.value || 30),
+                max_size_mb: Number(edgeShell.querySelector("[data-es-max-size]")?.value || 1024),
+            };
+        };
+
+        const esHttpForm = edgeShell.querySelector("[data-es-http-form]");
+        const esMqttForm = edgeShell.querySelector("[data-es-mqtt-form]");
+
+        const esShowHttpForm = (endpoint = null) => {
+            esEditingHttpId = endpoint?.id || null;
+            esHttpForm?.classList.remove("es-hidden");
+            edgeShell.querySelector("[data-es-http-name]").value = endpoint?.name || "";
+            edgeShell.querySelector("[data-es-http-protocol]").value = endpoint?.protocol || "http";
+            edgeShell.querySelector("[data-es-http-method]").value = endpoint?.method || "POST";
+            edgeShell.querySelector("[data-es-http-path]").value = endpoint?.path || "/ingest";
+            edgeShell.querySelector("[data-es-http-auth]").value = endpoint?.auth || "token";
+            edgeShell.querySelector("[data-es-http-payload]").value = endpoint?.payload_type || "json";
+            edgeShell.querySelector("[data-es-http-device-source]").value = endpoint?.device_id_source || "payload";
+            edgeShell.querySelector("[data-es-http-device-key]").value = endpoint?.device_id_key || "device_id";
+            esFillForwardingSelect(edgeShell.querySelector("[data-es-http-forwarding]"), endpoint?.forwarding_profile);
+        };
+
+        const esHideHttpForm = () => {
+            esEditingHttpId = null;
+            esHttpForm?.classList.add("es-hidden");
+        };
+
+        const esShowMqttForm = (topic = null) => {
+            esEditingMqttId = topic?.id || null;
+            esMqttForm?.classList.remove("es-hidden");
+            edgeShell.querySelector("[data-es-mqtt-name]").value = topic?.name || "";
+            edgeShell.querySelector("[data-es-mqtt-protocol]").value = topic?.protocol || "mqtt";
+            edgeShell.querySelector("[data-es-mqtt-topic]").value = topic?.topic_filter || "devices/+/data";
+            edgeShell.querySelector("[data-es-mqtt-qos]").value = String(topic?.qos ?? 0);
+            edgeShell.querySelector("[data-es-mqtt-payload]").value = topic?.payload_type || "json";
+            edgeShell.querySelector("[data-es-mqtt-device-source]").value = topic?.device_id_source || "topic_segment";
+            edgeShell.querySelector("[data-es-mqtt-device-key]").value = topic?.device_id_key || "1";
+            esFillForwardingSelect(edgeShell.querySelector("[data-es-mqtt-forwarding]"), topic?.forwarding_profile);
+        };
+
+        const esHideMqttForm = () => {
+            esEditingMqttId = null;
+            esMqttForm?.classList.add("es-hidden");
+        };
+
+        const esRenderHttp = () => {
+            const list = edgeShell.querySelector("[data-es-http-list]");
+            const empty = edgeShell.querySelector("[data-es-http-empty]");
+            const items = esConfig?.http_endpoints || [];
+            if (empty) empty.classList.toggle("ov-hidden", items.length > 0);
+            if (!list) return;
+            list.innerHTML = items.map((item) => `
+                <article class="es-item-card">
+                    <div class="es-item-main">
+                        <div class="es-item-title">
+                            <strong>${esEsc(item.name)}</strong>
+                            <span>${item.enabled ? "Enabled" : "Disabled"}</span>
+                        </div>
+                        <code>${esEsc(item.method || "POST")} ${esEsc(item.path)}</code>
+                        <p>${esEsc((item.protocol || "http").toUpperCase())} · ${esEsc(item.auth || "none")} auth · ${esEsc(item.payload_type || "json")} · device: ${esEsc(item.device_id_source)}:${esEsc(item.device_id_key)}</p>
+                        <small>Pipeline: ${esEsc(esGetForwardingLabel(item.forwarding_profile))}</small>
+                    </div>
+                    <div class="es-item-actions">
+                        <button type="button" class="ghost-action" data-es-toggle-http="${esEsc(item.id)}">${item.enabled ? "Disable" : "Enable"}</button>
+                        <button type="button" class="ghost-action" data-es-edit-http="${esEsc(item.id)}">Edit</button>
+                        <button type="button" class="ghost-action" data-es-delete-http="${esEsc(item.id)}">Delete</button>
+                    </div>
+                </article>
+            `).join("");
+        };
+
+        const esRenderMqtt = () => {
+            const list = edgeShell.querySelector("[data-es-mqtt-list]");
+            const empty = edgeShell.querySelector("[data-es-mqtt-empty]");
+            const items = esConfig?.mqtt_topics || [];
+            if (empty) empty.classList.toggle("ov-hidden", items.length > 0);
+            if (!list) return;
+            list.innerHTML = items.map((item) => `
+                <article class="es-item-card">
+                    <div class="es-item-main">
+                        <div class="es-item-title">
+                            <strong>${esEsc(item.name)}</strong>
+                            <span>${item.enabled ? "Enabled" : "Disabled"}</span>
+                        </div>
+                        <code>${esEsc(item.topic_filter)}</code>
+                        <p>${esEsc((item.protocol || "mqtt").toUpperCase())} · QoS ${esEsc(item.qos ?? 0)} · ${esEsc(item.payload_type || "json")} · device: ${esEsc(item.device_id_source)}:${esEsc(item.device_id_key)}</p>
+                        <small>Pipeline: ${esEsc(esGetForwardingLabel(item.forwarding_profile))}</small>
+                    </div>
+                    <div class="es-item-actions">
+                        <button type="button" class="ghost-action" data-es-toggle-mqtt="${esEsc(item.id)}">${item.enabled ? "Disable" : "Enable"}</button>
+                        <button type="button" class="ghost-action" data-es-edit-mqtt="${esEsc(item.id)}">Edit</button>
+                        <button type="button" class="ghost-action" data-es-delete-mqtt="${esEsc(item.id)}">Delete</button>
+                    </div>
+                </article>
+            `).join("");
+        };
+
+        const esRenderAll = () => {
+            esApplyListeners();
+            esApplyStorage();
+            esApplyCertStatus();
+            esFillForwardingSelect(edgeShell.querySelector("[data-es-http-forwarding]"));
+            esFillForwardingSelect(edgeShell.querySelector("[data-es-mqtt-forwarding]"));
+            esRenderHttp();
+            esRenderMqtt();
+        };
+
+        const esReadHttpForm = () => ({
+            id: esEditingHttpId || esId(),
+            enabled: true,
+            name: edgeShell.querySelector("[data-es-http-name]")?.value || "HTTP Endpoint",
+            protocol: edgeShell.querySelector("[data-es-http-protocol]")?.value || "http",
+            method: edgeShell.querySelector("[data-es-http-method]")?.value || "POST",
+            path: edgeShell.querySelector("[data-es-http-path]")?.value || "/ingest",
+            auth: edgeShell.querySelector("[data-es-http-auth]")?.value || "token",
+            payload_type: edgeShell.querySelector("[data-es-http-payload]")?.value || "json",
+            device_id_source: edgeShell.querySelector("[data-es-http-device-source]")?.value || "payload",
+            device_id_key: edgeShell.querySelector("[data-es-http-device-key]")?.value || "device_id",
+            forwarding_profile: edgeShell.querySelector("[data-es-http-forwarding]")?.value || "store_only",
+        });
+
+        const esReadMqttForm = () => ({
+            id: esEditingMqttId || esId(),
+            enabled: true,
+            name: edgeShell.querySelector("[data-es-mqtt-name]")?.value || "MQTT Topic",
+            protocol: edgeShell.querySelector("[data-es-mqtt-protocol]")?.value || "mqtt",
+            topic_filter: edgeShell.querySelector("[data-es-mqtt-topic]")?.value || "devices/+/data",
+            qos: Number(edgeShell.querySelector("[data-es-mqtt-qos]")?.value || 0),
+            payload_type: edgeShell.querySelector("[data-es-mqtt-payload]")?.value || "json",
+            device_id_source: edgeShell.querySelector("[data-es-mqtt-device-source]")?.value || "topic_segment",
+            device_id_key: edgeShell.querySelector("[data-es-mqtt-device-key]")?.value || "1",
+            forwarding_profile: edgeShell.querySelector("[data-es-mqtt-forwarding]")?.value || "store_only",
+        });
+
+        const esSaveConfig = async () => {
+            if (!esConfig) return false;
+            esReadListeners();
+            esReadStorage();
+            const msg = edgeShell.querySelector("[data-es-save-msg]");
+            if (msg) msg.textContent = "Saving...";
+            try {
+                const response = await fetch("/api/edge-server/config", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(esConfig),
+                });
+                const result = await response.json().catch(() => ({}));
+                if (!response.ok || result.ok === false) throw new Error("Save failed");
+                if (msg) msg.textContent = result.message || "Saved";
+                await esRefreshStatus();
+                return true;
+            } catch (error) {
+                if (msg) msg.textContent = "Save failed";
+                console.warn("[Edge Server] save failed:", error);
+                return false;
+            }
+        };
+
+        const esSaveCertificates = async () => {
+            const msg = edgeShell.querySelector("[data-es-cert-msg]");
+            const payload = {};
+            edgeShell.querySelectorAll("[data-es-cert-input]").forEach((input) => {
+                const key = input.getAttribute("data-es-cert-input");
+                const value = input.value.trim();
+                if (key && value) payload[key] = value;
+            });
+            if (!Object.keys(payload).length) {
+                if (msg) msg.textContent = "Nothing to save";
+                return;
+            }
+            if (msg) msg.textContent = "Saving...";
+            try {
+                const response = await fetch("/api/edge-server/tls", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload),
+                });
+                const result = await response.json();
+                if (!response.ok || !result.ok) throw new Error("Certificate save failed");
+                esConfig.tls = esConfig.tls || {};
+                esConfig.tls.installed = result.installed || {};
+                edgeShell.querySelectorAll("[data-es-cert-input]").forEach((input) => { input.value = ""; });
+                esApplyCertStatus();
+                if (msg) msg.textContent = "Saved";
+                await esRefreshStatus();
+            } catch (error) {
+                if (msg) msg.textContent = "Certificate save failed";
+                console.warn("[Edge Server] certificate save failed:", error);
+            }
+        };
+
+        edgeShell.querySelectorAll("[data-es-cert-file]").forEach((fileInput) => {
+            fileInput.addEventListener("change", async () => {
+                const key = fileInput.getAttribute("data-es-cert-file");
+                const file = fileInput.files?.[0];
+                const target = key ? edgeShell.querySelector(`[data-es-cert-input="${key}"]`) : null;
+                if (!file || !target) return;
+                target.value = await file.text();
+            });
+        });
+
+        const esLoad = async () => {
+            try {
+                const response = await fetch("/api/edge-server/config");
+                const payload = await response.json();
+                esForwardingProfiles = payload.forwarding_profiles || [];
+                delete payload.ok;
+                delete payload.forwarding_profiles;
+                esConfig = payload;
+            } catch (error) {
+                console.warn("[Edge Server] config fetch failed:", error);
+                esConfig = esDefaultConfig();
+            }
+            esRenderAll();
+        };
+
+        const esRefreshStatus = async () => {
+            try {
+                const response = await fetch("/api/edge-server/status");
+                const status = await response.json();
+                const state = edgeShell.querySelector("[data-es-state]");
+                const message = edgeShell.querySelector("[data-es-message]");
+                const httpCount = edgeShell.querySelector("[data-es-http-count]");
+                const mqttCount = edgeShell.querySelector("[data-es-mqtt-count]");
+                const stored = edgeShell.querySelector("[data-es-stored]");
+                if (state) state.textContent = status.state || "standby";
+                if (message) message.textContent = status.message || "";
+                if (httpCount) httpCount.textContent = status.active_http_endpoints ?? 0;
+                if (mqttCount) mqttCount.textContent = status.active_mqtt_topics ?? 0;
+                if (stored) stored.textContent = status.stored_records ?? 0;
+
+                const services = status.services || [];
+                const listenerMap = status.listeners || {};
+                const runningListeners = Object.entries(listenerMap)
+                    .filter(([, item]) => item && item.state === "running")
+                    .map(([name, item]) => {
+                        const hosts = Array.isArray(item.bind_hosts) && item.bind_hosts.length
+                            ? item.bind_hosts
+                            : (item.bind_host ? String(item.bind_host).split(",").map((host) => host.trim()).filter(Boolean) : []);
+                        return `${name.toUpperCase()} ${(hosts.length ? hosts.join(", ") : "selected interfaces")}:${item.port || ""}`;
+                    });
+                const waitingListeners = Object.entries(listenerMap)
+                    .filter(([, item]) => item && item.enabled && item.state === "waiting")
+                    .map(([name]) => `${name.toUpperCase()}: waiting for selected interface`);
+                const listenerErrors = Object.entries(listenerMap)
+                    .filter(([, item]) => item && item.error)
+                    .map(([name, item]) => `${name.toUpperCase()}: ${item.error}`);
+                const buffer = status.buffer || {};
+                const audit = status.audit || {};
+                const devices = status.devices || [];
+                const statusTs = edgeShell.querySelector("[data-es-status-ts]");
+                const liveServices = edgeShell.querySelector("[data-es-live-services]");
+                const liveServicesDetail = edgeShell.querySelector("[data-es-live-services-detail]");
+                const liveDevices = edgeShell.querySelector("[data-es-live-devices]");
+                const liveBuffered = edgeShell.querySelector("[data-es-live-buffered]");
+                const liveEvents = edgeShell.querySelector("[data-es-live-events]");
+                if (statusTs) statusTs.textContent = status.timestamp_ms ? new Date(status.timestamp_ms).toLocaleTimeString() : "";
+                if (liveServices) liveServices.textContent = services.length;
+                if (liveServicesDetail) {
+                    liveServicesDetail.textContent = runningListeners.length
+                        ? runningListeners.join(", ")
+                        : waitingListeners.length
+                            ? waitingListeners[0]
+                            : listenerErrors.length
+                                ? listenerErrors[0]
+                                : "No listeners enabled";
+                }
+                if (liveDevices) liveDevices.textContent = status.connected_devices ?? devices.length ?? 0;
+                if (liveBuffered) liveBuffered.textContent = buffer.pending ?? 0;
+                if (liveEvents) liveEvents.textContent = audit.total ?? 0;
+
+                const setText = (selector, value) => {
+                    const el = edgeShell.querySelector(selector);
+                    if (el) el.textContent = value;
+                };
+                setText("[data-es-buffer-pending]", buffer.pending ?? 0);
+                setText("[data-es-buffer-processed]", buffer.processed ?? 0);
+                setText("[data-es-buffer-forwarded]", buffer.forwarded ?? 0);
+                setText("[data-es-buffer-dropped]", buffer.dropped ?? 0);
+                setText("[data-es-device-count]", `${devices.length} device${devices.length === 1 ? "" : "s"}`);
+                setText("[data-es-audit-summary]", `${audit.outages ?? 0} outages · ${audit.errors ?? 0} errors · ${audit.auth_failures ?? 0} auth failures`);
+
+                const deviceList = edgeShell.querySelector("[data-es-device-list]");
+                const deviceEmpty = edgeShell.querySelector("[data-es-device-empty]");
+                if (deviceEmpty) deviceEmpty.classList.toggle("es-hidden", devices.length > 0);
+                if (deviceList) {
+                    deviceList.innerHTML = devices.map((device) => `
+                        <div class="es-device-row">
+                            <strong>${esEsc(device.device_id || "unknown")}</strong>
+                            <span>${esEsc(device.protocol || "unknown")}</span>
+                            <small>${esEsc(device.endpoint || device.topic || "")}</small>
+                            <em>${esEsc(device.last_seen || "not seen")}</em>
+                        </div>
+                    `).join("");
+                }
+
+                const events = audit.events || [];
+                const auditList = edgeShell.querySelector("[data-es-audit-list]");
+                const auditEmpty = edgeShell.querySelector("[data-es-audit-empty]");
+                if (auditEmpty) auditEmpty.classList.toggle("es-hidden", events.length > 0);
+                if (auditList) {
+                    auditList.innerHTML = events.map((event) => `
+                        <div class="es-audit-row">
+                            <strong>${esEsc(event.type || "event")}</strong>
+                            <span>${esEsc(event.device_id || event.source || "edge-server")}</span>
+                            <small>${esEsc(event.message || "")}</small>
+                            <em>${esEsc(event.timestamp || "")}</em>
+                        </div>
+                    `).join("");
+                }
+            } catch (error) {
+                console.warn("[Edge Server] status fetch failed:", error);
+            }
+        };
+
+        edgeShell.querySelectorAll("[data-es-tab]").forEach((btn) => {
+            btn.addEventListener("click", () => {
+                const tab = btn.getAttribute("data-es-tab");
+                edgeShell.querySelectorAll("[data-es-tab]").forEach((item) => {
+                    const current = item.getAttribute("data-es-tab") === tab;
+                    item.classList.toggle("is-current", current);
+                    item.setAttribute("aria-selected", current ? "true" : "false");
+                });
+                edgeShell.querySelectorAll("[data-es-panel]").forEach((panel) => {
+                    panel.classList.toggle("is-hidden", panel.getAttribute("data-es-panel") !== tab);
+                });
+            });
+        });
+
+        edgeShell.querySelectorAll("[data-es-listener-enabled]").forEach((btn) => {
+            btn.addEventListener("click", async () => {
+                const key = btn.getAttribute("data-es-listener-enabled");
+                esConfig.listeners[key].enabled = !esConfig.listeners[key].enabled;
+                esSetToggle(btn, esConfig.listeners[key].enabled);
+                await esSaveConfig();
+            });
+        });
+
+        edgeShell.querySelectorAll("[data-es-bind-interface]").forEach((input) => {
+            input.addEventListener("change", async () => {
+                await esSaveConfig();
+            });
+        });
+
+        edgeShell.querySelectorAll("[data-es-add-http]").forEach((btn) => btn.addEventListener("click", () => esShowHttpForm()));
+        edgeShell.querySelector("[data-es-cancel-http]")?.addEventListener("click", esHideHttpForm);
+        edgeShell.querySelector("[data-es-save-http]")?.addEventListener("click", async () => {
+            const endpoint = esReadHttpForm();
+            const list = esConfig.http_endpoints || [];
+            const idx = list.findIndex((item) => item.id === endpoint.id);
+            if (idx >= 0) list[idx] = { ...list[idx], ...endpoint };
+            else list.push(endpoint);
+            esConfig.http_endpoints = list;
+            esHideHttpForm();
+            esRenderHttp();
+            await esSaveConfig();
+        });
+
+        edgeShell.querySelectorAll("[data-es-add-mqtt]").forEach((btn) => btn.addEventListener("click", () => esShowMqttForm()));
+        edgeShell.querySelector("[data-es-cancel-mqtt]")?.addEventListener("click", esHideMqttForm);
+        edgeShell.querySelector("[data-es-save-mqtt]")?.addEventListener("click", async () => {
+            const topic = esReadMqttForm();
+            const list = esConfig.mqtt_topics || [];
+            const idx = list.findIndex((item) => item.id === topic.id);
+            if (idx >= 0) list[idx] = { ...list[idx], ...topic };
+            else list.push(topic);
+            esConfig.mqtt_topics = list;
+            esHideMqttForm();
+            esRenderMqtt();
+            await esSaveConfig();
+        });
+
+        edgeShell.addEventListener("click", async (event) => {
+            const target = event.target;
+            if (!(target instanceof HTMLElement)) return;
+            const httpEdit = target.getAttribute("data-es-edit-http");
+            const httpDelete = target.getAttribute("data-es-delete-http");
+            const httpToggle = target.getAttribute("data-es-toggle-http");
+            const mqttEdit = target.getAttribute("data-es-edit-mqtt");
+            const mqttDelete = target.getAttribute("data-es-delete-mqtt");
+            const mqttToggle = target.getAttribute("data-es-toggle-mqtt");
+
+            if (httpEdit) esShowHttpForm(esConfig.http_endpoints.find((item) => item.id === httpEdit));
+            if (httpDelete) {
+                esConfig.http_endpoints = esConfig.http_endpoints.filter((item) => item.id !== httpDelete);
+                esRenderHttp();
+                await esSaveConfig();
+            }
+            if (httpToggle) {
+                const item = esConfig.http_endpoints.find((row) => row.id === httpToggle);
+                if (item) item.enabled = !item.enabled;
+                esRenderHttp();
+                await esSaveConfig();
+            }
+            if (mqttEdit) esShowMqttForm(esConfig.mqtt_topics.find((item) => item.id === mqttEdit));
+            if (mqttDelete) {
+                esConfig.mqtt_topics = esConfig.mqtt_topics.filter((item) => item.id !== mqttDelete);
+                esRenderMqtt();
+                await esSaveConfig();
+            }
+            if (mqttToggle) {
+                const item = esConfig.mqtt_topics.find((row) => row.id === mqttToggle);
+                if (item) item.enabled = !item.enabled;
+                esRenderMqtt();
+                await esSaveConfig();
+            }
+        });
+
+        document.querySelectorAll("[data-es-save]").forEach((btn) => btn.addEventListener("click", esSaveConfig));
+        edgeShell.querySelector("[data-es-save-certs]")?.addEventListener("click", esSaveCertificates);
+
+        esLoad().then(esRefreshStatus);
+        window.setInterval(esRefreshStatus, 6000);
+    }
+
 });
