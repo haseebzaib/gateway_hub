@@ -5751,7 +5751,7 @@ document.addEventListener("DOMContentLoaded", () => {
             },
             http_endpoints: [],
             mqtt_topics: [],
-            storage: { enabled: true, retention_days: 30, max_size_mb: 1024 },
+            storage: { enabled: true, retention_days: 30, max_size_mb: 5120 },
             tls: { managed: true, installed: { server_cert: false, server_key: false, client_ca: false } },
         });
 
@@ -5863,7 +5863,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const maxSize = edgeShell.querySelector("[data-es-max-size]");
             if (enabled) enabled.checked = storage.enabled !== false;
             if (retention) retention.value = storage.retention_days || 30;
-            if (maxSize) maxSize.value = storage.max_size_mb || 1024;
+            if (maxSize) maxSize.value = storage.max_size_mb || 5120;
         };
 
         const esReadStorage = () => {
@@ -5871,7 +5871,7 @@ document.addEventListener("DOMContentLoaded", () => {
             cfg.storage = {
                 enabled: Boolean(edgeShell.querySelector("[data-es-storage-enabled]")?.checked),
                 retention_days: Number(edgeShell.querySelector("[data-es-retention-days]")?.value || 30),
-                max_size_mb: Number(edgeShell.querySelector("[data-es-max-size]")?.value || 1024),
+                max_size_mb: Number(edgeShell.querySelector("[data-es-max-size]")?.value || 5120),
             };
         };
 
@@ -6108,6 +6108,121 @@ document.addEventListener("DOMContentLoaded", () => {
             return `${Math.floor(seconds / 86400)}d ago`;
         };
 
+        const esFormatMs = (value) => {
+            const num = Number(value);
+            if (!Number.isFinite(num)) return "n/a";
+            if (num < 1000) return `${Math.round(num)} ms`;
+            if (num < 60000) return `${(num / 1000).toFixed(num < 10000 ? 1 : 0)} s`;
+            return `${(num / 60000).toFixed(num < 600000 ? 1 : 0)} min`;
+        };
+
+        const esFormatBytes = (value) => {
+            const num = Number(value);
+            if (!Number.isFinite(num)) return "n/a";
+            if (num < 1024) return `${Math.round(num)} B`;
+            return `${(num / 1024).toFixed(num < 10240 ? 1 : 0)} KiB`;
+        };
+
+        const esEventTitle = (type) => ({
+            new_device: "New device",
+            no_data_timeout: "No data timeout",
+            device_recovered: "Device recovered",
+            message_gap: "Message gap",
+            rate_slowdown: "Rate slowdown",
+            rate_spike: "Rate spike",
+            payload_parse_error: "Payload parse error",
+            payload_size_change: "Payload size change",
+            payload_schema_change: "Payload fields changed",
+            sequence_gap: "Sequence gap",
+            sequence_duplicate: "Duplicate sequence",
+            sequence_out_of_order: "Sequence out of order",
+            sequence_reset: "Sequence reset",
+            device_clock_drift: "Clock drift",
+            device_timestamp_stale: "Stale device timestamp",
+            mqtt_disconnected: "MQTT disconnect",
+            mqtt_reconnect_storm: "MQTT reconnect storm",
+            auth_failure: "Authentication failure",
+            route_missing: "Unknown route/topic",
+        }[type] || String(type || "Event").replaceAll("_", " "));
+
+        const esEventMeaning = (type) => ({
+            new_device: "gateway saw this device for the first time",
+            no_data_timeout: "device stopped sending within its expected window",
+            device_recovered: "device started sending again after silence/disconnect",
+            message_gap: "current gap is much larger than learned normal gap",
+            rate_slowdown: "device is publishing slower than its own baseline",
+            rate_spike: "device is publishing faster than its own baseline",
+            payload_parse_error: "payload could not be parsed as configured",
+            payload_size_change: "payload size changed more than expected",
+            payload_schema_change: "JSON field set changed from the learned shape",
+            sequence_gap: "sequence jumped forward, so messages may be missing",
+            sequence_duplicate: "same sequence number arrived again",
+            sequence_out_of_order: "sequence number moved backward",
+            sequence_reset: "sequence restarted, usually after device reboot/reset",
+            device_clock_drift: "device timestamp differs from gateway time",
+            device_timestamp_stale: "device timestamp is older than receive time",
+            mqtt_disconnected: "MQTT session closed",
+            mqtt_reconnect_storm: "client connected too many times in a short window",
+            auth_failure: "request/client failed authentication",
+            route_missing: "device used a path or topic not configured",
+        }[type] || "gateway event");
+
+        const esEventDetails = (event) => {
+            let details = event.details ?? event.details_json ?? {};
+            if (typeof details === "string" && details.trim()) {
+                try {
+                    details = JSON.parse(details);
+                } catch {
+                    return details;
+                }
+            }
+            if (!details || typeof details !== "object") return "";
+            const type = event.event_type || event.type;
+            if (type === "message_gap" || type === "rate_slowdown" || type === "rate_spike") {
+                return `last gap ${esFormatMs(details.interval_ms)}, normal ${esFormatMs(details.avg_interval_ms)}`;
+            }
+            if (type === "no_data_timeout") {
+                return `silent ${esFormatMs(details.silent_ms)}, timeout ${esFormatMs(details.timeout_ms)}`;
+            }
+            if (type === "device_recovered") {
+                return `previous status ${details.previous_status || "unknown"}`;
+            }
+            if (type === "payload_parse_error") {
+                return `${details.payload_type || "payload"} parse failed: ${details.error || "invalid payload"}`;
+            }
+            if (type === "payload_size_change") {
+                return `last payload ${esFormatBytes(details.payload_size)}, normal ${esFormatBytes(details.avg_payload_size)}`;
+            }
+            if (type === "payload_schema_change") {
+                return `fields now ${details.payload_schema || "unknown"}; before ${details.last_payload_schema || "unknown"}`;
+            }
+            if (type === "sequence_gap") {
+                return `received ${details.sequence ?? "?"}, expected ${details.expected_sequence ?? "?"}; missing ${details.missing_count ?? "?"}`;
+            }
+            if (type === "sequence_out_of_order") {
+                return `received sequence ${details.sequence ?? "?"} after ${details.last_sequence ?? "?"}`;
+            }
+            if (type === "sequence_reset") {
+                return `sequence restarted at ${details.sequence ?? "?"} after ${details.last_sequence ?? "?"}`;
+            }
+            if (type === "sequence_duplicate") {
+                return event.message || "same sequence arrived twice";
+            }
+            if (type === "device_clock_drift") {
+                return `clock drift ${esFormatMs(details.drift_ms)}`;
+            }
+            if (type === "device_timestamp_stale") {
+                return `timestamp stale by ${esFormatMs(details.stale_ms)}`;
+            }
+            if (type === "mqtt_disconnected") {
+                return details.clean ? "clean disconnect" : "connection dropped";
+            }
+            if (type === "mqtt_reconnect_storm") {
+                return `${details.connects_in_60s || "many"} connects in 60s`;
+            }
+            return event.message || "";
+        };
+
         const esRenderBars = (selector, emptySelector, rows) => {
             const wrap = edgeShell.querySelector(selector);
             const empty = edgeShell.querySelector(emptySelector);
@@ -6118,9 +6233,10 @@ document.addEventListener("DOMContentLoaded", () => {
             wrap.innerHTML = items.map((row) => {
                 const count = Number(row.count || 0);
                 const pct = Math.max(4, Math.round((count / max) * 100));
+                const bucket = row.minute || row.bucket || "";
                 return `
                     <div class="es-chart-bar">
-                        <span>${esEsc(String(row.minute || "").slice(11, 16) || row.minute || "")}</span>
+                        <span>${esEsc(String(bucket).slice(11, 16) || bucket || "")}</span>
                         <div class="es-chart-track"><div class="es-chart-fill" style="width:${pct}%"></div></div>
                         <strong>${count}</strong>
                     </div>`;
@@ -6137,7 +6253,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 <div class="es-route-row">
                     <strong>${esEsc(row.route || "unknown")}</strong>
                     <span>${Number(row.count || 0).toLocaleString()}</span>
-                    <small>${Number(row.devices || 0).toLocaleString()} devices</small>
+                    <small>${Number(row.devices ?? row.sources ?? 0).toLocaleString()} ${row.sources !== undefined ? "sources" : "devices"}</small>
                     <em>${esEsc(esShortTime(row.last_seen))}</em>
                 </div>
             `).join("");
@@ -6176,14 +6292,174 @@ document.addEventListener("DOMContentLoaded", () => {
                 const routeLabel = group === "http" ? "Path" : "Topic";
                 const count = Number(device.message_count || 0).toLocaleString();
                 const anomalies = Number(device.anomaly_count || 0);
+                const signalParts = [
+                    `last gap ${esFormatMs(device.last_interval_ms)}`,
+                    `normal ${esFormatMs(device.avg_interval_ms)}`,
+                    `payload ${esFormatBytes(device.last_payload_size)}`,
+                    `normal payload ${esFormatBytes(device.avg_payload_size)}`,
+                ];
+                if (device.last_sequence !== undefined && device.last_sequence !== null && device.last_sequence !== "") {
+                    signalParts.push(`seq ${device.last_sequence}`);
+                }
                 return `
                     <div class="es-device-row es-device-row-health is-${esEsc(health)}">
                         <strong>${esEsc(device.device_id || "unknown")}</strong>
                         <span>${esEsc(label)}</span>
-                        <small>${routeLabel}: ${esEsc(device.endpoint || device.last_route || "unknown")} · ${count} message${count === "1" ? "" : "s"}${anomalies ? ` · ${anomalies} alerts` : ""}</small>
+                        <small>${routeLabel}: ${esEsc(device.endpoint || device.last_route || "unknown")} · ${count} message${count === "1" ? "" : "s"} · ${signalParts.map(esEsc).join(" · ")}${anomalies ? ` · ${anomalies} alerts` : ""}</small>
                         <em>${esEsc(esAge(device.last_seen))}</em>
                     </div>`;
             }).join("");
+        };
+
+        const esRenderAnomalySummary = (selector, emptySelector, rows) => {
+            const wrap = edgeShell.querySelector(selector);
+            const empty = edgeShell.querySelector(emptySelector);
+            const items = Array.isArray(rows) ? rows : [];
+            if (empty) empty.classList.toggle("es-hidden", items.length > 0);
+            if (!wrap) return;
+            wrap.innerHTML = items.map((row) => {
+                const type = row.event_type || row.type || "event";
+                return `
+                    <div class="es-anomaly-row">
+                        <strong>${esEsc(esEventTitle(type))}</strong>
+                        <span>${Number(row.count || 0).toLocaleString()}</span>
+                        <small>${esEsc(esEventMeaning(type))}</small>
+                        <em>${esEsc(esShortTime(row.last_seen))}</em>
+                    </div>`;
+            }).join("");
+        };
+
+        const esRenderProtocolEvents = (selector, emptySelector, rows) => {
+            const wrap = edgeShell.querySelector(selector);
+            const empty = edgeShell.querySelector(emptySelector);
+            const items = Array.isArray(rows) ? rows : [];
+            if (empty) empty.classList.toggle("es-hidden", items.length > 0);
+            if (!wrap) return;
+            wrap.innerHTML = items.map((event) => {
+                const type = event.event_type || event.type || "event";
+                const detail = esEventDetails(event);
+                return `
+                    <div class="es-audit-row">
+                        <strong>${esEsc(esEventTitle(type))}</strong>
+                        <span>${esEsc(event.severity || "info")}</span>
+                        <small>${esEsc(event.device_id || event.source || "unknown")} · ${esEsc(detail || event.message || esEventMeaning(type))}</small>
+                        <em>${esEsc(esShortTime(event.created_at || event.timestamp))}</em>
+                    </div>`;
+            }).join("");
+        };
+
+        const esHistoryRangeParams = () => {
+            const range = edgeShell.querySelector("[data-es-history-range]")?.value || "30d";
+            const params = new URLSearchParams();
+            const protocol = edgeShell.querySelector("[data-es-history-protocol]")?.value || "";
+            if (protocol) params.set("protocol_group", protocol);
+            if (range !== "all") {
+                const now = Date.now();
+                const duration = range === "24h" ? 24 * 3600 * 1000 : range === "7d" ? 7 * 86400 * 1000 : 30 * 86400 * 1000;
+                params.set("from", new Date(now - duration).toISOString());
+            }
+            return params;
+        };
+
+        const esSelectedHistoryDevice = () => edgeShell.querySelector("[data-es-history-device]")?.value || "";
+
+        const esUpdateHistoryExports = () => {
+            const deviceId = esSelectedHistoryDevice();
+            const params = esHistoryRangeParams();
+            if (deviceId) params.set("device_id", deviceId);
+            const query = params.toString();
+            const messages = edgeShell.querySelector("[data-es-history-messages-export]");
+            const events = edgeShell.querySelector("[data-es-history-events-export]");
+            if (messages) messages.setAttribute("href", `/api/edge-server/messages.csv${query ? `?${query}` : ""}`);
+            if (events) events.setAttribute("href", `/api/edge-server/events.csv${query ? `?${query}` : ""}`);
+        };
+
+        const esRenderHistoryDevices = async () => {
+            try {
+                const response = await fetch("/api/edge-server/history/devices");
+                const data = await response.json();
+                const devices = data.devices || [];
+                const select = edgeShell.querySelector("[data-es-history-device]");
+                if (!select) return;
+                const previous = select.value;
+                select.innerHTML = devices.length
+                    ? devices.map((device) => {
+                        const label = `${device.device_id || "unknown"} · ${device.protocol || "unknown"} · ${esAge(device.last_seen || device.last_seen_at)}`;
+                        return `<option value="${esEsc(device.device_id || "unknown")}">${esEsc(label)}</option>`;
+                    }).join("")
+                    : '<option value="">No stored devices</option>';
+                if (previous && devices.some((device) => String(device.device_id || "") === previous)) {
+                    select.value = previous;
+                }
+            } catch (error) {
+                console.warn("[Edge Server] history devices fetch failed:", error);
+            }
+        };
+
+        const esRefreshDeviceHistory = async () => {
+            const deviceId = esSelectedHistoryDevice();
+            esUpdateHistoryExports();
+            if (!deviceId) {
+                esSetText("[data-es-history-total]", "0");
+                esSetText("[data-es-history-events]", "0");
+                esSetText("[data-es-history-last]", "Never");
+                esSetText("[data-es-history-status]", "No device selected");
+                esSetText("[data-es-history-payload]", "0 B");
+                return;
+            }
+            const params = esHistoryRangeParams();
+            params.set("device_id", deviceId);
+            try {
+                const response = await fetch(`/api/edge-server/history/device?${params.toString()}`);
+                const data = await response.json();
+                const summary = data.summary || {};
+                const device = data.device || {};
+                esSetText("[data-es-history-total]", Number(summary.total_messages || 0).toLocaleString());
+                esSetText("[data-es-history-events]", Number(summary.event_count || 0).toLocaleString());
+                esSetText("[data-es-history-last]", esShortTime(summary.last_message_at || device.last_seen));
+                esSetText("[data-es-history-status]", `${device.health_label || "Stored"} · ${esAge(summary.last_message_at || device.last_seen)}`);
+                esSetText("[data-es-history-payload]", esFormatBytes(summary.avg_payload_size));
+                esRenderBars("[data-es-history-message-chart]", "[data-es-history-message-empty]", data.message_series || []);
+                esRenderBars("[data-es-history-anomaly-chart]", "[data-es-history-anomaly-empty]", data.anomaly_series || []);
+                esRenderRoutes("[data-es-history-routes]", "[data-es-history-routes-empty]", data.routes || []);
+                esRenderAnomalySummary("[data-es-history-event-summary]", "[data-es-history-event-summary-empty]", data.event_summary || []);
+                esRenderProtocolEvents("[data-es-history-events-list]", "[data-es-history-events-empty]", data.recent_events || []);
+                esRenderMessages("[data-es-history-messages-list]", "[data-es-history-messages-empty]", data.recent_messages || []);
+            } catch (error) {
+                console.warn("[Edge Server] device history fetch failed:", error);
+            }
+        };
+
+        const esRefreshHistory = async () => {
+            await esRenderHistoryDevices();
+            await esRefreshDeviceHistory();
+        };
+
+        const esRenderWatchlist = (selector, group) => {
+            const wrap = edgeShell.querySelector(selector);
+            if (!wrap) return;
+            const common = [
+                ["No data timeout", "No message before expected window", "max(60s, 6x learned normal gap)"],
+                ["Message gap", "One message arrives late", "> max(5s, 3x learned normal gap)"],
+                ["Rate slowdown", "Device slows below baseline", "same trigger as message gap"],
+                ["Rate spike", "Device sends much faster", "< 25% of normal gap after 10 samples"],
+                ["Payload size change", "Payload size changes sharply", "> 50% from learned average"],
+                ["Payload fields changed", "JSON top-level fields changed", "field set differs after 3 samples"],
+                ["Payload parse error", "JSON/form parsing failed", "configured payload parser cannot parse body"],
+                ["Sequence gap", "Message sequence jumps forward", "current sequence > previous + 1"],
+                ["Sequence reset", "Counter restarts after high value", "sequence <= 1 after previous >= 10"],
+                ["Clock drift", "Device time differs from gateway", "> 5 minutes"],
+            ];
+            const protocolSpecific = group === "mqtt"
+                ? [["MQTT disconnect", "Persistent MQTT session closed", "broker receives disconnect or socket closes"], ["Reconnect storm", "Client repeatedly reconnects", "4+ connects in 60 seconds"]]
+                : [["Unknown path", "Request path/method not configured", "no matching HTTP endpoint"], ["Auth failure", "Request failed auth", "token/mTLS check failed"]];
+            wrap.innerHTML = [...common, ...protocolSpecific].map(([name, meaning, trigger]) => `
+                <div class="es-watch-item">
+                    <strong>${esEsc(name)}</strong>
+                    <span>${esEsc(meaning)}</span>
+                    <small>${esEsc(trigger)}</small>
+                </div>
+            `).join("");
         };
 
         const esRefreshProtocolMetrics = async (group) => {
@@ -6197,9 +6473,12 @@ document.addEventListener("DOMContentLoaded", () => {
                 esSetText(`[data-es-${prefix}-auth-fail]`, Number(data.auth_failures || 0).toLocaleString());
                 const routeLabel = group === "http" ? "paths with traffic" : "topics with traffic";
                 esSetText(`[data-es-${prefix}-route-count]`, `${(data.routes || []).length} ${routeLabel}`);
+                esRenderWatchlist(`[data-es-${prefix}-watchlist]`, group);
                 esRenderBars(`[data-es-${prefix}-chart]`, `[data-es-${prefix}-chart-empty]`, data.minute_series || []);
                 esRenderRoutes(`[data-es-${prefix}-routes]`, `[data-es-${prefix}-routes-empty]`, data.routes || []);
                 esRenderProtocolDevices(`[data-es-${prefix}-devices-list]`, `[data-es-${prefix}-devices-empty]`, data.devices || [], group);
+                esRenderAnomalySummary(`[data-es-${prefix}-anomaly-summary]`, `[data-es-${prefix}-anomaly-summary-empty]`, data.anomaly_summary || []);
+                esRenderProtocolEvents(`[data-es-${prefix}-events]`, `[data-es-${prefix}-events-empty]`, data.recent_events || []);
                 esRenderMessages(`[data-es-${prefix}-recent]`, `[data-es-${prefix}-recent-empty]`, data.recent_messages || []);
             } catch (error) {
                 console.warn(`[Edge Server] ${group} metrics fetch failed:`, error);
@@ -6341,8 +6620,16 @@ document.addEventListener("DOMContentLoaded", () => {
                 edgeShell.querySelectorAll("[data-es-panel]").forEach((panel) => {
                     panel.classList.toggle("is-hidden", panel.getAttribute("data-es-panel") !== tab);
                 });
+                if (tab === "history") {
+                    esRefreshHistory();
+                }
             });
         });
+
+        edgeShell.querySelector("[data-es-history-device]")?.addEventListener("change", esRefreshDeviceHistory);
+        edgeShell.querySelector("[data-es-history-protocol]")?.addEventListener("change", esRefreshDeviceHistory);
+        edgeShell.querySelector("[data-es-history-range]")?.addEventListener("change", esRefreshDeviceHistory);
+        edgeShell.querySelector("[data-es-history-refresh]")?.addEventListener("click", esRefreshHistory);
 
         edgeShell.querySelectorAll("[data-es-listener-enabled]").forEach((btn) => {
             btn.addEventListener("click", async () => {
@@ -6431,6 +6718,7 @@ document.addEventListener("DOMContentLoaded", () => {
             await esRefreshProtocolMetrics("http");
             await esRefreshProtocolMetrics("mqtt");
             await esRefreshAlerts();
+            await esRefreshHistory();
         };
 
         esLoad().then(esRefreshAllRuntime);
@@ -6438,6 +6726,7 @@ document.addEventListener("DOMContentLoaded", () => {
         window.setInterval(() => esRefreshProtocolMetrics("http"), 8000);
         window.setInterval(() => esRefreshProtocolMetrics("mqtt"), 8000);
         window.setInterval(esRefreshAlerts, 10000);
+        window.setInterval(esRefreshHistory, 30000);
     }
 
 });

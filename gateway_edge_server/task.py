@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from .storage import EdgeServerStorage
+from .storage import ANOMALY_EVENT_TYPES, EdgeServerStorage
 
 
 LOGGER = logging.getLogger("edge_server")
@@ -62,6 +62,7 @@ class EdgeServerTask:
         self._storage_enabled = True
         self._mqtt_sessions: dict[str, dict[str, Any]] = {}
         self._mqtt_client_devices: dict[str, set[str]] = {}
+        self._mqtt_connect_history: dict[str, deque[float]] = {}
 
     def start(self, config: dict[str, Any]) -> None:
         self._config = deepcopy(config)
@@ -191,6 +192,11 @@ class EdgeServerTask:
                 LOGGER.error("storage_protocol_metrics_failed group=%s error=%s", protocol_group, exc)
         protocols = {"http": {"HTTP", "HTTPS"}, "mqtt": {"MQTT", "MQTTS"}}.get(protocol_group, set())
         records = [record for record in self._records if record.get("protocol") in protocols]
+        events = [
+            event for event in self._events
+            if event.get("protocol") in protocols
+            and (event.get("event_type") or event.get("type")) in ANOMALY_EVENT_TYPES
+        ]
         route_counts: dict[str, dict[str, Any]] = {}
         for record in records:
             route = str(record.get("route") or "")
@@ -215,6 +221,8 @@ class EdgeServerTask:
             "minute_series": [],
             "recent_messages": [_export_memory_message(row, include_payload=False) for row in records[-20:]],
             "devices": _memory_protocol_devices(records),
+            "anomaly_summary": _memory_anomaly_summary(events),
+            "recent_events": [_export_memory_event(row) for row in events[-20:]],
         }
 
     def alert_metrics(self) -> dict[str, Any]:
@@ -228,18 +236,38 @@ class EdgeServerTask:
         events = [
             event for event in self._events
             if event.get("severity") in {"warning", "error", "critical"}
-            or event.get("type") in {"auth_failure", "route_missing", "mqtt_disconnected"}
+            or (event.get("event_type") or event.get("type")) in ANOMALY_EVENT_TYPES
         ][-100:]
         return {
             "ok": True,
             "summary": {
                 "total": len(events),
+                "info": sum(1 for event in events if event.get("severity") == "info"),
                 "warning": sum(1 for event in events if event.get("severity") == "warning"),
                 "error": sum(1 for event in events if event.get("severity") == "error"),
                 "critical": sum(1 for event in events if event.get("severity") == "critical"),
             },
             "events": events,
         }
+
+    def history_devices(self) -> dict[str, Any]:
+        if self._storage_enabled:
+            try:
+                return {"ok": True, "devices": self._storage.history_devices()}
+            except Exception as exc:
+                self._storage_enabled = False
+                LOGGER.error("storage_history_devices_failed error=%s", exc)
+        devices = _memory_history_devices(list(self._records), list(self._events))
+        return {"ok": True, "devices": devices}
+
+    def device_history(self, device_id: str, filters: dict[str, Any]) -> dict[str, Any]:
+        if self._storage_enabled:
+            try:
+                return self._storage.device_history(device_id, filters)
+            except Exception as exc:
+                self._storage_enabled = False
+                LOGGER.error("storage_device_history_failed device=%s error=%s", device_id, exc)
+        return _memory_device_history(device_id, list(self._records), list(self._events), filters)
 
     def export_events(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
         if self._storage_enabled:
@@ -270,6 +298,7 @@ class EdgeServerTask:
             try:
                 async with self._lock:
                     await self._reconcile_locked()
+                    self._detect_silent_devices_locked()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -508,6 +537,7 @@ class EdgeServerTask:
                 "status": "online",
             }
             self._mqtt_client_devices[client_id] = set()
+            self._track_mqtt_connect(protocol.upper(), client_id, peer)
             LOGGER.info("mqtt_client_connected protocol=%s client_id=%s peer=%s", protocol, client_id, peer)
 
             while True:
@@ -604,6 +634,34 @@ class EdgeServerTask:
             str(record.get("route") or ""),
             str(record.get("source_ip") or ""),
         )
+
+    def _detect_silent_devices_locked(self) -> None:
+        if not self._storage_enabled:
+            return
+        try:
+            for event in self._storage.detect_device_silence():
+                self._append_event(event)
+        except Exception as exc:
+            self._storage_enabled = False
+            LOGGER.error("storage_detect_silence_failed error=%s", exc)
+
+    def _track_mqtt_connect(self, protocol: str, client_id: str, peer: str) -> None:
+        now = time.monotonic()
+        history = self._mqtt_connect_history.setdefault(client_id, deque(maxlen=10))
+        history.append(now)
+        while history and now - history[0] > 60.0:
+            history.popleft()
+        if len(history) >= 4:
+            self._record_event(
+                "mqtt_reconnect_storm",
+                "warning",
+                protocol,
+                client_id,
+                "",
+                client_id,
+                f"MQTT client reconnecting repeatedly: {client_id}",
+                {"source_ip": peer, "connects_in_60s": len(history)},
+            )
 
     def _upsert_device(self, device_id: str, protocol: str, endpoint: str, peer: str) -> None:
         is_mqtt = protocol.upper() in {"MQTT", "MQTTS"}
@@ -825,6 +883,115 @@ def _memory_protocol_devices(rows: list[dict[str, Any]]) -> list[dict[str, Any]]
     ][-50:]
 
 
+def _memory_anomaly_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    summary: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        event_type = str(row.get("event_type") or row.get("type") or "event")
+        severity = str(row.get("severity") or "info")
+        key = (event_type, severity)
+        item = summary.setdefault(
+            key,
+            {"event_type": event_type, "severity": severity, "count": 0, "last_seen": ""},
+        )
+        item["count"] += 1
+        item["last_seen"] = str(row.get("created_at") or row.get("timestamp") or item["last_seen"])
+    return sorted(summary.values(), key=lambda item: int(item["count"]), reverse=True)[:20]
+
+
+def _memory_history_devices(records: list[dict[str, Any]], events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    latest: dict[str, dict[str, Any]] = {}
+    counts: dict[str, int] = {}
+    event_counts: dict[str, int] = {}
+    first_seen: dict[str, str] = {}
+    for row in records:
+        device_id = str(row.get("device_id") or "unknown")
+        counts[device_id] = counts.get(device_id, 0) + 1
+        first_seen.setdefault(device_id, str(row.get("received_at") or ""))
+        latest[device_id] = row
+    for event in events:
+        device_id = str(event.get("device_id") or event.get("source") or "unknown")
+        event_counts[device_id] = event_counts.get(device_id, 0) + 1
+    result = []
+    for device_id, row in latest.items():
+        protocol = str(row.get("protocol") or "")
+        result.append({
+            "device_id": device_id,
+            "protocol": protocol,
+            "first_seen": first_seen.get(device_id),
+            "last_seen": row.get("received_at"),
+            "last_route": row.get("route"),
+            "message_count": counts.get(device_id, 0),
+            "event_count": event_counts.get(device_id, 0),
+            "anomaly_count": event_counts.get(device_id, 0),
+            "health": "active",
+            "health_label": "Connected" if protocol in {"MQTT", "MQTTS"} else "Receiving data",
+        })
+    return sorted(result, key=lambda item: str(item.get("last_seen") or ""), reverse=True)
+
+
+def _memory_device_history(
+    device_id: str,
+    records: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+    filters: dict[str, Any],
+) -> dict[str, Any]:
+    protocol_group = str(filters.get("protocol_group") or "").lower()
+    protocol_set = {"HTTP", "HTTPS"} if protocol_group == "http" else {"MQTT", "MQTTS"} if protocol_group == "mqtt" else None
+    device_records = [
+        row for row in records
+        if str(row.get("device_id") or "") == device_id
+        and (not protocol_set or str(row.get("protocol") or "") in protocol_set)
+    ]
+    device_events = [
+        row for row in events
+        if str(row.get("device_id") or row.get("source") or "") == device_id
+        and (not protocol_set or str(row.get("protocol") or "") in protocol_set)
+    ]
+    buckets: dict[str, dict[str, Any]] = {}
+    for row in device_records:
+        bucket = str(row.get("received_at") or "")[:16]
+        item = buckets.setdefault(bucket, {"bucket": bucket, "count": 0, "avg_payload_size": 0.0, "max_payload_size": 0})
+        count = int(item["count"]) + 1
+        payload_size = int(row.get("payload_size") or 0)
+        item["avg_payload_size"] = ((float(item["avg_payload_size"]) * (count - 1)) + payload_size) / count
+        item["max_payload_size"] = max(int(item["max_payload_size"] or 0), payload_size)
+        item["count"] = count
+    anomaly_buckets: dict[str, dict[str, Any]] = {}
+    for event in device_events:
+        bucket = str(event.get("created_at") or event.get("timestamp") or "")[:16]
+        anomaly_buckets.setdefault(bucket, {"bucket": bucket, "count": 0})["count"] += 1
+    latest = device_records[-1] if device_records else {}
+    total_payload = sum(int(row.get("payload_size") or 0) for row in device_records)
+    return {
+        "ok": True,
+        "device_id": device_id,
+        "device": {
+            "device_id": device_id,
+            "protocol": latest.get("protocol"),
+            "first_seen": device_records[0].get("received_at") if device_records else None,
+            "last_seen": latest.get("received_at"),
+            "last_route": latest.get("route"),
+            "health": "active" if device_records else "stale",
+            "health_label": "Stored in memory" if device_records else "No stored data",
+        },
+        "summary": {
+            "total_messages": len(device_records),
+            "first_message_at": device_records[0].get("received_at") if device_records else None,
+            "last_message_at": latest.get("received_at"),
+            "avg_payload_size": total_payload / len(device_records) if device_records else 0,
+            "max_payload_size": max((int(row.get("payload_size") or 0) for row in device_records), default=0),
+            "event_count": len(device_events),
+        },
+        "message_series": sorted(buckets.values(), key=lambda item: item["bucket"]),
+        "payload_series": sorted(buckets.values(), key=lambda item: item["bucket"]),
+        "anomaly_series": sorted(anomaly_buckets.values(), key=lambda item: item["bucket"]),
+        "routes": [],
+        "event_summary": _memory_anomaly_summary(device_events),
+        "recent_events": [_export_memory_event(row) for row in device_events[-50:]],
+        "recent_messages": [_export_memory_message(row, include_payload=False) for row in device_records[-50:]],
+    }
+
+
 def _export_memory_message(row: dict[str, Any], *, include_payload: bool) -> dict[str, Any]:
     item = {
         "received_at": row.get("received_at"),
@@ -905,6 +1072,8 @@ def _message_record(
         "payload_hash": hashlib.sha256(raw_payload).hexdigest(),
         "payload": payload,
         "payload_json": payload if isinstance(payload, (dict, list)) else None,
+        "payload_schema": _payload_schema(payload),
+        "payload_parse_error": payload.get("_edge_parse_error") if isinstance(payload, dict) else None,
         "payload_raw": raw_payload,
         "device_timestamp": _extract_device_timestamp(payload),
         "sequence": _extract_sequence(payload),
@@ -920,6 +1089,17 @@ def _message_record(
         record["topic"] = route
         record["filter"] = (extra or {}).get("topic_filter")
     return record
+
+
+def _payload_schema(payload: Any) -> str:
+    if isinstance(payload, dict):
+        keys = sorted(str(key) for key in payload if not str(key).startswith("_edge_"))
+        return "json:" + ",".join(keys)
+    if isinstance(payload, list):
+        return "json:list"
+    if payload is None:
+        return "empty"
+    return type(payload).__name__
 
 
 def _extract_sequence(payload: Any) -> str | None:
@@ -974,15 +1154,20 @@ def _event_severity(event_type: str) -> str:
     if event_type in {"error", "auth_failure", "outage", "storage_error"}:
         return "error"
     if event_type in {
+        "no_data_timeout",
         "route_missing",
         "message_gap",
         "rate_slowdown",
+        "payload_parse_error",
         "payload_size_change",
+        "payload_schema_change",
+        "sequence_gap",
         "sequence_duplicate",
         "sequence_out_of_order",
         "device_clock_drift",
         "device_timestamp_stale",
         "mqtt_disconnected",
+        "mqtt_reconnect_storm",
     }:
         return "warning"
     return "info"
@@ -1003,7 +1188,10 @@ def _decode_payload(body: bytes, payload_type: str | None) -> Any:
         try:
             return json.loads(body.decode("utf-8"))
         except Exception:
-            return {"raw": body.decode("utf-8", errors="replace")}
+            return {
+                "_edge_parse_error": "invalid_json",
+                "raw": body.decode("utf-8", errors="replace"),
+            }
     if payload_type == "form":
         return body.decode("utf-8", errors="replace")
     return body.decode("utf-8", errors="replace")

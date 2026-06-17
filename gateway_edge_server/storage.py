@@ -12,6 +12,27 @@ from typing import Any
 LOGGER = logging.getLogger("edge_server")
 
 DEFAULT_DB_PATH = Path("/opt/metacrust/data/edge_server/edge_server.db")
+ANOMALY_EVENT_TYPES = (
+    "new_device",
+    "message_gap",
+    "no_data_timeout",
+    "device_recovered",
+    "rate_slowdown",
+    "rate_spike",
+    "payload_parse_error",
+    "payload_size_change",
+    "payload_schema_change",
+    "sequence_gap",
+    "sequence_duplicate",
+    "sequence_out_of_order",
+    "sequence_reset",
+    "device_clock_drift",
+    "device_timestamp_stale",
+    "mqtt_disconnected",
+    "mqtt_reconnect_storm",
+    "auth_failure",
+    "route_missing",
+)
 
 
 try:
@@ -119,6 +140,7 @@ class EdgeServerStorage:
         route = str(record.get("route") or "")
         sequence = record.get("sequence")
         payload_size = int(record.get("payload_size") or 0)
+        payload_schema = str(record.get("payload_schema") or "")
         existing = self._conn.execute(
             "SELECT * FROM device_state WHERE device_id = ?",
             (device_id,),
@@ -137,8 +159,8 @@ class EdgeServerStorage:
                     device_id, protocol, first_seen_at, last_seen_at, last_source_ip,
                     last_route, last_sequence, message_count, avg_interval_ms,
                     last_interval_ms, last_payload_size, avg_payload_size, last_payload_hash,
-                    online, last_connected_at, anomaly_count, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 'recent')
+                    last_payload_schema, online, last_connected_at, anomaly_count, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'recent')
                 """,
                 (
                     device_id,
@@ -153,6 +175,7 @@ class EdgeServerStorage:
                     payload_size,
                     avg_payload_size,
                     record.get("payload_hash"),
+                    payload_schema,
                     online,
                     received_at if online else None,
                     len(events),
@@ -165,7 +188,7 @@ class EdgeServerStorage:
                 SET protocol = ?, last_seen_at = ?, last_source_ip = ?, last_route = ?,
                     last_sequence = ?, message_count = message_count + 1,
                     avg_interval_ms = ?, last_interval_ms = ?, last_payload_size = ?,
-                    avg_payload_size = ?, last_payload_hash = ?, online = ?,
+                    avg_payload_size = ?, last_payload_hash = ?, last_payload_schema = ?, online = ?,
                     last_connected_at = CASE WHEN ? = 1 AND online = 0 THEN ? ELSE last_connected_at END,
                     anomaly_count = anomaly_count + ?, status = 'recent'
                 WHERE device_id = ?
@@ -181,6 +204,7 @@ class EdgeServerStorage:
                     payload_size,
                     avg_payload_size,
                     record.get("payload_hash"),
+                    payload_schema,
                     online,
                     online,
                     received_at,
@@ -188,6 +212,57 @@ class EdgeServerStorage:
                     device_id,
                 ),
             )
+        return events
+
+    def detect_device_silence(self, *, now: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        self.open()
+        now_text = now or _utc_now()
+        now_dt = _parse_time(now_text)
+        if now_dt is None:
+            return []
+        events: list[dict[str, Any]] = []
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT device_id, protocol, last_seen_at, last_route, avg_interval_ms, status, online
+                FROM device_state
+                WHERE status NOT IN ('silent', 'disconnected')
+                ORDER BY last_seen_at ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            for row in rows:
+                item = dict(row)
+                last_seen_dt = _parse_time(item.get("last_seen_at"))
+                if last_seen_dt is None:
+                    continue
+                avg_interval = _as_float(item.get("avg_interval_ms"))
+                timeout_ms = max(60_000.0, (avg_interval or 10_000.0) * 6.0)
+                silent_ms = max(0.0, (now_dt - last_seen_dt).total_seconds() * 1000.0)
+                if silent_ms < timeout_ms:
+                    continue
+                event = _event(
+                    "warning",
+                    "no_data_timeout",
+                    str(item.get("protocol") or ""),
+                    str(item.get("device_id") or "unknown"),
+                    str(item.get("last_route") or ""),
+                    f"No data from {item.get('device_id')} for {int(silent_ms)} ms",
+                    {"silent_ms": silent_ms, "timeout_ms": timeout_ms, "avg_interval_ms": avg_interval},
+                )
+                self._conn.execute(
+                    """
+                    UPDATE device_state
+                    SET status = 'silent', online = 0, anomaly_count = anomaly_count + 1
+                    WHERE device_id = ?
+                    """,
+                    (item.get("device_id"),),
+                )
+                self._insert_event_locked(event)
+                events.append(event)
+            if events:
+                self._conn.commit()
         return events
 
     def mark_mqtt_disconnected(
@@ -272,7 +347,7 @@ class EdgeServerStorage:
                 SELECT device_id, protocol, last_route AS endpoint, last_source_ip AS peer,
                        last_seen_at AS last_seen, message_count, status, last_interval_ms,
                        avg_interval_ms, last_payload_size, avg_payload_size, anomaly_count,
-                       online
+                       last_sequence, last_payload_schema, online
                 FROM device_state
                 ORDER BY last_seen_at DESC
                 LIMIT ?
@@ -339,13 +414,39 @@ class EdgeServerStorage:
                 SELECT device_id, protocol, last_route AS endpoint, last_source_ip AS peer,
                        last_seen_at AS last_seen, message_count, status, online,
                        last_interval_ms, avg_interval_ms, last_payload_size,
-                       avg_payload_size, anomaly_count
+                       avg_payload_size, last_sequence, last_payload_schema,
+                       last_disconnected_at, anomaly_count
                 FROM device_state
                 WHERE protocol IN ({placeholders})
                 ORDER BY last_seen_at DESC
                 LIMIT 50
                 """,
                 protocols,
+            ).fetchall()
+            anomaly_placeholders = ",".join("?" for _ in ANOMALY_EVENT_TYPES)
+            anomaly_params = (*protocols, *ANOMALY_EVENT_TYPES)
+            anomaly_summary = self._conn.execute(
+                f"""
+                SELECT event_type, severity, COUNT(*) AS count, MAX(created_at) AS last_seen
+                FROM events
+                WHERE protocol IN ({placeholders})
+                  AND event_type IN ({anomaly_placeholders})
+                GROUP BY event_type, severity
+                ORDER BY count DESC, last_seen DESC
+                LIMIT 20
+                """,
+                anomaly_params,
+            ).fetchall()
+            recent_events = self._conn.execute(
+                f"""
+                SELECT created_at, severity, event_type, protocol, device_id, route, source, message, details_json
+                FROM events
+                WHERE protocol IN ({placeholders})
+                  AND event_type IN ({anomaly_placeholders})
+                ORDER BY created_at DESC
+                LIMIT 20
+                """,
+                anomaly_params,
             ).fetchall()
             route_missing = self._conn.execute(
                 """
@@ -374,37 +475,214 @@ class EdgeServerStorage:
                 "minute_series": [dict(row) for row in reversed(minute_rows)],
                 "recent_messages": [dict(row) for row in recent],
                 "devices": [_device_health(dict(row)) for row in device_rows],
+                "anomaly_summary": [dict(row) for row in anomaly_summary],
+                "recent_events": [_event_dict(dict(row)) for row in recent_events],
             }
+
+    def history_devices(self, limit: int = 500) -> list[dict[str, Any]]:
+        self.open()
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT ds.device_id, ds.protocol, ds.first_seen_at, ds.last_seen_at,
+                       ds.last_route, ds.last_source_ip, ds.message_count, ds.status,
+                       ds.online, ds.anomaly_count,
+                       COALESCE(ec.event_count, 0) AS event_count
+                FROM device_state ds
+                LEFT JOIN (
+                    SELECT device_id, COUNT(*) AS event_count
+                    FROM events
+                    GROUP BY device_id
+                ) ec ON ec.device_id = ds.device_id
+                ORDER BY ds.last_seen_at DESC
+                LIMIT ?
+                """,
+                (_limit(limit),),
+            ).fetchall()
+            return [_device_history_row(dict(row)) for row in rows]
+
+    def device_history(self, device_id: str, filters: dict[str, Any]) -> dict[str, Any]:
+        self.open()
+        protocol_group = str(filters.get("protocol_group") or "").lower()
+        from_value = str(filters.get("from") or "")
+        to_value = str(filters.get("to") or "")
+        message_where = ["device_id = ?"]
+        message_params: list[Any] = [device_id]
+        event_where = ["device_id = ?"]
+        event_params: list[Any] = [device_id]
+        if protocol_group == "http":
+            message_where.append("protocol IN (?, ?)")
+            message_params.extend(["HTTP", "HTTPS"])
+            event_where.append("protocol IN (?, ?)")
+            event_params.extend(["HTTP", "HTTPS"])
+        elif protocol_group == "mqtt":
+            message_where.append("protocol IN (?, ?)")
+            message_params.extend(["MQTT", "MQTTS"])
+            event_where.append("protocol IN (?, ?)")
+            event_params.extend(["MQTT", "MQTTS"])
+        if from_value:
+            message_where.append("received_at >= ?")
+            message_params.append(from_value)
+            event_where.append("created_at >= ?")
+            event_params.append(from_value)
+        if to_value:
+            message_where.append("received_at <= ?")
+            message_params.append(to_value)
+            event_where.append("created_at <= ?")
+            event_params.append(to_value)
+
+        message_where_sql = "WHERE " + " AND ".join(message_where)
+        event_where_sql = "WHERE " + " AND ".join(event_where)
+        with self._lock:
+            device_row = self._conn.execute(
+                """
+                SELECT device_id, protocol, first_seen_at, last_seen_at, last_route,
+                       last_source_ip, last_sequence, message_count, avg_interval_ms,
+                       last_interval_ms, last_payload_size, avg_payload_size,
+                       last_payload_schema, status, online, anomaly_count,
+                       last_connected_at, last_disconnected_at
+                FROM device_state
+                WHERE device_id = ?
+                """,
+                (device_id,),
+            ).fetchone()
+            summary_row = self._conn.execute(
+                f"""
+                SELECT COUNT(*) AS total_messages, MIN(received_at) AS first_message_at,
+                       MAX(received_at) AS last_message_at, AVG(payload_size) AS avg_payload_size,
+                       MAX(payload_size) AS max_payload_size
+                FROM messages
+                {message_where_sql}
+                """,
+                message_params,
+            ).fetchone()
+            event_count = self._conn.execute(
+                f"SELECT COUNT(*) AS count FROM events {event_where_sql}",
+                event_params,
+            ).fetchone()["count"]
+            message_series_rows = self._conn.execute(
+                f"""
+                SELECT substr(received_at, 1, 16) AS bucket, COUNT(*) AS count,
+                       AVG(payload_size) AS avg_payload_size, MAX(payload_size) AS max_payload_size
+                FROM messages
+                {message_where_sql}
+                GROUP BY bucket
+                ORDER BY bucket ASC
+                LIMIT 720
+                """,
+                message_params,
+            ).fetchall()
+            anomaly_series_rows = self._conn.execute(
+                f"""
+                SELECT substr(created_at, 1, 16) AS bucket, COUNT(*) AS count
+                FROM events
+                {event_where_sql}
+                GROUP BY bucket
+                ORDER BY bucket ASC
+                LIMIT 720
+                """,
+                event_params,
+            ).fetchall()
+            route_rows = self._conn.execute(
+                f"""
+                SELECT route, protocol, COUNT(*) AS count, COUNT(DISTINCT source_ip) AS sources,
+                       MAX(received_at) AS last_seen
+                FROM messages
+                {message_where_sql}
+                GROUP BY route, protocol
+                ORDER BY count DESC
+                LIMIT 30
+                """,
+                message_params,
+            ).fetchall()
+            event_summary_rows = self._conn.execute(
+                f"""
+                SELECT event_type, severity, COUNT(*) AS count, MAX(created_at) AS last_seen
+                FROM events
+                {event_where_sql}
+                GROUP BY event_type, severity
+                ORDER BY count DESC, last_seen DESC
+                LIMIT 30
+                """,
+                event_params,
+            ).fetchall()
+            recent_events = self._conn.execute(
+                f"""
+                SELECT created_at, severity, event_type, protocol, device_id, route, source, message, details_json
+                FROM events
+                {event_where_sql}
+                ORDER BY created_at DESC
+                LIMIT 50
+                """,
+                event_params,
+            ).fetchall()
+            recent_messages = self._conn.execute(
+                f"""
+                SELECT id, received_at, protocol, device_id, route, endpoint_name,
+                       payload_type, payload_size, device_timestamp, sequence
+                FROM messages
+                {message_where_sql}
+                ORDER BY received_at DESC
+                LIMIT 50
+                """,
+                message_params,
+            ).fetchall()
+
+        device = _device_health(dict(device_row)) if device_row else {"device_id": device_id, "health": "stale", "health_label": "No stored data"}
+        summary = dict(summary_row) if summary_row else {}
+        return {
+            "ok": True,
+            "device_id": device_id,
+            "device": device,
+            "summary": {
+                "total_messages": int(summary.get("total_messages") or 0),
+                "first_message_at": summary.get("first_message_at"),
+                "last_message_at": summary.get("last_message_at"),
+                "avg_payload_size": float(summary.get("avg_payload_size") or 0),
+                "max_payload_size": int(summary.get("max_payload_size") or 0),
+                "event_count": int(event_count or 0),
+            },
+            "message_series": [dict(row) for row in message_series_rows],
+            "payload_series": [dict(row) for row in message_series_rows],
+            "anomaly_series": [dict(row) for row in anomaly_series_rows],
+            "routes": [dict(row) for row in route_rows],
+            "event_summary": [dict(row) for row in event_summary_rows],
+            "recent_events": [_event_dict(dict(row)) for row in recent_events],
+            "recent_messages": [dict(row) for row in recent_messages],
+        }
 
     def alert_events(self, limit: int = 100) -> list[dict[str, Any]]:
         self.open()
+        placeholders = ",".join("?" for _ in ANOMALY_EVENT_TYPES)
         with self._lock:
             rows = self._conn.execute(
-                """
+                f"""
                 SELECT created_at, severity, event_type, protocol, device_id, route, source, message, details_json
                 FROM events
                 WHERE severity IN ('warning', 'error', 'critical')
-                   OR event_type IN ('auth_failure', 'route_missing', 'mqtt_disconnected')
+                   OR event_type IN ({placeholders})
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (*ANOMALY_EVENT_TYPES, limit),
             ).fetchall()
-            return [dict(row) for row in rows]
+            return [_event_dict(dict(row)) for row in rows]
 
     def alert_summary(self) -> dict[str, int]:
         self.open()
+        placeholders = ",".join("?" for _ in ANOMALY_EVENT_TYPES)
         with self._lock:
             rows = self._conn.execute(
-                """
+                f"""
                 SELECT severity, COUNT(*) AS count
                 FROM events
                 WHERE severity IN ('warning', 'error', 'critical')
-                   OR event_type IN ('auth_failure', 'route_missing', 'mqtt_disconnected')
+                   OR event_type IN ({placeholders})
                 GROUP BY severity
-                """
+                """,
+                ANOMALY_EVENT_TYPES,
             ).fetchall()
-            result = {"warning": 0, "error": 0, "critical": 0, "total": 0}
+            result = {"info": 0, "warning": 0, "error": 0, "critical": 0, "total": 0}
             for row in rows:
                 key = str(row["severity"] or "warning")
                 result[key] = int(row["count"] or 0)
@@ -525,6 +803,7 @@ class EdgeServerStorage:
             {
                 "avg_payload_size": "REAL",
                 "last_payload_hash": "TEXT",
+                "last_payload_schema": "TEXT",
                 "online": "INTEGER NOT NULL DEFAULT 0",
                 "last_connected_at": "TEXT",
                 "last_disconnected_at": "TEXT",
@@ -612,8 +891,30 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on", "include"}
 
 
+def _event_dict(row: dict[str, Any]) -> dict[str, Any]:
+    details = row.get("details_json")
+    if isinstance(details, str) and details:
+        try:
+            row["details"] = json.loads(details)
+        except json.JSONDecodeError:
+            row["details"] = details
+    elif details is not None:
+        row["details"] = details
+    return row
+
+
+def _device_history_row(row: dict[str, Any]) -> dict[str, Any]:
+    row["online"] = bool(row.get("online"))
+    row["message_count"] = int(row.get("message_count") or 0)
+    row["anomaly_count"] = int(row.get("anomaly_count") or 0)
+    row["event_count"] = int(row.get("event_count") or 0)
+    row["last_seen"] = row.get("last_seen_at")
+    row["first_seen"] = row.get("first_seen_at")
+    return _device_health(row)
+
+
 def _device_health(row: dict[str, Any]) -> dict[str, Any]:
-    last_seen = _parse_time(row.get("last_seen"))
+    last_seen = _parse_time(row.get("last_seen") or row.get("last_seen_at"))
     age_ms = None
     if last_seen is not None:
         age_ms = max(0.0, (datetime.now(UTC) - last_seen).total_seconds() * 1000.0)
@@ -655,7 +956,40 @@ def _anomaly_events(record: dict[str, Any], existing: dict[str, Any] | None) -> 
     now_dt = _parse_time(received_at)
     if existing is None:
         events.append(_event("info", "new_device", protocol, device_id, route, f"New device seen: {device_id}"))
+        if record.get("payload_parse_error"):
+            events.append(_event(
+                "warning",
+                "payload_parse_error",
+                protocol,
+                device_id,
+                route,
+                f"Payload parse failed for {device_id}",
+                {"error": record.get("payload_parse_error"), "payload_type": record.get("payload_type")},
+            ))
         return events
+
+    previous_status = str(existing.get("status") or "")
+    if previous_status in {"silent", "disconnected"}:
+        events.append(_event(
+            "info",
+            "device_recovered",
+            protocol,
+            device_id,
+            route,
+            f"Device recovered: {device_id}",
+            {"previous_status": previous_status},
+        ))
+
+    if record.get("payload_parse_error"):
+        events.append(_event(
+            "warning",
+            "payload_parse_error",
+            protocol,
+            device_id,
+            route,
+            f"Payload parse failed for {device_id}",
+            {"error": record.get("payload_parse_error"), "payload_type": record.get("payload_type")},
+        ))
 
     last_seen_dt = _parse_time(existing.get("last_seen_at"))
     interval_ms = _interval_ms(last_seen_dt, now_dt)
@@ -707,6 +1041,19 @@ def _anomaly_events(record: dict[str, Any], existing: dict[str, Any] | None) -> 
                 {"payload_size": payload_size, "avg_payload_size": avg_payload_size, "ratio": ratio},
             ))
 
+    payload_schema = str(record.get("payload_schema") or "")
+    last_payload_schema = str(existing.get("last_payload_schema") or "")
+    if payload_schema and last_payload_schema and payload_schema != last_payload_schema and message_count >= 3:
+        events.append(_event(
+            "warning",
+            "payload_schema_change",
+            protocol,
+            device_id,
+            route,
+            f"Payload fields changed for {device_id}",
+            {"payload_schema": payload_schema, "last_payload_schema": last_payload_schema},
+        ))
+
     sequence = record.get("sequence")
     last_sequence = existing.get("last_sequence")
     if sequence is not None and last_sequence is not None:
@@ -717,16 +1064,44 @@ def _anomaly_events(record: dict[str, Any], existing: dict[str, Any] | None) -> 
         else:
             current_int = _as_int(sequence_text)
             last_int = _as_int(last_sequence_text)
-            if current_int is not None and last_int is not None and current_int < last_int:
+            if current_int is not None and last_int is not None and current_int == last_int + 1:
+                pass
+            elif current_int is not None and last_int is not None and current_int > last_int + 1:
                 events.append(_event(
                     "warning",
-                    "sequence_out_of_order",
+                    "sequence_gap",
                     protocol,
                     device_id,
                     route,
-                    f"Out-of-order sequence from {device_id}: {current_int} after {last_int}",
-                    {"sequence": current_int, "last_sequence": last_int},
+                    f"Sequence gap from {device_id}: {current_int} after {last_int}",
+                    {
+                        "sequence": current_int,
+                        "last_sequence": last_int,
+                        "expected_sequence": last_int + 1,
+                        "missing_count": current_int - last_int - 1,
+                    },
                 ))
+            elif current_int is not None and last_int is not None and current_int < last_int:
+                if current_int <= 1 and last_int >= 10:
+                    events.append(_event(
+                        "info",
+                        "sequence_reset",
+                        protocol,
+                        device_id,
+                        route,
+                        f"Sequence reset from {device_id}: {current_int} after {last_int}",
+                        {"sequence": current_int, "last_sequence": last_int},
+                    ))
+                else:
+                    events.append(_event(
+                        "warning",
+                        "sequence_out_of_order",
+                        protocol,
+                        device_id,
+                        route,
+                        f"Out-of-order sequence from {device_id}: {current_int} after {last_int}",
+                        {"sequence": current_int, "last_sequence": last_int},
+                    ))
 
     device_timestamp = _parse_time(record.get("device_timestamp"))
     if device_timestamp is not None and now_dt is not None:

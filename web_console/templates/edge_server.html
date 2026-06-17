@@ -18,6 +18,7 @@
         <button type="button" class="system-tab" data-es-tab="http" role="tab" aria-selected="false">Live HTTP</button>
         <button type="button" class="system-tab" data-es-tab="mqtt" role="tab" aria-selected="false">Live MQTT</button>
         <button type="button" class="system-tab" data-es-tab="alerts" role="tab" aria-selected="false">Alerts</button>
+        <button type="button" class="system-tab" data-es-tab="history" role="tab" aria-selected="false">Device History</button>
         <button type="button" class="system-tab" data-es-tab="listeners" role="tab" aria-selected="false">Listener Config</button>
         <button type="button" class="system-tab" data-es-tab="routes" role="tab" aria-selected="false">Route Config</button>
         <button type="button" class="system-tab" data-es-tab="storage" role="tab" aria-selected="false">Storage</button>
@@ -85,6 +86,118 @@
                 </div>
                 <div class="es-audit-list" data-es-audit-list></div>
                 <div class="es-empty-line" data-es-audit-empty>No alerts recorded.</div>
+            </section>
+        </div>
+    </div>
+
+    <div class="es-panel is-hidden" data-es-panel="history">
+        <div class="es-section-head">
+            <div>
+                <h2>Device History</h2>
+                <p>Stored device records, previous activity, anomaly history, and exports across restarts.</p>
+            </div>
+            <div class="es-head-actions">
+                <a class="ghost-action" href="/api/edge-server/messages.csv" data-es-history-messages-export>Messages CSV</a>
+                <a class="ghost-action" href="/api/edge-server/events.csv" data-es-history-events-export>Events CSV</a>
+            </div>
+        </div>
+
+        <div class="es-history-controls">
+            <label class="fw-field">
+                <span class="fw-label">Device</span>
+                <select class="fw-input" data-es-history-device></select>
+            </label>
+            <label class="fw-field">
+                <span class="fw-label">Protocol</span>
+                <select class="fw-input" data-es-history-protocol>
+                    <option value="">All</option>
+                    <option value="http">HTTP / HTTPS</option>
+                    <option value="mqtt">MQTT / MQTTS</option>
+                </select>
+            </label>
+            <label class="fw-field">
+                <span class="fw-label">Range</span>
+                <select class="fw-input" data-es-history-range>
+                    <option value="24h">Last 24 hours</option>
+                    <option value="7d">Last 7 days</option>
+                    <option value="30d" selected>Last 30 days</option>
+                    <option value="all">All stored</option>
+                </select>
+            </label>
+            <button type="button" class="ghost-action" data-es-history-refresh>Refresh</button>
+        </div>
+
+        <div class="es-metrics-grid">
+            <article class="es-live-card">
+                <span class="es-kicker">Messages</span>
+                <strong data-es-history-total>0</strong>
+                <p>stored records in selected range</p>
+            </article>
+            <article class="es-live-card">
+                <span class="es-kicker">Anomalies</span>
+                <strong data-es-history-events>0</strong>
+                <p>stored events in selected range</p>
+            </article>
+            <article class="es-live-card">
+                <span class="es-kicker">Last Seen</span>
+                <strong data-es-history-last>Never</strong>
+                <p data-es-history-status>No device selected</p>
+            </article>
+            <article class="es-live-card">
+                <span class="es-kicker">Payload</span>
+                <strong data-es-history-payload>0 B</strong>
+                <p>average payload size</p>
+            </article>
+        </div>
+
+        <div class="es-protocol-grid">
+            <section class="es-live-panel">
+                <div class="es-live-panel-head">
+                    <strong>Message Rate History</strong>
+                    <span>stored messages per minute</span>
+                </div>
+                <div class="es-chart-bars" data-es-history-message-chart></div>
+                <div class="es-empty-line" data-es-history-message-empty>No stored message history for this device.</div>
+            </section>
+            <section class="es-live-panel">
+                <div class="es-live-panel-head">
+                    <strong>Anomaly History</strong>
+                    <span>stored events per minute</span>
+                </div>
+                <div class="es-chart-bars" data-es-history-anomaly-chart></div>
+                <div class="es-empty-line" data-es-history-anomaly-empty>No stored anomaly history for this device.</div>
+            </section>
+            <section class="es-live-panel">
+                <div class="es-live-panel-head">
+                    <strong>Route / Topic History</strong>
+                    <span>where this device sent data</span>
+                </div>
+                <div class="es-route-list" data-es-history-routes></div>
+                <div class="es-empty-line" data-es-history-routes-empty>No route/topic history for this device.</div>
+            </section>
+            <section class="es-live-panel">
+                <div class="es-live-panel-head">
+                    <strong>Anomaly Types</strong>
+                    <span>counts by event type</span>
+                </div>
+                <div class="es-anomaly-list" data-es-history-event-summary></div>
+                <div class="es-empty-line" data-es-history-event-summary-empty>No anomaly types for this device.</div>
+            </section>
+            <section class="es-live-panel es-live-panel-wide">
+                <div class="es-live-panel-head">
+                    <strong>Recent Device Anomalies</strong>
+                    <span>latest stored events</span>
+                </div>
+                <div class="es-audit-list" data-es-history-events-list></div>
+                <div class="es-empty-line" data-es-history-events-empty>No stored anomalies for this device.</div>
+            </section>
+            <section class="es-live-panel es-live-panel-wide">
+                <div class="es-live-panel-head">
+                    <strong>Recent Device Messages</strong>
+                    <span>latest stored records</span>
+                </div>
+                <div class="es-message-list" data-es-history-messages-list></div>
+                <div class="es-empty-line" data-es-history-messages-empty>No stored messages for this device.</div>
             </section>
         </div>
     </div>
@@ -278,11 +391,34 @@
             </section>
             <section class="es-live-panel es-live-panel-wide">
                 <div class="es-live-panel-head">
+                    <strong>HTTP Anomaly Watchlist</strong>
+                    <span>active checks and trigger parameters</span>
+                </div>
+                <div class="es-watch-grid" data-es-http-watchlist></div>
+            </section>
+            <section class="es-live-panel es-live-panel-wide">
+                <div class="es-live-panel-head">
                     <strong>HTTP Device Health</strong>
                     <span>HTTP is request based, so status means last receive health</span>
                 </div>
                 <div class="es-device-list" data-es-http-devices-list></div>
                 <div class="es-empty-line" data-es-http-devices-empty>No HTTP devices have sent data yet.</div>
+            </section>
+            <section class="es-live-panel">
+                <div class="es-live-panel-head">
+                    <strong>HTTP Anomaly Signals</strong>
+                    <span>what the gateway is watching</span>
+                </div>
+                <div class="es-anomaly-list" data-es-http-anomaly-summary></div>
+                <div class="es-empty-line" data-es-http-anomaly-summary-empty>No HTTP anomaly signals yet.</div>
+            </section>
+            <section class="es-live-panel">
+                <div class="es-live-panel-head">
+                    <strong>Latest HTTP Anomalies</strong>
+                    <span>latest warning/info events with measured values</span>
+                </div>
+                <div class="es-audit-list" data-es-http-events></div>
+                <div class="es-empty-line" data-es-http-events-empty>No HTTP anomalies recorded.</div>
             </section>
             <section class="es-live-panel es-live-panel-wide">
                 <div class="es-live-panel-head">
@@ -349,11 +485,34 @@
             </section>
             <section class="es-live-panel es-live-panel-wide">
                 <div class="es-live-panel-head">
+                    <strong>MQTT Anomaly Watchlist</strong>
+                    <span>active checks and trigger parameters</span>
+                </div>
+                <div class="es-watch-grid" data-es-mqtt-watchlist></div>
+            </section>
+            <section class="es-live-panel es-live-panel-wide">
+                <div class="es-live-panel-head">
                     <strong>MQTT Device Health</strong>
                     <span>connected, recent, or stale</span>
                 </div>
                 <div class="es-device-list" data-es-mqtt-devices-list></div>
                 <div class="es-empty-line" data-es-mqtt-devices-empty>No MQTT devices have sent data yet.</div>
+            </section>
+            <section class="es-live-panel">
+                <div class="es-live-panel-head">
+                    <strong>MQTT Anomaly Signals</strong>
+                    <span>what the gateway is watching</span>
+                </div>
+                <div class="es-anomaly-list" data-es-mqtt-anomaly-summary></div>
+                <div class="es-empty-line" data-es-mqtt-anomaly-summary-empty>No MQTT anomaly signals yet.</div>
+            </section>
+            <section class="es-live-panel">
+                <div class="es-live-panel-head">
+                    <strong>Latest MQTT Anomalies</strong>
+                    <span>latest warning/info events with measured values</span>
+                </div>
+                <div class="es-audit-list" data-es-mqtt-events></div>
+                <div class="es-empty-line" data-es-mqtt-events-empty>No MQTT anomalies recorded.</div>
             </section>
             <section class="es-live-panel es-live-panel-wide">
                 <div class="es-live-panel-head">

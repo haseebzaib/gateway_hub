@@ -452,7 +452,7 @@ def _default_edge_server_config() -> dict[str, Any]:
         },
         "http_endpoints": [],
         "mqtt_topics": [],
-        "storage": {"enabled": True, "retention_days": 30, "max_size_mb": 1024},
+        "storage": {"enabled": True, "retention_days": 30, "max_size_mb": 5120},
         "tls": {
             "use_secrets": True,
             "secrets_dir": "/opt/metacrust/secrets/edge_server",
@@ -583,7 +583,7 @@ def _normalise_edge_server_config(payload: dict[str, Any]) -> dict[str, Any]:
     storage.update(raw_storage)
     storage["enabled"] = bool(storage.get("enabled", True))
     storage["retention_days"] = max(1, min(3650, int(storage.get("retention_days") or 30)))
-    storage["max_size_mb"] = max(64, min(1_048_576, int(storage.get("max_size_mb") or 1024)))
+    storage["max_size_mb"] = max(64, min(1_048_576, int(storage.get("max_size_mb") or 5120)))
 
     raw_tls = dict(payload.get("tls") or {})
     tls = dict(defaults["tls"])
@@ -1311,6 +1311,49 @@ async def get_edge_server_alerts(request: Request) -> JSONResponse:
     if edge_server is not None:
         return JSONResponse(edge_server.alert_metrics())
     return JSONResponse({"ok": True, "summary": {"total": 0, "warning": 0, "error": 0, "critical": 0}, "events": []})
+
+
+@router.get("/api/edge-server/history/devices")
+async def get_edge_server_history_devices(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    edge_server = getattr(request.app.state, "edge_server", None)
+    if edge_server is not None:
+        return JSONResponse(edge_server.history_devices())
+    return JSONResponse({"ok": True, "devices": []})
+
+
+@router.get("/api/edge-server/history/device")
+async def get_edge_server_device_history_query(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    device_id = request.query_params.get("device_id") or ""
+    if not device_id:
+        return JSONResponse({"ok": False, "message": "Device not selected."}, status_code=status.HTTP_400_BAD_REQUEST)
+    edge_server = getattr(request.app.state, "edge_server", None)
+    filters = {
+        "protocol_group": request.query_params.get("protocol_group") or "",
+        "from": request.query_params.get("from") or "",
+        "to": request.query_params.get("to") or "",
+    }
+    if edge_server is not None:
+        return JSONResponse(edge_server.device_history(device_id, filters))
+    return JSONResponse({"ok": True, "device_id": device_id, "summary": {}, "message_series": [], "anomaly_series": [], "recent_events": [], "recent_messages": []})
+
+
+@router.get("/api/edge-server/history/device/{device_id}")
+async def get_edge_server_device_history(request: Request, device_id: str) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    edge_server = getattr(request.app.state, "edge_server", None)
+    filters = {
+        "protocol_group": request.query_params.get("protocol_group") or "",
+        "from": request.query_params.get("from") or "",
+        "to": request.query_params.get("to") or "",
+    }
+    if edge_server is not None:
+        return JSONResponse(edge_server.device_history(device_id, filters))
+    return JSONResponse({"ok": True, "device_id": device_id, "summary": {}, "message_series": [], "anomaly_series": [], "recent_events": [], "recent_messages": []})
 
 
 @router.get("/api/edge-server/events.csv")

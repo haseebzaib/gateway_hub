@@ -148,6 +148,14 @@ body::after {
     font-size: 0.76rem;
 }
 
+.es-history-controls {
+    display: grid;
+    grid-template-columns: minmax(12rem, 1.6fr) minmax(10rem, 0.8fr) minmax(10rem, 0.8fr) auto;
+    gap: 0.75rem;
+    align-items: end;
+    margin-bottom: 1rem;
+}
+
 .es-tabs {
     margin-top: 0.2rem;
 }
@@ -247,7 +255,8 @@ body::after {
 
 .es-chart-bars,
 .es-route-list,
-.es-message-list {
+.es-message-list,
+.es-anomaly-list {
     display: grid;
     gap: 0.45rem;
 }
@@ -276,7 +285,8 @@ body::after {
 }
 
 .es-route-row,
-.es-message-row {
+.es-message-row,
+.es-anomaly-row {
     display: grid;
     grid-template-columns: minmax(0, 1.4fr) 0.5fr 0.5fr 0.8fr;
     gap: 0.6rem;
@@ -291,28 +301,77 @@ body::after {
     grid-template-columns: 0.8fr 1fr minmax(0, 1.3fr) 0.5fr 0.85fr;
 }
 
+.es-anomaly-row {
+    grid-template-columns: minmax(0, 1fr) 0.35fr minmax(0, 1.5fr) 0.7fr;
+}
+
 .es-route-row strong,
-.es-message-row strong {
+.es-message-row strong,
+.es-anomaly-row strong {
     min-width: 0;
     color: var(--text);
     overflow-wrap: anywhere;
 }
 
 .es-route-row span,
-.es-message-row span {
+.es-message-row span,
+.es-anomaly-row span {
     color: var(--accent-cool);
     font-size: 0.82rem;
 }
 
 .es-route-row small,
 .es-message-row small,
+.es-anomaly-row small,
 .es-route-row em,
-.es-message-row em {
+.es-message-row em,
+.es-anomaly-row em {
     min-width: 0;
     color: var(--muted);
     font-size: 0.78rem;
     font-style: normal;
     overflow-wrap: anywhere;
+}
+
+.es-watch-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.55rem;
+}
+
+.es-watch-item {
+    min-width: 0;
+    padding: 0.65rem;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 0.38rem;
+    background: rgba(255, 255, 255, 0.025);
+}
+
+.es-watch-item strong,
+.es-watch-item span,
+.es-watch-item small {
+    display: block;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.es-watch-item strong {
+    color: var(--text);
+    font-size: 0.86rem;
+}
+
+.es-watch-item span {
+    margin-top: 0.25rem;
+    color: var(--muted);
+    font-size: 0.76rem;
+    line-height: 1.3;
+}
+
+.es-watch-item small {
+    margin-top: 0.35rem;
+    color: var(--accent-cool);
+    font-size: 0.72rem;
+    line-height: 1.28;
 }
 
 .es-buffer-grid span {
@@ -777,6 +836,7 @@ body::after {
     .es-buffer-grid,
     .es-listener-grid,
     .es-listener-grid-compact,
+    .es-history-controls,
     .es-form-grid,
     .es-form-grid-tight,
     .es-field-help,
@@ -784,10 +844,12 @@ body::after {
     .es-cert-form,
     .es-storage-grid,
     .es-pipeline-note,
+    .es-watch-grid,
     .es-device-row,
     .es-audit-row,
     .es-route-row,
     .es-message-row,
+    .es-anomaly-row,
     .es-chart-bar,
     .es-item-card {
         grid-template-columns: 1fr;
