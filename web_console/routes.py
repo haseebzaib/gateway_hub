@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import secrets
+import subprocess
 import time
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -444,11 +445,18 @@ def _default_edge_server_config() -> dict[str, Any]:
         "version": 1,
         "listeners": {
             "bind_mode": "interfaces",
-            "bind_interfaces": ["eth0", "eth1", "wlan0", "wwan0"],
+            "bind_interfaces": ["eth0", "eth1", "wlan0", "wwan0", "tailscale0"],
             "http": {"enabled": False, "port": 8080},
             "https": {"enabled": False, "port": 8443, "tls_mode": "server", "mtls_required": False},
             "mqtt": {"enabled": False, "port": 1883, "allow_anonymous": False},
             "mqtts": {"enabled": False, "port": 8883, "tls_mode": "server", "mtls_required": False},
+        },
+        "funnel": {
+            "enabled": False,
+            "http": True,
+            "https": False,
+            "mqtt": False,
+            "mqtts": False,
         },
         "http_endpoints": [],
         "mqtt_topics": [],
@@ -514,7 +522,7 @@ def _normalise_edge_server_config(payload: dict[str, Any]) -> dict[str, Any]:
     listeners["bind_mode"] = str(raw_listeners.get("bind_mode") or listeners["bind_mode"])
     if listeners["bind_mode"] not in {"interfaces", "local", "all", "tailscale"}:
         listeners["bind_mode"] = "interfaces"
-    allowed_interfaces = {"eth0", "eth1", "wlan0", "wwan0"}
+    allowed_interfaces = {"eth0", "eth1", "wlan0", "wwan0", "tailscale0"}
     raw_bind_interfaces = raw_listeners.get("bind_interfaces")
     if isinstance(raw_bind_interfaces, list):
         bind_interfaces = [
@@ -530,13 +538,13 @@ def _normalise_edge_server_config(payload: dict[str, Any]) -> dict[str, Any]:
     for key in ("http", "https", "mqtt", "mqtts"):
         item = dict(listeners[key])
         item.update(dict(raw_listeners.get(key) or {}))
-        item["enabled"] = bool(item.get("enabled", False))
+        item["enabled"] = _bool_config(item.get("enabled"), False)
         item["port"] = max(1, min(65535, int(item.get("port") or listeners[key]["port"])))
         if key in {"https", "mqtts"}:
-            item["mtls_required"] = bool(item.get("mtls_required", False))
+            item["mtls_required"] = _bool_config(item.get("mtls_required"), False)
             item["tls_mode"] = str(item.get("tls_mode") or "server")
         if key == "mqtt":
-            item["allow_anonymous"] = bool(item.get("allow_anonymous", False))
+            item["allow_anonymous"] = _bool_config(item.get("allow_anonymous"), False)
         listeners[key] = item
 
     http_endpoints = []
@@ -546,7 +554,7 @@ def _normalise_edge_server_config(payload: dict[str, Any]) -> dict[str, Any]:
         endpoint = dict(raw)
         endpoint["id"] = str(endpoint.get("id") or secrets.token_hex(8))[:32]
         endpoint["name"] = str(endpoint.get("name") or "HTTP Endpoint")[:64]
-        endpoint["enabled"] = bool(endpoint.get("enabled", True))
+        endpoint["enabled"] = _bool_config(endpoint.get("enabled"), True)
         endpoint["protocol"] = str(endpoint.get("protocol") or "http")
         if endpoint["protocol"] not in {"http", "https"}:
             endpoint["protocol"] = "http"
@@ -566,7 +574,7 @@ def _normalise_edge_server_config(payload: dict[str, Any]) -> dict[str, Any]:
         topic = dict(raw)
         topic["id"] = str(topic.get("id") or secrets.token_hex(8))[:32]
         topic["name"] = str(topic.get("name") or "MQTT Topic")[:64]
-        topic["enabled"] = bool(topic.get("enabled", True))
+        topic["enabled"] = _bool_config(topic.get("enabled"), True)
         topic["protocol"] = str(topic.get("protocol") or "mqtt")
         if topic["protocol"] not in {"mqtt", "mqtts"}:
             topic["protocol"] = "mqtt"
@@ -581,22 +589,30 @@ def _normalise_edge_server_config(payload: dict[str, Any]) -> dict[str, Any]:
     raw_storage = dict(payload.get("storage") or {})
     storage = dict(defaults["storage"])
     storage.update(raw_storage)
-    storage["enabled"] = bool(storage.get("enabled", True))
+    storage["enabled"] = _bool_config(storage.get("enabled"), True)
     storage["retention_days"] = max(1, min(3650, int(storage.get("retention_days") or 30)))
     storage["max_size_mb"] = max(64, min(1_048_576, int(storage.get("max_size_mb") or 5120)))
 
     raw_tls = dict(payload.get("tls") or {})
     tls = dict(defaults["tls"])
     tls.update(raw_tls)
-    tls["use_secrets"] = bool(tls.get("use_secrets", True))
+    tls["use_secrets"] = _bool_config(tls.get("use_secrets"), True)
     tls["secrets_dir"] = str(tls.get("secrets_dir") or defaults["tls"]["secrets_dir"])[:180]
     tls["server_cert"] = str(tls.get("server_cert") or defaults["tls"]["server_cert"])[:120]
     tls["server_key"] = str(tls.get("server_key") or defaults["tls"]["server_key"])[:120]
     tls["client_ca"] = str(tls.get("client_ca") or defaults["tls"]["client_ca"])[:120]
 
+    raw_funnel = dict(payload.get("funnel") or {})
+    funnel = dict(defaults["funnel"])
+    funnel.update(raw_funnel)
+    funnel["enabled"] = _bool_config(funnel.get("enabled"), False)
+    for key in ("http", "https", "mqtt", "mqtts"):
+        funnel[key] = _bool_config(funnel.get(key), defaults["funnel"][key])
+
     return {
         "version": 1,
         "listeners": listeners,
+        "funnel": funnel,
         "http_endpoints": http_endpoints[:32],
         "mqtt_topics": mqtt_topics[:32],
         "storage": storage,
@@ -604,10 +620,208 @@ def _normalise_edge_server_config(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _bool_config(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if text in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return default
+
+
 def _edge_server_public_config(config: dict[str, Any]) -> dict[str, Any]:
     payload = deepcopy(config)
     payload["tls"] = {"managed": True, "installed": _edge_server_tls_status(config)}
     return payload
+
+
+def _tailscale_hostname() -> str:
+    env_host = os.environ.get("METACRUST_FUNNEL_HOST", "").strip().strip(".")
+    if env_host:
+        return env_host
+    try:
+        completed = subprocess.run(
+            ["tailscale", "status", "--json"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=4,
+        )
+        if completed.returncode == 0:
+            payload = json.loads(completed.stdout or "{}")
+            name = str(((payload.get("Self") or {}).get("DNSName")) or "").strip().strip(".")
+            if name:
+                return name
+    except Exception as exc:
+        LOGGER.error("funnel_hostname_lookup_failed error=%s", exc)
+    return ""
+
+
+def _tailscale_funnel_raw_status() -> dict[str, Any]:
+    try:
+        completed = subprocess.run(
+            ["tailscale", "funnel", "status", "--json"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=4,
+        )
+        if completed.returncode == 0:
+            return json.loads(completed.stdout or "{}")
+        LOGGER.error("funnel_status_failed stderr=%s", completed.stderr.strip())
+    except FileNotFoundError:
+        LOGGER.error("funnel_status_failed tailscale_not_installed")
+    except Exception as exc:
+        LOGGER.error("funnel_status_failed error=%s", exc)
+    return {}
+
+
+def _funnel_allocations(config: dict[str, Any]) -> list[dict[str, Any]]:
+    config = _normalise_edge_server_config(config)
+    funnel = dict(config.get("funnel") or {})
+    listeners = dict(config.get("listeners") or {})
+    host = _tailscale_hostname()
+    allocations: list[dict[str, Any]] = []
+
+    def listener_port(name: str, fallback: int) -> int:
+        return int((listeners.get(name) or {}).get("port") or fallback)
+
+    def listener_enabled(name: str) -> bool:
+        return bool((listeners.get(name) or {}).get("enabled"))
+
+    if funnel.get("http"):
+        allocations.append({
+            "service": "http",
+            "label": "HTTP endpoints",
+            "enabled": bool(funnel.get("enabled")) and listener_enabled("http"),
+            "available": listener_enabled("http"),
+            "reason": "" if listener_enabled("http") else "HTTP listener is off",
+            "public_port": 443,
+            "public_url": f"https://{host}" if host else "",
+            "target": f"http://127.0.0.1:{listener_port('http', 8080)}",
+            "command": ["tailscale", "funnel", "--bg", "--yes", "--https=443", f"http://127.0.0.1:{listener_port('http', 8080)}"],
+            "off_command": ["tailscale", "funnel", "--https=443", "off"],
+        })
+
+    tcp_ports = [8443, 10000]
+
+    def take_tcp_port(preferred: int | None = None) -> int | None:
+        if preferred in tcp_ports:
+            tcp_ports.remove(preferred)
+            return preferred
+        if tcp_ports:
+            return tcp_ports.pop(0)
+        return None
+
+    if funnel.get("https"):
+        public_port = take_tcp_port(8443)
+        allocations.append({
+            "service": "https",
+            "label": "HTTPS passthrough",
+            "enabled": bool(funnel.get("enabled")) and listener_enabled("https") and public_port is not None,
+            "available": listener_enabled("https") and public_port is not None,
+            "reason": "" if listener_enabled("https") and public_port is not None else "HTTPS listener is off or no Funnel TCP port is free",
+            "public_port": public_port,
+            "public_url": f"https://{host}:{public_port}" if host and public_port else "",
+            "target": f"tcp://127.0.0.1:{listener_port('https', 8443)}",
+            "command": ["tailscale", "funnel", "--bg", "--yes", f"--tcp={public_port}", f"tcp://127.0.0.1:{listener_port('https', 8443)}"] if public_port else [],
+            "off_command": ["tailscale", "funnel", f"--tcp={public_port}", "off"] if public_port else [],
+        })
+
+    if funnel.get("mqtt"):
+        public_port = take_tcp_port(10000)
+        allocations.append({
+            "service": "mqtt",
+            "label": "MQTT",
+            "enabled": bool(funnel.get("enabled")) and listener_enabled("mqtt") and public_port is not None,
+            "available": listener_enabled("mqtt") and public_port is not None,
+            "reason": "" if listener_enabled("mqtt") and public_port is not None else "MQTT listener is off or no Funnel TCP port is free",
+            "public_port": public_port,
+            "public_url": f"mqtt://{host}:{public_port}" if host and public_port else "",
+            "target": f"tcp://127.0.0.1:{listener_port('mqtt', 1883)}",
+            "command": ["tailscale", "funnel", "--bg", "--yes", f"--tcp={public_port}", f"tcp://127.0.0.1:{listener_port('mqtt', 1883)}"] if public_port else [],
+            "off_command": ["tailscale", "funnel", f"--tcp={public_port}", "off"] if public_port else [],
+        })
+
+    if funnel.get("mqtts"):
+        public_port = take_tcp_port(10000)
+        allocations.append({
+            "service": "mqtts",
+            "label": "MQTTS",
+            "enabled": bool(funnel.get("enabled")) and listener_enabled("mqtts") and public_port is not None,
+            "available": listener_enabled("mqtts") and public_port is not None,
+            "reason": "" if listener_enabled("mqtts") and public_port is not None else "MQTTS listener is off or no Funnel TCP port is free",
+            "public_port": public_port,
+            "public_url": f"mqtts://{host}:{public_port}" if host and public_port else "",
+            "target": f"tcp://127.0.0.1:{listener_port('mqtts', 8883)}",
+            "command": ["tailscale", "funnel", "--bg", "--yes", f"--tcp={public_port}", f"tcp://127.0.0.1:{listener_port('mqtts', 8883)}"] if public_port else [],
+            "off_command": ["tailscale", "funnel", f"--tcp={public_port}", "off"] if public_port else [],
+        })
+
+    return allocations
+
+
+def _edge_server_funnel_status(config: dict[str, Any]) -> dict[str, Any]:
+    config = _normalise_edge_server_config(config)
+    funnel = dict(config.get("funnel") or {})
+    allocations = _funnel_allocations(config)
+    return {
+        "ok": True,
+        "hostname": _tailscale_hostname(),
+        "enabled": bool(funnel.get("enabled")),
+        "config": funnel,
+        "services": [
+            {
+                key: value
+                for key, value in item.items()
+                if key not in {"command", "off_command"}
+            }
+            for item in allocations
+        ],
+        "raw_status": _tailscale_funnel_raw_status(),
+    }
+
+
+def _run_funnel_command(command: list[str]) -> None:
+    if not command:
+        return
+    completed = subprocess.run(command, check=False, capture_output=True, text=True, timeout=12)
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr.strip() or completed.stdout.strip() or "tailscale funnel command failed")
+
+
+def _apply_edge_server_funnel(config: dict[str, Any]) -> None:
+    allocations = _funnel_allocations(config)
+    for command in (
+        ["tailscale", "funnel", "--https=443", "off"],
+        ["tailscale", "funnel", "--tcp=8443", "off"],
+        ["tailscale", "funnel", "--tcp=10000", "off"],
+    ):
+        try:
+            _run_funnel_command(command)
+        except Exception as exc:
+            LOGGER.info("funnel_off_skip command=%s error=%s", " ".join(command), exc)
+
+    funnel = _normalise_edge_server_config(config).get("funnel") or {}
+    if not funnel.get("enabled"):
+        return
+    for item in allocations:
+        if not item.get("enabled"):
+            continue
+        command = list(item.get("command") or [])
+        _run_funnel_command(command)
+        LOGGER.info(
+            "funnel_enabled service=%s public=%s target=%s",
+            item.get("service"),
+            item.get("public_url"),
+            item.get("target"),
+        )
 
 
 def _edge_server_tls_paths(config: dict[str, Any]) -> dict[str, Path]:
@@ -1231,6 +1445,11 @@ async def save_edge_server_config(request: Request) -> JSONResponse:
         await edge_server.apply_config(CONFIGS["edge_server"])
     else:
         LOGGER.error("api_config_save edge_server_task_missing")
+    if (CONFIGS["edge_server"].get("funnel") or {}).get("enabled"):
+        try:
+            _apply_edge_server_funnel(CONFIGS["edge_server"])
+        except Exception as exc:
+            LOGGER.error("api_config_save funnel_reapply_failed error=%s", exc)
     listeners = CONFIGS["edge_server"].get("listeners") or {}
     enabled = [name for name in ("http", "https", "mqtt", "mqtts") if (listeners.get(name) or {}).get("enabled")]
     LOGGER.info(
@@ -1240,6 +1459,37 @@ async def save_edge_server_config(request: Request) -> JSONResponse:
         len(CONFIGS["edge_server"].get("mqtt_topics") or []),
     )
     return JSONResponse({"ok": True, "message": "Edge Server config saved."})
+
+
+@router.get("/api/edge-server/funnel")
+async def get_edge_server_funnel(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    return JSONResponse(_edge_server_funnel_status(CONFIGS["edge_server"]))
+
+
+@router.post("/api/edge-server/funnel")
+async def save_edge_server_funnel(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    try:
+        payload = await request.json()
+        current = _normalise_edge_server_config(CONFIGS["edge_server"])
+        current["funnel"] = {
+            **dict(current.get("funnel") or {}),
+            "enabled": _bool_config(payload.get("enabled"), False),
+            "http": _bool_config(payload.get("http"), True),
+            "https": _bool_config(payload.get("https"), False),
+            "mqtt": _bool_config(payload.get("mqtt"), False),
+            "mqtts": _bool_config(payload.get("mqtts"), False),
+        }
+        CONFIGS["edge_server"] = _normalise_edge_server_config(current)
+        _save_edge_server_config(CONFIGS["edge_server"])
+        _apply_edge_server_funnel(CONFIGS["edge_server"])
+    except Exception as exc:
+        LOGGER.exception("api_funnel_save failed error=%s", exc)
+        return JSONResponse({"ok": False, "message": "Public tunnel update failed."}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    return JSONResponse({**_edge_server_funnel_status(CONFIGS["edge_server"]), "message": "Public tunnel updated."})
 
 
 @router.post("/api/edge-server/tls")

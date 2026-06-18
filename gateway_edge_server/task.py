@@ -1124,14 +1124,14 @@ def _extract_device_timestamp(payload: Any) -> str | None:
 
 def _resolve_bind_hosts(listeners: dict[str, Any], interfaces: dict[str, Any]) -> list[str]:
     selected = listeners.get("bind_interfaces")
-    allowed = {"eth0", "eth1", "wlan0", "wwan0"}
+    allowed = {"eth0", "eth1", "wlan0", "wwan0", "tailscale0"}
     if selected is None:
-        selected = ["eth0", "eth1", "wlan0", "wwan0"]
+        selected = ["eth0", "eth1", "wlan0", "wwan0", "tailscale0"]
     elif not isinstance(selected, list):
         selected = []
     selected_names = [str(name) for name in selected if str(name) in allowed]
 
-    hosts: list[str] = []
+    hosts: list[str] = ["127.0.0.1"]
     for name in selected_names:
         item = interfaces.get(name) or {}
         if not item.get("up"):

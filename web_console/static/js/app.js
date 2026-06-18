@@ -5738,12 +5738,14 @@ document.addEventListener("DOMContentLoaded", () => {
         let esForwardingProfiles = [];
         let esEditingHttpId = null;
         let esEditingMqttId = null;
+        let esHttpMetricsCache = null;
+        let esHttpDeviceSearch = "";
 
         const esDefaultConfig = () => ({
             version: 1,
             listeners: {
                 bind_mode: "interfaces",
-                bind_interfaces: ["eth0", "eth1", "wlan0", "wwan0"],
+                bind_interfaces: ["eth0", "eth1", "wlan0", "wwan0", "tailscale0"],
                 http: { enabled: false, port: 8080 },
                 https: { enabled: false, port: 8443, tls_mode: "server", mtls_required: false },
                 mqtt: { enabled: false, port: 1883, allow_anonymous: false },
@@ -5751,6 +5753,7 @@ document.addEventListener("DOMContentLoaded", () => {
             },
             http_endpoints: [],
             mqtt_topics: [],
+            funnel: { enabled: false, http: true, https: false, mqtt: false, mqtts: false },
             storage: { enabled: true, retention_days: 30, max_size_mb: 5120 },
             tls: { managed: true, installed: { server_cert: false, server_key: false, client_ca: false } },
         });
@@ -5875,6 +5878,102 @@ document.addEventListener("DOMContentLoaded", () => {
             };
         };
 
+        const esApplyFunnelConfig = () => {
+            const funnel = (esConfig || esDefaultConfig()).funnel || esDefaultConfig().funnel;
+            esSetToggle(edgeShell.querySelector("[data-es-funnel-enabled]"), Boolean(funnel.enabled));
+            edgeShell.querySelectorAll("[data-es-funnel-service]").forEach((input) => {
+                const key = input.getAttribute("data-es-funnel-service");
+                input.checked = Boolean(funnel[key]);
+            });
+        };
+
+        const esReadFunnelConfig = () => {
+            const cfg = esConfig || esDefaultConfig();
+            cfg.funnel = cfg.funnel || esDefaultConfig().funnel;
+            cfg.funnel.enabled = edgeShell.querySelector("[data-es-funnel-enabled]")?.classList.contains("is-on") || false;
+            edgeShell.querySelectorAll("[data-es-funnel-service]").forEach((input) => {
+                const key = input.getAttribute("data-es-funnel-service");
+                if (key) cfg.funnel[key] = Boolean(input.checked);
+            });
+            return cfg.funnel;
+        };
+
+        const esRenderFunnelStatus = (data) => {
+            const config = data.config || {};
+            esConfig = esConfig || esDefaultConfig();
+            esConfig.funnel = { ...esDefaultConfig().funnel, ...config };
+            esApplyFunnelConfig();
+            esSetText("[data-es-funnel-host]", data.hostname || "Not available");
+            esSetText("[data-es-funnel-state]", data.enabled ? "On" : "Off");
+            esSetText("[data-es-funnel-state-detail]", data.enabled ? "public access requested" : "public access disabled");
+            const services = data.services || [];
+            const http = services.find((item) => item.service === "http");
+            const mqtt = services.find((item) => item.service === "mqtt" || item.service === "mqtts");
+            esSetText("[data-es-funnel-http-url]", http?.public_url || "Unavailable");
+            esSetText("[data-es-funnel-mqtt-url]", mqtt?.public_url || "Unavailable");
+
+            const list = edgeShell.querySelector("[data-es-funnel-services]");
+            const empty = edgeShell.querySelector("[data-es-funnel-empty]");
+            if (empty) empty.classList.toggle("es-hidden", services.length > 0);
+            if (!list) return;
+            list.innerHTML = services.map((item) => {
+                const state = item.enabled ? "Public" : item.available ? "Ready" : "Unavailable";
+                const address = item.public_url || "No public address";
+                const note = item.reason || `Local target: ${item.target || "not configured"}`;
+                const protocol = item.service === "http"
+                    ? "HTTPS URL"
+                    : item.service === "https"
+                        ? "HTTPS TCP"
+                        : item.service === "mqtts"
+                            ? "MQTTS TCP"
+                            : "MQTT TCP";
+                return `
+                    <article class="es-item-card">
+                        <div class="es-item-main">
+                            <div class="es-item-title">
+                                <strong>${esEsc(item.label || item.service)}</strong>
+                                <span>${esEsc(state)}</span>
+                            </div>
+                            <code>${esEsc(address)}</code>
+                            <p>${esEsc(protocol)} · public port ${esEsc(item.public_port || "n/a")}</p>
+                            <small>${esEsc(note)}</small>
+                        </div>
+                    </article>
+                `;
+            }).join("");
+        };
+
+        const esRefreshFunnel = async () => {
+            try {
+                const response = await fetch("/api/edge-server/funnel");
+                const data = await response.json();
+                if (!response.ok || data.ok === false) throw new Error("Funnel status failed");
+                esRenderFunnelStatus(data);
+            } catch (error) {
+                console.warn("[Edge Server] funnel status failed:", error);
+            }
+        };
+
+        const esSaveFunnel = async () => {
+            const msg = edgeShell.querySelector("[data-es-funnel-msg]");
+            const payload = esReadFunnelConfig();
+            if (msg) msg.textContent = "Applying...";
+            try {
+                const response = await fetch("/api/edge-server/funnel", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload),
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || data.ok === false) throw new Error("Public tunnel update failed");
+                esRenderFunnelStatus(data);
+                if (msg) msg.textContent = data.message || "Updated";
+            } catch (error) {
+                if (msg) msg.textContent = "Public tunnel update failed";
+                console.warn("[Edge Server] funnel save failed:", error);
+            }
+        };
+
         const esHttpForm = edgeShell.querySelector("[data-es-http-form]");
         const esMqttForm = edgeShell.querySelector("[data-es-mqtt-form]");
 
@@ -5971,6 +6070,7 @@ document.addEventListener("DOMContentLoaded", () => {
             esApplyListeners();
             esApplyStorage();
             esApplyCertStatus();
+            esApplyFunnelConfig();
             esFillForwardingSelect(edgeShell.querySelector("[data-es-http-forwarding]"));
             esFillForwardingSelect(edgeShell.querySelector("[data-es-mqtt-forwarding]"));
             esRenderHttp();
@@ -6095,6 +6195,30 @@ document.addEventListener("DOMContentLoaded", () => {
             if (!value) return "";
             const date = new Date(String(value).replace("Z", "+00:00"));
             return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleTimeString();
+        };
+
+        const esFullTime = (value) => {
+            if (!value) return "";
+            const date = new Date(String(value).replace("Z", "+00:00"));
+            if (Number.isNaN(date.getTime())) return String(value);
+            return date.toLocaleString([], {
+                year: "numeric",
+                month: "2-digit",
+                day: "2-digit",
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+            });
+        };
+
+        const esBucketTime = (value) => {
+            const raw = String(value || "");
+            if (!raw) return "";
+            const date = new Date(raw.length === 16 ? `${raw}:00` : raw.replace("Z", "+00:00"));
+            if (!Number.isNaN(date.getTime())) {
+                return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+            }
+            return raw.slice(11, 16) || raw;
         };
 
         const esAge = (value) => {
@@ -6223,6 +6347,43 @@ document.addEventListener("DOMContentLoaded", () => {
             return event.message || "";
         };
 
+        const esSeverityTone = (severity) => {
+            const tone = String(severity || "info").toLowerCase();
+            if (tone === "critical") return "critical";
+            if (tone === "error") return "error";
+            if (tone === "warning" || tone === "warn") return "warning";
+            return "info";
+        };
+
+        const esProtocolTag = (protocol) => {
+            const value = String(protocol || "").toUpperCase();
+            const secure = value === "HTTPS" || value === "MQTTS";
+            const plain = value === "HTTP" || value === "MQTT";
+            return `<span class="es-proto-tag ${secure ? "is-secure" : plain ? "is-plain" : ""}">${esEsc(value || "DATA")}</span>`;
+        };
+
+        const esRenderAlertCard = (event) => {
+            const type = event.event_type || event.type || "event";
+            const tone = esSeverityTone(event.severity);
+            const detail = esEventDetails(event);
+            const when = event.created_at || event.timestamp || event.last_seen;
+            const device = event.device_id || event.source || "unknown device";
+            const protocol = event.protocol || event.protocol_group || "";
+            return `
+                <article class="es-alert-card is-${tone}">
+                    <div class="es-alert-top">
+                        <strong class="es-alert-title">${esEsc(esEventTitle(type))}</strong>
+                        <span class="es-severity-pill is-${tone}">${esEsc(tone)}</span>
+                    </div>
+                    <div class="es-alert-meta">
+                        <span class="es-alert-device">${protocol ? `${esProtocolTag(protocol)} ` : ""}${esEsc(device)}</span>
+                        <em class="es-alert-time">${esEsc(esFullTime(when))}${when ? ` · ${esEsc(esAge(when))}` : ""}</em>
+                    </div>
+                    <div class="es-alert-body"><strong>Measured:</strong> ${esEsc(detail || event.message || esEventMeaning(type))}</div>
+                    <div class="es-alert-rule">Why it matters: ${esEsc(esEventMeaning(type))}</div>
+                </article>`;
+        };
+
         const esRenderBars = (selector, emptySelector, rows) => {
             const wrap = edgeShell.querySelector(selector);
             const empty = edgeShell.querySelector(emptySelector);
@@ -6234,9 +6395,10 @@ document.addEventListener("DOMContentLoaded", () => {
                 const count = Number(row.count || 0);
                 const pct = Math.max(4, Math.round((count / max) * 100));
                 const bucket = row.minute || row.bucket || "";
+                const label = esBucketTime(bucket);
                 return `
-                    <div class="es-chart-bar">
-                        <span>${esEsc(String(bucket).slice(11, 16) || bucket || "")}</span>
+                    <div class="es-chart-bar" title="${esEsc(bucket || label)}">
+                        <span>${esEsc(label)}</span>
                         <div class="es-chart-track"><div class="es-chart-fill" style="width:${pct}%"></div></div>
                         <strong>${count}</strong>
                     </div>`;
@@ -6267,7 +6429,7 @@ document.addEventListener("DOMContentLoaded", () => {
             if (!wrap) return;
             wrap.innerHTML = items.map((row) => `
                 <div class="es-message-row">
-                    <span>${esEsc(row.protocol || "")}</span>
+                    <span>${esProtocolTag(row.protocol || "")}</span>
                     <strong>${esEsc(row.device_id || "unknown")}</strong>
                     <small>${esEsc(row.route || "")}</small>
                     <em>${Number(row.payload_size || 0).toLocaleString()} B</em>
@@ -6335,17 +6497,132 @@ document.addEventListener("DOMContentLoaded", () => {
             const items = Array.isArray(rows) ? rows : [];
             if (empty) empty.classList.toggle("es-hidden", items.length > 0);
             if (!wrap) return;
-            wrap.innerHTML = items.map((event) => {
-                const type = event.event_type || event.type || "event";
-                const detail = esEventDetails(event);
+            wrap.innerHTML = items.map(esRenderAlertCard).join("");
+        };
+
+        const esRenderMetricBars = (selector, emptySelector, rows, valueKey, formatter = (value) => value) => {
+            const wrap = edgeShell.querySelector(selector);
+            const empty = edgeShell.querySelector(emptySelector);
+            const items = Array.isArray(rows) ? rows.filter((row) => Number(row[valueKey] || 0) > 0) : [];
+            if (empty) empty.classList.toggle("es-hidden", items.length > 0);
+            if (!wrap) return;
+            const max = Math.max(1, ...items.map((row) => Number(row[valueKey] || 0)));
+            wrap.innerHTML = items.map((row) => {
+                const value = Number(row[valueKey] || 0);
+                const pct = Math.max(4, Math.round((value / max) * 100));
+                const bucket = row.minute || row.bucket || "";
+                const label = esBucketTime(bucket);
                 return `
-                    <div class="es-audit-row">
-                        <strong>${esEsc(esEventTitle(type))}</strong>
-                        <span>${esEsc(event.severity || "info")}</span>
-                        <small>${esEsc(event.device_id || event.source || "unknown")} · ${esEsc(detail || event.message || esEventMeaning(type))}</small>
-                        <em>${esEsc(esShortTime(event.created_at || event.timestamp))}</em>
+                    <div class="es-chart-bar" title="${esEsc(bucket || label)}">
+                        <span>${esEsc(label)}</span>
+                        <div class="es-chart-track"><div class="es-chart-fill" style="width:${pct}%"></div></div>
+                        <strong>${esEsc(formatter(value))}</strong>
                     </div>`;
             }).join("");
+        };
+
+        const esSelectedHttpDevice = () => edgeShell.querySelector("[data-es-http-device-filter]")?.value || "";
+
+        const esRenderHttpDeviceOptions = (devices) => {
+            const select = edgeShell.querySelector("[data-es-http-device-filter]");
+            if (!select) return;
+            const selected = select.value;
+            const search = esHttpDeviceSearch.trim().toLowerCase();
+            const rows = Array.isArray(devices) ? devices : [];
+            const filtered = rows.filter((device) => {
+                if (!search) return true;
+                return [
+                    device.device_id,
+                    device.endpoint,
+                    device.last_route,
+                    device.health,
+                    device.health_label,
+                    device.status,
+                ].some((value) => String(value || "").toLowerCase().includes(search));
+            });
+            const selectedDevice = rows.find((device) => String(device.device_id || "") === selected);
+            const optionRows = selectedDevice && !filtered.some((device) => String(device.device_id || "") === selected)
+                ? [selectedDevice, ...filtered]
+                : filtered;
+            select.innerHTML = [
+                '<option value="">All HTTP devices</option>',
+                ...optionRows.map((device) => {
+                    const id = String(device.device_id || "unknown");
+                    const label = `${id} · ${device.health_label || device.status || "seen"} · ${esAge(device.last_seen)}`;
+                    return `<option value="${esEsc(id)}">${esEsc(label)}</option>`;
+                }),
+            ].join("");
+            select.value = selected && optionRows.some((device) => String(device.device_id || "") === selected) ? selected : "";
+        };
+
+        const esUpdateHttpSelectedCards = (device) => {
+            if (!device) {
+                esSetText("[data-es-http-selected-status]", "All devices");
+                esSetText("[data-es-http-selected-last]", "No single device selected");
+                esSetText("[data-es-http-selected-gap]", "n/a");
+                esSetText("[data-es-http-selected-normal-gap]", "n/a");
+                esSetText("[data-es-http-selected-payload]", "n/a");
+                return;
+            }
+            esSetText("[data-es-http-selected-status]", device.health_label || device.status || "Seen");
+            esSetText("[data-es-http-selected-last]", `${device.device_id || "unknown"} · last seen ${esAge(device.last_seen || device.last_seen_at)}`);
+            esSetText("[data-es-http-selected-gap]", esFormatMs(device.last_interval_ms));
+            esSetText("[data-es-http-selected-normal-gap]", esFormatMs(device.avg_interval_ms));
+            esSetText("[data-es-http-selected-payload]", `${esFormatBytes(device.last_payload_size)} / ${esFormatBytes(device.avg_payload_size)}`);
+        };
+
+        const esRefreshHttpDeviceDetail = async (deviceId = esSelectedHttpDevice()) => {
+            if (!deviceId) return;
+            try {
+                const params = new URLSearchParams({ device_id: deviceId, protocol_group: "http" });
+                const response = await fetch(`/api/edge-server/history/device?${params.toString()}`);
+                const data = await response.json();
+                const device = data.device || {};
+                if (device.device_id) {
+                    esUpdateHttpSelectedCards(device);
+                }
+                esRenderBars("[data-es-http-device-rate-chart]", "[data-es-http-device-rate-empty]", data.message_series || []);
+                esRenderMetricBars("[data-es-http-device-payload-chart]", "[data-es-http-device-payload-empty]", data.payload_series || data.message_series || [], "avg_payload_size", esFormatBytes);
+                esRenderAnomalySummary("[data-es-http-anomaly-summary]", "[data-es-http-anomaly-summary-empty]", data.event_summary || []);
+                esRenderProtocolEvents("[data-es-http-events]", "[data-es-http-events-empty]", data.recent_events || []);
+                esRenderMessages("[data-es-http-recent]", "[data-es-http-recent-empty]", data.recent_messages || []);
+            } catch (error) {
+                console.warn("[Edge Server] HTTP device detail fetch failed:", error);
+            }
+        };
+
+        const esApplyHttpMetrics = async (data) => {
+            esHttpMetricsCache = data || {};
+            esSetText("[data-es-http-total]", Number(data.total_messages || 0).toLocaleString());
+            esSetText("[data-es-http-devices]", Number(data.device_count || 0).toLocaleString());
+            esSetText("[data-es-http-missing]", Number(data.route_missing || 0).toLocaleString());
+            esSetText("[data-es-http-auth-fail]", Number(data.auth_failures || 0).toLocaleString());
+            esSetText("[data-es-http-route-count]", `${(data.routes || []).length} paths with traffic`);
+            esRenderHttpDeviceOptions(data.devices || []);
+            esRenderWatchlist("[data-es-http-watchlist]", "http");
+            esRenderBars("[data-es-http-chart]", "[data-es-http-chart-empty]", data.minute_series || []);
+            esRenderRoutes("[data-es-http-routes]", "[data-es-http-routes-empty]", data.routes || []);
+
+            const selected = esSelectedHttpDevice();
+            const selectedDevice = selected
+                ? (data.devices || []).find((device) => String(device.device_id || "") === selected)
+                : null;
+            esUpdateHttpSelectedCards(selectedDevice);
+            const deviceRows = selected ? (data.devices || []).filter((device) => String(device.device_id || "") === selected) : (data.devices || []);
+            esRenderProtocolDevices("[data-es-http-devices-list]", "[data-es-http-devices-empty]", deviceRows, "http");
+
+            if (!selected) {
+                esRenderMetricBars("[data-es-http-device-rate-chart]", "[data-es-http-device-rate-empty]", [], "count");
+                esRenderMetricBars("[data-es-http-device-payload-chart]", "[data-es-http-device-payload-empty]", [], "avg_payload_size", esFormatBytes);
+                esRenderAnomalySummary("[data-es-http-anomaly-summary]", "[data-es-http-anomaly-summary-empty]", data.anomaly_summary || []);
+                esRenderProtocolEvents("[data-es-http-events]", "[data-es-http-events-empty]", data.recent_events || []);
+                esRenderMessages("[data-es-http-recent]", "[data-es-http-recent-empty]", data.recent_messages || []);
+                esSetText("[data-es-http-device-summary]", `${Number(data.device_count || 0).toLocaleString()} HTTP device${Number(data.device_count || 0) === 1 ? "" : "s"} · showing all`);
+                return;
+            }
+
+            esSetText("[data-es-http-device-summary]", `Showing ${selected}. Graphs and latest rows are filtered to this device.`);
+            await esRefreshHttpDeviceDetail(selected);
         };
 
         const esHistoryRangeParams = () => {
@@ -6439,20 +6716,19 @@ document.addEventListener("DOMContentLoaded", () => {
             const wrap = edgeShell.querySelector(selector);
             if (!wrap) return;
             const common = [
-                ["No data timeout", "No message before expected window", "max(60s, 6x learned normal gap)"],
-                ["Message gap", "One message arrives late", "> max(5s, 3x learned normal gap)"],
-                ["Rate slowdown", "Device slows below baseline", "same trigger as message gap"],
-                ["Rate spike", "Device sends much faster", "< 25% of normal gap after 10 samples"],
-                ["Payload size change", "Payload size changes sharply", "> 50% from learned average"],
-                ["Payload fields changed", "JSON top-level fields changed", "field set differs after 3 samples"],
-                ["Payload parse error", "JSON/form parsing failed", "configured payload parser cannot parse body"],
-                ["Sequence gap", "Message sequence jumps forward", "current sequence > previous + 1"],
-                ["Sequence reset", "Counter restarts after high value", "sequence <= 1 after previous >= 10"],
-                ["Clock drift", "Device time differs from gateway", "> 5 minutes"],
+                ["Device silent", "No data arrived after the device's normal interval", "learns normal gap, then alerts after long silence"],
+                ["Slow sending", "Messages are arriving slower than usual", "last gap is much higher than learned normal"],
+                ["Fast sending", "Messages are arriving much faster than usual", "last gap is much lower than learned normal"],
+                ["Payload size changed", "Payload is much larger or smaller than normal", "compares latest payload with learned average"],
+                ["Fields changed", "JSON field names changed", "compares current top-level fields with previous shape"],
+                ["Bad payload", "Payload could not be parsed", "configured JSON/form parser failed"],
+                ["Sequence missing", "Sequence number skipped forward", "device sequence jumps ahead"],
+                ["Sequence reset", "Sequence counter restarted", "common after device reboot/reset"],
+                ["Clock mismatch", "Device timestamp differs from gateway time", "device clock differs by more than 5 minutes"],
             ];
-            const protocolSpecific = group === "mqtt"
-                ? [["MQTT disconnect", "Persistent MQTT session closed", "broker receives disconnect or socket closes"], ["Reconnect storm", "Client repeatedly reconnects", "4+ connects in 60 seconds"]]
-                : [["Unknown path", "Request path/method not configured", "no matching HTTP endpoint"], ["Auth failure", "Request failed auth", "token/mTLS check failed"]];
+            const httpSpecific = [["Unknown path", "Device used an unconfigured URL", "no matching HTTP endpoint"], ["Auth failure", "Request failed authentication", "token or mTLS check failed"]];
+            const mqttSpecific = [["MQTT disconnect", "Persistent MQTT session closed", "broker receives disconnect or socket closes"], ["Reconnect storm", "Client repeatedly reconnects", "4+ connects in 60 seconds"]];
+            const protocolSpecific = group === "mqtt" ? mqttSpecific : group === "all" ? [...httpSpecific, ...mqttSpecific] : httpSpecific;
             wrap.innerHTML = [...common, ...protocolSpecific].map(([name, meaning, trigger]) => `
                 <div class="es-watch-item">
                     <strong>${esEsc(name)}</strong>
@@ -6466,6 +6742,10 @@ document.addEventListener("DOMContentLoaded", () => {
             try {
                 const response = await fetch(`/api/edge-server/${group}/metrics`);
                 const data = await response.json();
+                if (group === "http") {
+                    await esApplyHttpMetrics(data);
+                    return;
+                }
                 const prefix = group === "http" ? "http" : "mqtt";
                 esSetText(`[data-es-${prefix}-total]`, Number(data.total_messages || 0).toLocaleString());
                 esSetText(`[data-es-${prefix}-devices]`, Number(data.device_count || 0).toLocaleString());
@@ -6496,19 +6776,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 esSetText("[data-es-alert-error]", Number(summary.error || 0).toLocaleString());
                 esSetText("[data-es-alert-critical]", Number(summary.critical || 0).toLocaleString());
                 esSetText("[data-es-alert-summary]", `${Number(summary.total || 0).toLocaleString()} alerts`);
-                const list = edgeShell.querySelector("[data-es-alert-list]");
-                const empty = edgeShell.querySelector("[data-es-alert-empty]");
-                if (empty) empty.classList.toggle("es-hidden", events.length > 0);
-                if (list) {
-                    list.innerHTML = events.map((event) => `
-                        <div class="es-audit-row">
-                            <strong>${esEsc(event.event_type || event.type || "event")}</strong>
-                            <span>${esEsc(event.severity || "info")}</span>
-                            <small>${esEsc(event.message || "")}</small>
-                            <em>${esEsc(esShortTime(event.created_at || event.timestamp))}</em>
-                        </div>
-                    `).join("");
-                }
+                esRenderProtocolEvents("[data-es-alert-list]", "[data-es-alert-empty]", events);
+                esRenderWatchlist("[data-es-alert-watchlist]", "all");
             } catch (error) {
                 console.warn("[Edge Server] alerts fetch failed:", error);
             }
@@ -6623,6 +6892,9 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (tab === "history") {
                     esRefreshHistory();
                 }
+                if (tab === "funnel") {
+                    esRefreshFunnel();
+                }
             });
         });
 
@@ -6630,6 +6902,24 @@ document.addEventListener("DOMContentLoaded", () => {
         edgeShell.querySelector("[data-es-history-protocol]")?.addEventListener("change", esRefreshDeviceHistory);
         edgeShell.querySelector("[data-es-history-range]")?.addEventListener("change", esRefreshDeviceHistory);
         edgeShell.querySelector("[data-es-history-refresh]")?.addEventListener("click", esRefreshHistory);
+        edgeShell.querySelector("[data-es-http-device-search]")?.addEventListener("input", (event) => {
+            esHttpDeviceSearch = event.target?.value || "";
+            esRenderHttpDeviceOptions(esHttpMetricsCache?.devices || []);
+        });
+        edgeShell.querySelector("[data-es-http-device-filter]")?.addEventListener("change", async () => {
+            if (esHttpMetricsCache) {
+                await esApplyHttpMetrics(esHttpMetricsCache);
+            }
+        });
+        edgeShell.querySelector("[data-es-funnel-enabled]")?.addEventListener("click", () => {
+            esConfig = esConfig || esDefaultConfig();
+            const funnel = esConfig.funnel || esDefaultConfig().funnel;
+            funnel.enabled = !Boolean(funnel.enabled);
+            esConfig.funnel = funnel;
+            esSetToggle(edgeShell.querySelector("[data-es-funnel-enabled]"), funnel.enabled);
+        });
+        edgeShell.querySelector("[data-es-funnel-save]")?.addEventListener("click", esSaveFunnel);
+        edgeShell.querySelector("[data-es-funnel-refresh]")?.addEventListener("click", esRefreshFunnel);
 
         edgeShell.querySelectorAll("[data-es-listener-enabled]").forEach((btn) => {
             btn.addEventListener("click", async () => {
@@ -6675,7 +6965,9 @@ document.addEventListener("DOMContentLoaded", () => {
         });
 
         edgeShell.addEventListener("click", async (event) => {
-            const target = event.target;
+            const rawTarget = event.target;
+            if (!(rawTarget instanceof HTMLElement)) return;
+            const target = rawTarget.closest("[data-es-edit-http], [data-es-delete-http], [data-es-toggle-http], [data-es-edit-mqtt], [data-es-delete-mqtt], [data-es-toggle-mqtt]");
             if (!(target instanceof HTMLElement)) return;
             const httpEdit = target.getAttribute("data-es-edit-http");
             const httpDelete = target.getAttribute("data-es-delete-http");
@@ -6684,29 +6976,44 @@ document.addEventListener("DOMContentLoaded", () => {
             const mqttDelete = target.getAttribute("data-es-delete-mqtt");
             const mqttToggle = target.getAttribute("data-es-toggle-mqtt");
 
-            if (httpEdit) esShowHttpForm(esConfig.http_endpoints.find((item) => item.id === httpEdit));
+            if (httpEdit) {
+                esShowHttpForm(esConfig.http_endpoints.find((item) => item.id === httpEdit));
+                return;
+            }
             if (httpDelete) {
                 esConfig.http_endpoints = esConfig.http_endpoints.filter((item) => item.id !== httpDelete);
                 esRenderHttp();
                 await esSaveConfig();
+                await esRefreshProtocolMetrics("http");
+                return;
             }
             if (httpToggle) {
                 const item = esConfig.http_endpoints.find((row) => row.id === httpToggle);
-                if (item) item.enabled = !item.enabled;
+                if (!item) return;
+                item.enabled = !Boolean(item.enabled);
                 esRenderHttp();
                 await esSaveConfig();
+                await esRefreshProtocolMetrics("http");
+                return;
             }
-            if (mqttEdit) esShowMqttForm(esConfig.mqtt_topics.find((item) => item.id === mqttEdit));
+            if (mqttEdit) {
+                esShowMqttForm(esConfig.mqtt_topics.find((item) => item.id === mqttEdit));
+                return;
+            }
             if (mqttDelete) {
                 esConfig.mqtt_topics = esConfig.mqtt_topics.filter((item) => item.id !== mqttDelete);
                 esRenderMqtt();
                 await esSaveConfig();
+                await esRefreshProtocolMetrics("mqtt");
+                return;
             }
             if (mqttToggle) {
                 const item = esConfig.mqtt_topics.find((row) => row.id === mqttToggle);
-                if (item) item.enabled = !item.enabled;
+                if (!item) return;
+                item.enabled = !Boolean(item.enabled);
                 esRenderMqtt();
                 await esSaveConfig();
+                await esRefreshProtocolMetrics("mqtt");
             }
         });
 
@@ -6719,6 +7026,7 @@ document.addEventListener("DOMContentLoaded", () => {
             await esRefreshProtocolMetrics("mqtt");
             await esRefreshAlerts();
             await esRefreshHistory();
+            await esRefreshFunnel();
         };
 
         esLoad().then(esRefreshAllRuntime);
@@ -6727,6 +7035,7 @@ document.addEventListener("DOMContentLoaded", () => {
         window.setInterval(() => esRefreshProtocolMetrics("mqtt"), 8000);
         window.setInterval(esRefreshAlerts, 10000);
         window.setInterval(esRefreshHistory, 30000);
+        window.setInterval(esRefreshFunnel, 30000);
     }
 
 });

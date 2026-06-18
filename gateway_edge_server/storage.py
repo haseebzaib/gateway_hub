@@ -419,7 +419,7 @@ class EdgeServerStorage:
                 FROM device_state
                 WHERE protocol IN ({placeholders})
                 ORDER BY last_seen_at DESC
-                LIMIT 50
+                LIMIT 500
                 """,
                 protocols,
             ).fetchall()
