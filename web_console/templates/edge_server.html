@@ -10,7 +10,7 @@
         <span><strong data-es-state>Standby</strong><small data-es-message>Configuration ready</small></span>
         <span><strong data-es-http-count>0</strong><small>HTTP routes</small></span>
         <span><strong data-es-mqtt-count>0</strong><small>MQTT topics</small></span>
-        <span><strong data-es-stored>0</strong><small>stored records</small></span>
+        <span><strong data-es-stored>0</strong><small data-es-storage-backend>stored records</small></span>
     </div>
 
     <div class="system-tabs es-tabs" role="tablist" aria-label="Edge Server sections">
@@ -57,17 +57,47 @@
             </article>
         </div>
 
-        <div class="es-live-panels">
+        <section class="es-live-panel es-live-panel-wide">
+            <div class="es-live-panel-head">
+                <strong>Inbound Traffic - Last 60 Minutes</strong>
+                <span>HTTP and MQTT accepted messages by gateway receive time</span>
+            </div>
+            <div class="es-legend">
+                <span><i class="es-line-key is-http"></i>HTTP / HTTPS</span>
+                <span><i class="es-line-key is-mqtt"></i>MQTT / MQTTS</span>
+            </div>
+            <div class="es-svg-chart" data-es-overview-traffic></div>
+            <div class="es-empty-line" data-es-overview-traffic-empty>No inbound traffic yet.</div>
+            <div class="es-chart-caption">x - time (last 60 minutes) · y - accepted messages per minute, by protocol</div>
+        </section>
+
+        <div class="es-overview-grid">
             <section class="es-live-panel">
                 <div class="es-live-panel-head">
                     <strong>Message Handling</strong>
-                    <span>current process counters</span>
+                    <span>current counters</span>
                 </div>
-                <div class="es-buffer-grid">
-                    <span><strong data-es-buffer-pending>0</strong><small>Accepted by gateway</small></span>
-                    <span><strong data-es-buffer-processed>0</strong><small>Checked for alerts</small></span>
-                    <span><strong data-es-buffer-forwarded>0</strong><small>Forwarded upstream</small></span>
-                    <span><strong data-es-buffer-dropped>0</strong><small>Rejected or dropped</small></span>
+                <div class="es-progress-stack">
+                    <div class="es-progress-row">
+                        <span>Accepted by gateway</span>
+                        <strong data-es-buffer-pending>0</strong>
+                        <i><b data-es-buffer-pending-bar></b></i>
+                    </div>
+                    <div class="es-progress-row">
+                        <span>Checked for alerts</span>
+                        <strong data-es-buffer-processed>0</strong>
+                        <i><b data-es-buffer-processed-bar></b></i>
+                    </div>
+                    <div class="es-progress-row">
+                        <span>Forwarded upstream</span>
+                        <strong data-es-buffer-forwarded>0</strong>
+                        <i><b data-es-buffer-forwarded-bar></b></i>
+                    </div>
+                    <div class="es-progress-row is-danger">
+                        <span>Rejected or dropped</span>
+                        <strong data-es-buffer-dropped>0</strong>
+                        <i><b data-es-buffer-dropped-bar></b></i>
+                    </div>
                 </div>
             </section>
 
@@ -76,17 +106,47 @@
                     <strong>Device Connections</strong>
                     <span data-es-device-count>0 devices</span>
                 </div>
-                <div class="es-device-list" data-es-device-list></div>
+                <div class="es-connection-grid">
+                    <span><strong data-es-conn-http>0</strong><small class="is-plain">HTTP</small></span>
+                    <span><strong data-es-conn-https>0</strong><small class="is-secure">HTTPS</small></span>
+                    <span><strong data-es-conn-mqtt>0</strong><small class="is-plain">MQTT</small></span>
+                    <span><strong data-es-conn-mqtts>0</strong><small class="is-secure">MQTTS</small></span>
+                </div>
+                <div class="es-device-list es-compact-list" data-es-device-list></div>
                 <div class="es-empty-line" data-es-device-empty>No device sessions yet.</div>
             </section>
 
-            <section class="es-live-panel es-live-panel-wide">
+            <section class="es-live-panel">
                 <div class="es-live-panel-head">
                     <strong>Recent Alerts</strong>
                     <span data-es-audit-summary>No events</span>
                 </div>
-                <div class="es-audit-list" data-es-audit-list></div>
+                <div class="es-audit-list es-compact-list" data-es-audit-list></div>
                 <div class="es-empty-line" data-es-audit-empty>No alerts recorded.</div>
+            </section>
+
+            <section class="es-live-panel es-live-panel-wide">
+                <div class="es-live-panel-head">
+                    <strong>Ingest Pipeline</strong>
+                    <span>store first, inspect next, forward only when configured</span>
+                </div>
+                <div class="es-pipeline-flow">
+                    <span><small>1 - Receive</small><strong>Inbound payload</strong></span>
+                    <i></i>
+                    <span><small>2 - Persist</small><strong>Local SQLCipher store</strong></span>
+                    <i></i>
+                    <span><small>3 - Inspect</small><strong>Anomaly detection</strong></span>
+                    <i></i>
+                    <span><small>4 - Forward</small><strong>Optional forwarding profile</strong></span>
+                </div>
+            </section>
+
+            <section class="es-live-panel es-live-panel-wide">
+                <div class="es-live-panel-head">
+                    <strong>Anomaly Checks</strong>
+                    <span>what the gateway calculates for every inbound device stream</span>
+                </div>
+                <div class="es-watch-grid" data-es-overview-watchlist></div>
             </section>
         </div>
     </div>
@@ -117,12 +177,47 @@
                 </select>
             </label>
             <label class="fw-field">
-                <span class="fw-label">Range</span>
+                <span class="fw-label">Timeline</span>
                 <select class="fw-input" data-es-history-range>
                     <option value="24h">Last 24 hours</option>
                     <option value="7d">Last 7 days</option>
                     <option value="30d" selected>Last 30 days</option>
+                    <option value="day">Specific day</option>
+                    <option value="hour">Specific hour</option>
                     <option value="all">All stored</option>
+                </select>
+            </label>
+            <label class="fw-field is-hidden" data-es-history-date-wrap>
+                <span class="fw-label">Day</span>
+                <input class="fw-input" type="date" data-es-history-date>
+            </label>
+            <label class="fw-field is-hidden" data-es-history-hour-wrap>
+                <span class="fw-label">Hour</span>
+                <select class="fw-input" data-es-history-hour>
+                    <option value="00">00:00-00:59</option>
+                    <option value="01">01:00-01:59</option>
+                    <option value="02">02:00-02:59</option>
+                    <option value="03">03:00-03:59</option>
+                    <option value="04">04:00-04:59</option>
+                    <option value="05">05:00-05:59</option>
+                    <option value="06">06:00-06:59</option>
+                    <option value="07">07:00-07:59</option>
+                    <option value="08">08:00-08:59</option>
+                    <option value="09">09:00-09:59</option>
+                    <option value="10">10:00-10:59</option>
+                    <option value="11">11:00-11:59</option>
+                    <option value="12">12:00-12:59</option>
+                    <option value="13">13:00-13:59</option>
+                    <option value="14">14:00-14:59</option>
+                    <option value="15">15:00-15:59</option>
+                    <option value="16">16:00-16:59</option>
+                    <option value="17">17:00-17:59</option>
+                    <option value="18">18:00-18:59</option>
+                    <option value="19">19:00-19:59</option>
+                    <option value="20">20:00-20:59</option>
+                    <option value="21">21:00-21:59</option>
+                    <option value="22">22:00-22:59</option>
+                    <option value="23">23:00-23:59</option>
                 </select>
             </label>
             <button type="button" class="ghost-action" data-es-history-refresh>Refresh</button>
@@ -152,39 +247,28 @@
         </div>
 
         <div class="es-protocol-grid">
-            <section class="es-live-panel">
+            <section class="es-live-panel es-live-panel-wide">
                 <div class="es-live-panel-head">
                     <strong>Message Rate History</strong>
-                    <span>stored messages per minute</span>
+                    <span data-es-history-message-window>stored messages in selected timeline</span>
                 </div>
-                <div class="es-chart-bars" data-es-history-message-chart></div>
+                <div class="es-legend">
+                    <span><i class="es-line-key is-mqtt"></i> messages</span>
+                    <span><i class="es-line-key is-baseline"></i> learned normal</span>
+                    <span><i class="es-dot-key is-critical"></i> anomaly time</span>
+                </div>
+                <div class="es-svg-chart" data-es-history-message-chart></div>
                 <div class="es-empty-line" data-es-history-message-empty>No stored message history for this device.</div>
-                <div class="es-chart-caption">x - time in selected range · y - stored messages per minute</div>
+                <div class="es-chart-caption" data-es-history-message-caption>x - selected timeline · y - stored messages</div>
             </section>
-            <section class="es-live-panel">
+            <section class="es-live-panel es-live-panel-wide">
                 <div class="es-live-panel-head">
-                    <strong>Anomaly History</strong>
-                    <span>stored events per minute</span>
-                </div>
-                <div class="es-chart-bars" data-es-history-anomaly-chart></div>
-                <div class="es-empty-line" data-es-history-anomaly-empty>No stored anomaly history for this device.</div>
-                <div class="es-chart-caption">x - time in selected range · y - anomaly events per minute</div>
-            </section>
-            <section class="es-live-panel">
-                <div class="es-live-panel-head">
-                    <strong>Route / Topic History</strong>
-                    <span>where this device sent data</span>
-                </div>
-                <div class="es-route-list" data-es-history-routes></div>
-                <div class="es-empty-line" data-es-history-routes-empty>No route/topic history for this device.</div>
-            </section>
-            <section class="es-live-panel">
-                <div class="es-live-panel-head">
-                    <strong>Anomaly Types</strong>
+                    <strong>Anomalies by Type</strong>
                     <span>counts by event type</span>
                 </div>
-                <div class="es-anomaly-list" data-es-history-event-summary></div>
+                <div class="es-type-bars" data-es-history-event-summary></div>
                 <div class="es-empty-line" data-es-history-event-summary-empty>No anomaly types for this device.</div>
+                <div class="es-chart-caption">x - number of stored events · y - anomaly type</div>
             </section>
             <section class="es-live-panel es-live-panel-wide">
                 <div class="es-live-panel-head">
@@ -193,14 +277,6 @@
                 </div>
                 <div class="es-audit-list" data-es-history-events-list></div>
                 <div class="es-empty-line" data-es-history-events-empty>No stored anomalies for this device.</div>
-            </section>
-            <section class="es-live-panel es-live-panel-wide">
-                <div class="es-live-panel-head">
-                    <strong>Recent Device Messages</strong>
-                    <span>latest stored records</span>
-                </div>
-                <div class="es-message-list" data-es-history-messages-list></div>
-                <div class="es-empty-line" data-es-history-messages-empty>No stored messages for this device.</div>
             </section>
         </div>
     </div>
@@ -353,50 +429,60 @@
             <span class="es-save-msg" data-es-funnel-msg></span>
         </div>
 
-        <div class="es-live-grid">
-            <article class="es-live-card">
-                <span class="es-kicker">Public Hostname</span>
-                <strong data-es-funnel-host>Not available</strong>
-                <p>generated by Tailscale Funnel</p>
-            </article>
-            <article class="es-live-card">
+        <div class="es-funnel-summary">
+            <article class="es-funnel-status-card">
                 <span class="es-kicker">Tunnel State</span>
-                <strong data-es-funnel-state>Off</strong>
+                <div class="es-funnel-state-row">
+                    <strong data-es-funnel-state>Off</strong>
+                    <button type="button" class="fw-toggle-btn" data-es-funnel-enabled>OFF</button>
+                </div>
                 <p data-es-funnel-state-detail>public access disabled</p>
+                <div class="es-funnel-host">
+                    <span>Public hostname</span>
+                    <code data-es-funnel-host>Not available</code>
+                </div>
             </article>
-            <article class="es-live-card">
-                <span class="es-kicker">HTTP URL</span>
-                <strong data-es-funnel-http-url>Unavailable</strong>
-                <p>devices POST to this public HTTPS URL</p>
-            </article>
-            <article class="es-live-card">
-                <span class="es-kicker">MQTT Address</span>
-                <strong data-es-funnel-mqtt-url>Unavailable</strong>
-                <p>public TCP address for MQTT/MQTTS clients</p>
+            <article class="es-funnel-address-card">
+                <div class="es-live-panel-head">
+                    <strong>Shareable Addresses</strong>
+                    <span>give these to device installers</span>
+                </div>
+                <div class="es-funnel-addresses">
+                    <div>
+                        <span>HTTP endpoints</span>
+                        <code data-es-funnel-http-url>Unavailable</code>
+                        <small>public HTTPS URL, same endpoint path</small>
+                    </div>
+                    <div>
+                        <span>MQTT address</span>
+                        <code data-es-funnel-mqtt-url>Unavailable</code>
+                        <small>public TCP address when MQTT/MQTTS is exposed</small>
+                    </div>
+                </div>
             </article>
         </div>
 
         <section class="es-live-panel">
             <div class="es-live-panel-head">
                 <strong>Public Access</strong>
-                <button type="button" class="fw-toggle-btn" data-es-funnel-enabled>OFF</button>
+                <span>select which local listeners Tailscale Funnel exposes</span>
             </div>
-            <div class="es-listener-grid es-listener-grid-compact">
-                <label class="es-check-row">
+            <div class="es-funnel-service-grid">
+                <label class="es-funnel-service">
                     <input type="checkbox" data-es-funnel-service="http">
-                    <span>Expose HTTP endpoints as public HTTPS</span>
+                    <span><strong>HTTP endpoints</strong><small>publish as public HTTPS on port 443</small></span>
                 </label>
-                <label class="es-check-row">
+                <label class="es-funnel-service">
                     <input type="checkbox" data-es-funnel-service="https">
-                    <span>Expose HTTPS listener passthrough</span>
+                    <span><strong>HTTPS listener</strong><small>passthrough to the configured HTTPS listener</small></span>
                 </label>
-                <label class="es-check-row">
+                <label class="es-funnel-service">
                     <input type="checkbox" data-es-funnel-service="mqtt">
-                    <span>Expose MQTT listener</span>
+                    <span><strong>MQTT listener</strong><small>public TCP port assigned by Funnel</small></span>
                 </label>
-                <label class="es-check-row">
+                <label class="es-funnel-service">
                     <input type="checkbox" data-es-funnel-service="mqtts">
-                    <span>Expose MQTTS listener</span>
+                    <span><strong>MQTTS listener</strong><small>TLS MQTT over the public Funnel address</small></span>
                 </label>
             </div>
             <div class="es-field-help">
@@ -412,8 +498,8 @@
 
         <section class="es-live-panel">
             <div class="es-live-panel-head">
-                <strong>Device Connection Addresses</strong>
-                <span>share these with device installers</span>
+                <strong>Published Services</strong>
+                <span>status and local target for each selected listener</span>
             </div>
             <div class="es-list" data-es-funnel-services></div>
             <div class="es-empty-line" data-es-funnel-empty>No public tunnel services selected.</div>
@@ -455,6 +541,37 @@
             </article>
         </div>
 
+        <section class="es-live-panel es-alert-panel">
+            <div class="es-live-panel-head">
+                <strong>Active HTTP Alerts</strong>
+                <span data-es-http-active-alert-summary>No active alerts</span>
+            </div>
+            <div class="es-audit-list" data-es-http-active-alerts></div>
+            <div class="es-empty-line" data-es-http-active-alerts-empty>No HTTP alerts in the current window.</div>
+        </section>
+
+        <section class="es-live-panel es-live-panel-wide">
+            <div class="es-live-panel-head">
+                <strong>HTTP Fleet Traffic</strong>
+                <label class="es-window-control">
+                    <span>Window</span>
+                    <select class="fw-select" data-es-protocol-window="http">
+                        <option value="60" selected>Last 60 min</option>
+                        <option value="180">Last 3 hours</option>
+                        <option value="360">Last 6 hours</option>
+                        <option value="1440">Last 24 hours</option>
+                    </select>
+                </label>
+            </div>
+            <div class="es-legend">
+                <span><i class="es-line-key is-http"></i>HTTP / HTTPS</span>
+                <span><i class="es-dot-key is-critical"></i>alert time</span>
+            </div>
+            <div class="es-svg-chart" data-es-http-chart></div>
+            <div class="es-empty-line" data-es-http-chart-empty>No HTTP traffic yet.</div>
+            <div class="es-chart-caption" data-es-http-chart-caption>All HTTP/HTTPS devices combined. x - time · y - accepted requests per minute · red dots are alert times</div>
+        </section>
+
         <div class="es-filter-bar">
             <label class="fw-field">
                 <span class="fw-label">Find Device</span>
@@ -492,34 +609,22 @@
             </article>
         </div>
 
+        <section class="es-live-panel es-live-panel-wide">
+            <div class="es-live-panel-head">
+                <strong>Selected HTTP Device Trace</strong>
+                <span>accepted requests per minute for the selected device only</span>
+            </div>
+            <div class="es-legend">
+                <span><i class="es-line-key is-http"></i>value / min</span>
+                <span><i class="es-line-key is-baseline"></i>learned normal</span>
+                <span><i class="es-dot-key is-critical"></i>alert fired</span>
+            </div>
+            <div class="es-svg-chart" data-es-http-device-rate-chart></div>
+            <div class="es-empty-line" data-es-http-device-rate-empty>Select a device to see its message rate.</div>
+            <div class="es-chart-caption" data-es-http-device-rate-caption>x - time (last 60 minutes) · y - selected device messages per minute · red markers show alert times</div>
+        </section>
+
         <div class="es-protocol-grid">
-            <section class="es-live-panel">
-                <div class="es-live-panel-head">
-                    <strong>HTTP Traffic by Minute</strong>
-                    <span>all HTTP devices, accepted requests per minute</span>
-                </div>
-                <div class="es-chart-bars" data-es-http-chart></div>
-                <div class="es-empty-line" data-es-http-chart-empty>No HTTP traffic yet.</div>
-                <div class="es-chart-caption">x - gateway receive time · y - accepted HTTP/HTTPS messages per minute</div>
-            </section>
-            <section class="es-live-panel">
-                <div class="es-live-panel-head">
-                    <strong>Selected Device Rate</strong>
-                    <span>accepted requests per minute for selected device</span>
-                </div>
-                <div class="es-chart-bars" data-es-http-device-rate-chart></div>
-                <div class="es-empty-line" data-es-http-device-rate-empty>Select a device to see its message rate.</div>
-                <div class="es-chart-caption">x - gateway receive time · y - selected device messages per minute</div>
-            </section>
-            <section class="es-live-panel">
-                <div class="es-live-panel-head">
-                    <strong>Selected Device Payload</strong>
-                    <span>average payload size by minute</span>
-                </div>
-                <div class="es-chart-bars" data-es-http-device-payload-chart></div>
-                <div class="es-empty-line" data-es-http-device-payload-empty>Select a device to see payload trend.</div>
-                <div class="es-chart-caption">x - gateway receive time · y - average payload size</div>
-            </section>
             <section class="es-live-panel">
                 <div class="es-live-panel-head">
                     <strong>Endpoint Activity</strong>
@@ -528,44 +633,13 @@
                 <div class="es-route-list" data-es-http-routes></div>
                 <div class="es-empty-line" data-es-http-routes-empty>No HTTP route traffic yet.</div>
             </section>
-            <section class="es-live-panel es-live-panel-wide">
+            <section class="es-live-panel">
                 <div class="es-live-panel-head">
                     <strong>HTTP Device Health</strong>
                     <span>filtered by selected device</span>
                 </div>
                 <div class="es-device-list" data-es-http-devices-list></div>
                 <div class="es-empty-line" data-es-http-devices-empty>No HTTP devices have sent data yet.</div>
-            </section>
-            <section class="es-live-panel es-live-panel-wide">
-                <div class="es-live-panel-head">
-                    <strong>HTTP Alert Checks</strong>
-                    <span>how gateway decides something is abnormal</span>
-                </div>
-                <div class="es-watch-grid" data-es-http-watchlist></div>
-            </section>
-            <section class="es-live-panel">
-                <div class="es-live-panel-head">
-                    <strong>HTTP Alert Summary</strong>
-                    <span>counts by alert type</span>
-                </div>
-                <div class="es-anomaly-list" data-es-http-anomaly-summary></div>
-                <div class="es-empty-line" data-es-http-anomaly-summary-empty>No HTTP anomaly signals yet.</div>
-            </section>
-            <section class="es-live-panel">
-                <div class="es-live-panel-head">
-                    <strong>Latest HTTP Alerts</strong>
-                    <span>filtered by selected device</span>
-                </div>
-                <div class="es-audit-list" data-es-http-events></div>
-                <div class="es-empty-line" data-es-http-events-empty>No HTTP anomalies recorded.</div>
-            </section>
-            <section class="es-live-panel es-live-panel-wide">
-                <div class="es-live-panel-head">
-                    <strong>Latest HTTP Messages</strong>
-                    <span>filtered by selected device</span>
-                </div>
-                <div class="es-message-list" data-es-http-recent></div>
-                <div class="es-empty-line" data-es-http-recent-empty>No HTTP messages recorded.</div>
             </section>
         </div>
     </div>
@@ -605,16 +679,90 @@
             </article>
         </div>
 
+        <section class="es-live-panel es-alert-panel">
+            <div class="es-live-panel-head">
+                <strong>Active MQTT Alerts</strong>
+                <span data-es-mqtt-active-alert-summary>No active alerts</span>
+            </div>
+            <div class="es-audit-list" data-es-mqtt-active-alerts></div>
+            <div class="es-empty-line" data-es-mqtt-active-alerts-empty>No MQTT alerts in the current window.</div>
+        </section>
+
+        <section class="es-live-panel es-live-panel-wide">
+            <div class="es-live-panel-head">
+                <strong>MQTT Fleet Traffic</strong>
+                <label class="es-window-control">
+                    <span>Window</span>
+                    <select class="fw-select" data-es-protocol-window="mqtt">
+                        <option value="60" selected>Last 60 min</option>
+                        <option value="180">Last 3 hours</option>
+                        <option value="360">Last 6 hours</option>
+                        <option value="1440">Last 24 hours</option>
+                    </select>
+                </label>
+            </div>
+            <div class="es-legend">
+                <span><i class="es-line-key is-mqtt"></i>MQTT / MQTTS</span>
+                <span><i class="es-dot-key is-critical"></i>alert time</span>
+            </div>
+            <div class="es-svg-chart" data-es-mqtt-chart></div>
+            <div class="es-empty-line" data-es-mqtt-chart-empty>No MQTT traffic yet.</div>
+            <div class="es-chart-caption" data-es-mqtt-chart-caption>All MQTT/MQTTS devices combined. x - time · y - accepted publishes per minute · red dots are alert times</div>
+        </section>
+
+        <div class="es-filter-bar">
+            <label class="fw-field">
+                <span class="fw-label">Find Device</span>
+                <input class="fw-input" type="search" data-es-mqtt-device-search placeholder="Search by device ID, topic, or status">
+            </label>
+            <label class="fw-field">
+                <span class="fw-label">Show Device</span>
+                <select class="fw-select" data-es-mqtt-device-filter>
+                    <option value="">All MQTT devices</option>
+                </select>
+            </label>
+            <div class="es-filter-summary" data-es-mqtt-device-summary>Showing all MQTT devices</div>
+        </div>
+
+        <div class="es-metrics-grid">
+            <article class="es-live-card">
+                <span class="es-kicker">Selected Status</span>
+                <strong data-es-mqtt-selected-status>All devices</strong>
+                <p data-es-mqtt-selected-last>No single device selected</p>
+            </article>
+            <article class="es-live-card">
+                <span class="es-kicker">Last Gap</span>
+                <strong data-es-mqtt-selected-gap>n/a</strong>
+                <p>time between last two publishes</p>
+            </article>
+            <article class="es-live-card">
+                <span class="es-kicker">Normal Gap</span>
+                <strong data-es-mqtt-selected-normal-gap>n/a</strong>
+                <p>learned baseline for this device</p>
+            </article>
+            <article class="es-live-card">
+                <span class="es-kicker">Payload Size</span>
+                <strong data-es-mqtt-selected-payload>n/a</strong>
+                <p>last payload / learned average</p>
+            </article>
+        </div>
+
+        <section class="es-live-panel es-live-panel-wide">
+            <div class="es-live-panel-head">
+                <strong>Selected MQTT Device Trace</strong>
+                <span>accepted publishes per minute for the selected device only</span>
+            </div>
+            <div class="es-legend">
+                <span><i class="es-line-key is-mqtt"></i>value / min</span>
+                <span><i class="es-line-key is-baseline"></i>learned normal</span>
+                <span><i class="es-dot-key is-critical"></i>alert fired</span>
+            </div>
+            <div class="es-svg-chart" data-es-mqtt-device-rate-chart></div>
+            <div class="es-empty-line" data-es-mqtt-device-rate-empty>Select a device to see its publish rate.</div>
+            <div class="es-chart-caption" data-es-mqtt-device-rate-caption>x - time (last 60 minutes) · y - selected device publishes per minute · red markers show alert times</div>
+        </section>
+
         <div class="es-protocol-grid">
-            <section class="es-live-panel">
-                <div class="es-live-panel-head">
-                    <strong>MQTT Traffic by Minute</strong>
-                    <span>each bar is accepted MQTT publishes in that minute</span>
-                </div>
-                <div class="es-chart-bars" data-es-mqtt-chart></div>
-                <div class="es-empty-line" data-es-mqtt-chart-empty>No MQTT traffic yet.</div>
-                <div class="es-chart-caption">x - gateway receive time · y - accepted MQTT/MQTTS publishes per minute</div>
-            </section>
             <section class="es-live-panel">
                 <div class="es-live-panel-head">
                     <strong>Topic Routes</strong>
@@ -623,44 +771,13 @@
                 <div class="es-route-list" data-es-mqtt-routes></div>
                 <div class="es-empty-line" data-es-mqtt-routes-empty>No MQTT topic traffic yet.</div>
             </section>
-            <section class="es-live-panel es-live-panel-wide">
-                <div class="es-live-panel-head">
-                    <strong>MQTT Anomaly Watchlist</strong>
-                    <span>active checks and trigger parameters</span>
-                </div>
-                <div class="es-watch-grid" data-es-mqtt-watchlist></div>
-            </section>
-            <section class="es-live-panel es-live-panel-wide">
+            <section class="es-live-panel">
                 <div class="es-live-panel-head">
                     <strong>MQTT Device Health</strong>
-                    <span>connected, recent, or stale</span>
+                    <span>filtered by selected device</span>
                 </div>
                 <div class="es-device-list" data-es-mqtt-devices-list></div>
                 <div class="es-empty-line" data-es-mqtt-devices-empty>No MQTT devices have sent data yet.</div>
-            </section>
-            <section class="es-live-panel">
-                <div class="es-live-panel-head">
-                    <strong>MQTT Anomaly Signals</strong>
-                    <span>what the gateway is watching</span>
-                </div>
-                <div class="es-anomaly-list" data-es-mqtt-anomaly-summary></div>
-                <div class="es-empty-line" data-es-mqtt-anomaly-summary-empty>No MQTT anomaly signals yet.</div>
-            </section>
-            <section class="es-live-panel">
-                <div class="es-live-panel-head">
-                    <strong>Latest MQTT Anomalies</strong>
-                    <span>latest warning/info events with measured values</span>
-                </div>
-                <div class="es-audit-list" data-es-mqtt-events></div>
-                <div class="es-empty-line" data-es-mqtt-events-empty>No MQTT anomalies recorded.</div>
-            </section>
-            <section class="es-live-panel es-live-panel-wide">
-                <div class="es-live-panel-head">
-                    <strong>Latest MQTT Messages</strong>
-                    <span>most recent accepted records</span>
-                </div>
-                <div class="es-message-list" data-es-mqtt-recent></div>
-                <div class="es-empty-line" data-es-mqtt-recent-empty>No MQTT messages recorded.</div>
             </section>
         </div>
     </div>
@@ -847,17 +964,61 @@
                 <p>Metadata anomalies, disconnects, route misses, auth failures, and storage/server faults.</p>
             </div>
             <div class="es-head-actions">
-                <a class="ghost-action" href="/api/edge-server/events.csv">Download CSV</a>
-                <a class="ghost-action" href="/api/edge-server/events.jsonl">JSONL</a>
+                <a class="ghost-action" href="/api/edge-server/events.csv" data-es-alert-events-csv>Download CSV</a>
+                <a class="ghost-action" href="/api/edge-server/events.jsonl" data-es-alert-events-jsonl>JSONL</a>
                 <span class="es-save-msg" data-es-alert-summary>0 alerts</span>
             </div>
         </div>
+
+        <section class="es-live-panel es-alert-explorer">
+            <div class="es-live-panel-head">
+                <strong>Alert Explorer</strong>
+                <span>filter by protocol, transport, device, and time range</span>
+            </div>
+            <div class="es-history-controls es-alert-controls">
+                <label class="fw-field">
+                    <span class="fw-label">Protocol</span>
+                    <select class="fw-input" data-es-alert-protocol-group>
+                        <option value="">All protocols</option>
+                        <option value="http">HTTP / HTTPS</option>
+                        <option value="mqtt">MQTT / MQTTS</option>
+                    </select>
+                </label>
+                <label class="fw-field">
+                    <span class="fw-label">Transport</span>
+                    <select class="fw-input" data-es-alert-protocol>
+                        <option value="">All transports</option>
+                        <option value="HTTP">HTTP</option>
+                        <option value="HTTPS">HTTPS</option>
+                        <option value="MQTT">MQTT</option>
+                        <option value="MQTTS">MQTTS</option>
+                    </select>
+                </label>
+                <label class="fw-field">
+                    <span class="fw-label">Device</span>
+                    <select class="fw-input" data-es-alert-device>
+                        <option value="">All devices</option>
+                    </select>
+                </label>
+                <label class="fw-field">
+                    <span class="fw-label">Range</span>
+                    <select class="fw-input" data-es-alert-range>
+                        <option value="24h">Last 24 hours</option>
+                        <option value="7d">Last 7 days</option>
+                        <option value="30d" selected>Last 30 days</option>
+                        <option value="all">All stored</option>
+                    </select>
+                </label>
+                <button type="button" class="ghost-action" data-es-alert-refresh>Refresh</button>
+            </div>
+            <div class="es-alert-device-pills" data-es-alert-device-pills></div>
+        </section>
 
         <div class="es-metrics-grid">
             <article class="es-live-card">
                 <span class="es-kicker">Total Alerts</span>
                 <strong data-es-alert-total>0</strong>
-                <p>stored warning/error events</p>
+                <p>stored in selected range</p>
             </article>
             <article class="es-live-card">
                 <span class="es-kicker">Warnings</span>
@@ -879,18 +1040,39 @@
         <div class="es-live-panel">
             <div class="es-live-panel-head">
                 <strong>Alert Timeline</strong>
-                <span>latest 100 events with measured values and exact time</span>
+                <span data-es-alert-window>time on x-axis, anomaly type on y-axis, color by severity</span>
             </div>
-            <div class="es-audit-list" data-es-alert-list></div>
-            <div class="es-empty-line" data-es-alert-empty>No alerts recorded.</div>
+            <div class="es-legend">
+                <span><i class="es-dot-key is-critical"></i>critical/error</span>
+                <span><i class="es-dot-key is-warning"></i>warning</span>
+                <span><i class="es-dot-key is-info"></i>info</span>
+            </div>
+            <div class="es-timeline-chart" data-es-alert-timeline-chart></div>
+            <div class="es-empty-line" data-es-alert-timeline-empty>No alerts recorded for this filter.</div>
+            <div class="es-chart-caption" data-es-alert-timeline-caption>x - event time · y - anomaly type · each dot is one alert</div>
+            <div class="es-selected-alert" data-es-alert-selected>
+                <strong>Select an alert point or row</strong>
+                <span>Click a timeline dot or alert card to inspect the exact device, time, and measured values.</span>
+            </div>
         </div>
 
         <div class="es-live-panel">
             <div class="es-live-panel-head">
-                <strong>What Gateway Watches</strong>
-                <span>checks running on HTTP and MQTT device traffic</span>
+                <strong>Anomalies by Type</strong>
+                <span>counts in selected range</span>
             </div>
-            <div class="es-watch-grid" data-es-alert-watchlist></div>
+            <div class="es-type-bars" data-es-alert-type-summary></div>
+            <div class="es-empty-line" data-es-alert-type-empty>No anomaly types for this filter.</div>
+            <div class="es-chart-caption">x - number of stored events · y - anomaly type</div>
+        </div>
+
+        <div class="es-live-panel">
+            <div class="es-live-panel-head">
+                <strong>Recent Alerts</strong>
+                <span>measured values with exact date and time</span>
+            </div>
+            <div class="es-audit-list" data-es-alert-list></div>
+            <div class="es-empty-line" data-es-alert-empty>No alerts recorded.</div>
         </div>
     </div>
 
@@ -900,31 +1082,77 @@
                 <h2>Storage &amp; Routing</h2>
                 <p>Inbound data is stored first, then routed to a forwarding profile when available.</p>
             </div>
+            <button type="button" class="fw-btn-save" data-es-save>Save storage</button>
         </div>
 
-        <div class="es-storage-grid">
-            <label class="es-check-card">
-                <input type="checkbox" data-es-storage-enabled>
-                <span>
-                    <strong>Store inbound records</strong>
-                    <small>Keep device payloads locally before forwarding.</small>
-                </span>
-            </label>
-            <label class="fw-field">
-                <span class="fw-label">Retention Days</span>
-                <input class="fw-input" type="number" min="1" max="3650" data-es-retention-days>
-            </label>
-            <label class="fw-field">
-                <span class="fw-label">Max Store Size (MB)</span>
-                <input class="fw-input" type="number" min="64" max="1048576" data-es-max-size>
-            </label>
+        <div class="es-storage-dashboard">
+            <div class="es-storage-card">
+                <div class="es-storage-card-head">
+                    <strong>Local store</strong>
+                    <span data-es-storage-mode>SQLite persistent</span>
+                </div>
+                <label class="es-storage-toggle-row">
+                    <span>
+                        <strong>Store inbound records</strong>
+                        <small>Keep device payloads locally before forwarding.</small>
+                    </span>
+                    <input type="checkbox" data-es-storage-enabled>
+                </label>
+                <label class="es-storage-row">
+                    <span>Retention days</span>
+                    <input class="fw-input" type="number" min="1" max="3650" data-es-retention-days>
+                </label>
+                <label class="es-storage-row">
+                    <span>Max store size</span>
+                    <input class="fw-input" type="number" min="5120" max="1048576" step="128" data-es-max-size>
+                    <small>MB</small>
+                </label>
+            </div>
+
+            <div class="es-storage-card">
+                <div class="es-storage-card-head">
+                    <strong>Store usage</strong>
+                    <span data-es-storage-percent>0%</span>
+                </div>
+                <div class="es-storage-usage-head">
+                    <strong data-es-storage-used>0 MiB</strong>
+                    <span>/ <span data-es-storage-limit>5,120 MiB</span></span>
+                </div>
+                <div class="es-storage-meter" aria-hidden="true">
+                    <span data-es-storage-used-bar></span>
+                </div>
+                <div class="es-storage-stat-grid">
+                    <span><small>Records</small><strong data-es-storage-records>0</strong></span>
+                    <span><small>Oldest record</small><strong data-es-storage-oldest>No records</strong></span>
+                    <span><small>Latest record</small><strong data-es-storage-newest>No records</strong></span>
+                    <span><small>Encryption</small><strong data-es-storage-encryption>SQLite</strong></span>
+                </div>
+                <p class="es-storage-path" data-es-storage-path></p>
+            </div>
         </div>
 
-        <div class="es-pipeline-note">
-            <span>Inbound payload</span>
-            <span>Local SQLCipher store</span>
-            <span>Anomaly detection</span>
-            <span>Optional forwarding profile</span>
+        <div class="es-live-panel">
+            <div class="es-live-panel-head">
+                <strong>Ingest pipeline</strong>
+                <span>data is stored first, checked for anomalies, then forwarded when a profile is configured</span>
+            </div>
+            <div class="es-pipeline-flow">
+                <span><small>1 - Receive</small><strong>Inbound payload</strong></span>
+                <i>→</i>
+                <span><small>2 - Persist</small><strong>Local SQLite/SQLCipher store</strong></span>
+                <i>→</i>
+                <span><small>3 - Inspect</small><strong>Anomaly detection</strong></span>
+                <i>→</i>
+                <span><small>4 - Forward</small><strong>Optional forwarding profile</strong></span>
+            </div>
+        </div>
+
+        <div class="es-live-panel">
+            <div class="es-live-panel-head">
+                <strong>Data forwarding profile</strong>
+                <a class="es-forwarding-link" href="/forwarding">Configure forwarding</a>
+            </div>
+            <p class="es-muted-copy">No forwarding profile selected by default. Records stay local and remain available for anomaly timelines, exports, and device history.</p>
         </div>
     </div>
 </section>

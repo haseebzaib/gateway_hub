@@ -5739,7 +5739,12 @@ document.addEventListener("DOMContentLoaded", () => {
         let esEditingHttpId = null;
         let esEditingMqttId = null;
         let esHttpMetricsCache = null;
+        let esMqttMetricsCache = null;
+        let esOverviewMetricsCache = null;
+        let esAlertEventsCache = [];
+        let esSelectedAlertIndex = -1;
         let esHttpDeviceSearch = "";
+        let esMqttDeviceSearch = "";
 
         const esDefaultConfig = () => ({
             version: 1,
@@ -5864,9 +5869,10 @@ document.addEventListener("DOMContentLoaded", () => {
             const enabled = edgeShell.querySelector("[data-es-storage-enabled]");
             const retention = edgeShell.querySelector("[data-es-retention-days]");
             const maxSize = edgeShell.querySelector("[data-es-max-size]");
+            const configuredMax = Math.max(5120, Number(storage.max_size_mb || 5120));
             if (enabled) enabled.checked = storage.enabled !== false;
             if (retention) retention.value = storage.retention_days || 30;
-            if (maxSize) maxSize.value = storage.max_size_mb || 5120;
+            if (maxSize) maxSize.value = configuredMax;
         };
 
         const esReadStorage = () => {
@@ -5874,7 +5880,7 @@ document.addEventListener("DOMContentLoaded", () => {
             cfg.storage = {
                 enabled: Boolean(edgeShell.querySelector("[data-es-storage-enabled]")?.checked),
                 retention_days: Number(edgeShell.querySelector("[data-es-retention-days]")?.value || 30),
-                max_size_mb: Number(edgeShell.querySelector("[data-es-max-size]")?.value || 5120),
+                max_size_mb: Math.max(5120, Number(edgeShell.querySelector("[data-es-max-size]")?.value || 5120)),
             };
         };
 
@@ -5911,6 +5917,9 @@ document.addEventListener("DOMContentLoaded", () => {
             const mqtt = services.find((item) => item.service === "mqtt" || item.service === "mqtts");
             esSetText("[data-es-funnel-http-url]", http?.public_url || "Unavailable");
             esSetText("[data-es-funnel-mqtt-url]", mqtt?.public_url || "Unavailable");
+            edgeShell.querySelector("[data-es-funnel-host]")?.setAttribute("title", data.hostname || "Not available");
+            edgeShell.querySelector("[data-es-funnel-http-url]")?.setAttribute("title", http?.public_url || "Unavailable");
+            edgeShell.querySelector("[data-es-funnel-mqtt-url]")?.setAttribute("title", mqtt?.public_url || "Unavailable");
 
             const list = edgeShell.querySelector("[data-es-funnel-services]");
             const empty = edgeShell.querySelector("[data-es-funnel-empty]");
@@ -5928,11 +5937,11 @@ document.addEventListener("DOMContentLoaded", () => {
                             ? "MQTTS TCP"
                             : "MQTT TCP";
                 return `
-                    <article class="es-item-card">
+                    <article class="es-item-card es-funnel-published-service">
                         <div class="es-item-main">
                             <div class="es-item-title">
                                 <strong>${esEsc(item.label || item.service)}</strong>
-                                <span>${esEsc(state)}</span>
+                                <span class="es-proto-tag ${item.enabled ? "is-secure" : ""}">${esEsc(state)}</span>
                             </div>
                             <code>${esEsc(address)}</code>
                             <p>${esEsc(protocol)} · public port ${esEsc(item.public_port || "n/a")}</p>
@@ -6067,14 +6076,19 @@ document.addEventListener("DOMContentLoaded", () => {
         };
 
         const esRenderAll = () => {
-            esApplyListeners();
-            esApplyStorage();
-            esApplyCertStatus();
-            esApplyFunnelConfig();
-            esFillForwardingSelect(edgeShell.querySelector("[data-es-http-forwarding]"));
-            esFillForwardingSelect(edgeShell.querySelector("[data-es-mqtt-forwarding]"));
-            esRenderHttp();
-            esRenderMqtt();
+            try {
+                esApplyListeners();
+                esApplyStorage();
+                esApplyCertStatus();
+                esApplyFunnelConfig();
+                esFillForwardingSelect(edgeShell.querySelector("[data-es-http-forwarding]"));
+                esFillForwardingSelect(edgeShell.querySelector("[data-es-mqtt-forwarding]"));
+                esRenderHttp();
+                esRenderMqtt();
+                esRefreshOverviewVisuals();
+            } catch (error) {
+                console.warn("[Edge Server] initial render failed:", error);
+            }
         };
 
         const esReadHttpForm = () => ({
@@ -6191,6 +6205,51 @@ document.addEventListener("DOMContentLoaded", () => {
             if (el) el.textContent = value;
         };
 
+        const esTooltip = document.createElement("div");
+        esTooltip.className = "es-chart-tooltip es-hidden";
+        document.body.appendChild(esTooltip);
+        let esTooltipPinned = false;
+
+        const esMoveTooltip = (event) => {
+            const offset = 14;
+            const x = Math.min(window.innerWidth - 280, event.clientX + offset);
+            const y = Math.min(window.innerHeight - 90, event.clientY + offset);
+            esTooltip.style.left = `${Math.max(8, x)}px`;
+            esTooltip.style.top = `${Math.max(8, y)}px`;
+        };
+
+        edgeShell.addEventListener("pointerover", (event) => {
+            const target = event.target?.closest?.("[data-es-tooltip]");
+            if (esTooltipPinned) return;
+            if (!target) return;
+            esTooltip.textContent = target.getAttribute("data-es-tooltip") || "";
+            esTooltip.classList.remove("es-hidden");
+            esMoveTooltip(event);
+        });
+
+        edgeShell.addEventListener("pointermove", (event) => {
+            if (!esTooltipPinned && !esTooltip.classList.contains("es-hidden")) esMoveTooltip(event);
+        });
+
+        edgeShell.addEventListener("pointerout", (event) => {
+            if (!esTooltipPinned && event.target?.closest?.("[data-es-tooltip]")) {
+                esTooltip.classList.add("es-hidden");
+            }
+        });
+
+        edgeShell.addEventListener("click", (event) => {
+            const target = event.target?.closest?.("[data-es-tooltip]");
+            if (!target) {
+                esTooltipPinned = false;
+                esTooltip.classList.add("es-hidden");
+                return;
+            }
+            esTooltipPinned = true;
+            esTooltip.textContent = target.getAttribute("data-es-tooltip") || "";
+            esTooltip.classList.remove("es-hidden");
+            esMoveTooltip(event);
+        });
+
         const esShortTime = (value) => {
             if (!value) return "";
             const date = new Date(String(value).replace("Z", "+00:00"));
@@ -6199,7 +6258,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const esFullTime = (value) => {
             if (!value) return "";
-            const date = new Date(String(value).replace("Z", "+00:00"));
+            const date = typeof value === "number" ? new Date(value) : new Date(String(value).replace("Z", "+00:00"));
             if (Number.isNaN(date.getTime())) return String(value);
             return date.toLocaleString([], {
                 year: "numeric",
@@ -6219,6 +6278,18 @@ document.addEventListener("DOMContentLoaded", () => {
                 return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
             }
             return raw.slice(11, 16) || raw;
+        };
+
+        const esChartTickLabel = (value, mode = "time") => {
+            const date = new Date(value);
+            if (Number.isNaN(date.getTime())) return "";
+            if (mode === "date") {
+                return date.toLocaleDateString([], { month: "short", day: "2-digit" });
+            }
+            if (mode === "datetime") {
+                return date.toLocaleString([], { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+            }
+            return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
         };
 
         const esAge = (value) => {
@@ -6245,6 +6316,15 @@ document.addEventListener("DOMContentLoaded", () => {
             if (!Number.isFinite(num)) return "n/a";
             if (num < 1024) return `${Math.round(num)} B`;
             return `${(num / 1024).toFixed(num < 10240 ? 1 : 0)} KiB`;
+        };
+
+        const esFormatStoreBytes = (value) => {
+            const num = Number(value);
+            if (!Number.isFinite(num) || num <= 0) return "0 MiB";
+            const mib = num / (1024 * 1024);
+            if (mib < 1024) return `${mib < 10 ? mib.toFixed(1) : Math.round(mib).toLocaleString()} MiB`;
+            const gib = mib / 1024;
+            return `${gib < 10 ? gib.toFixed(2) : gib.toFixed(1)} GiB`;
         };
 
         const esEventTitle = (type) => ({
@@ -6362,15 +6442,17 @@ document.addEventListener("DOMContentLoaded", () => {
             return `<span class="es-proto-tag ${secure ? "is-secure" : plain ? "is-plain" : ""}">${esEsc(value || "DATA")}</span>`;
         };
 
-        const esRenderAlertCard = (event) => {
+        const esRenderAlertCard = (event, compact = false, index = null) => {
             const type = event.event_type || event.type || "event";
             const tone = esSeverityTone(event.severity);
             const detail = esEventDetails(event);
             const when = event.created_at || event.timestamp || event.last_seen;
             const device = event.device_id || event.source || "unknown device";
             const protocol = event.protocol || event.protocol_group || "";
+            const interactiveAttrs = index === null ? "" : ` data-es-alert-index="${index}"`;
+            const selected = index !== null && index === esSelectedAlertIndex;
             return `
-                <article class="es-alert-card is-${tone}">
+                <article class="es-alert-card ${compact ? "is-compact" : ""} ${index === null ? "" : "is-clickable"} ${selected ? "is-selected" : ""} is-${tone}"${interactiveAttrs}>
                     <div class="es-alert-top">
                         <strong class="es-alert-title">${esEsc(esEventTitle(type))}</strong>
                         <span class="es-severity-pill is-${tone}">${esEsc(tone)}</span>
@@ -6382,6 +6464,504 @@ document.addEventListener("DOMContentLoaded", () => {
                     <div class="es-alert-body"><strong>Measured:</strong> ${esEsc(detail || event.message || esEventMeaning(type))}</div>
                     <div class="es-alert-rule">Why it matters: ${esEsc(esEventMeaning(type))}</div>
                 </article>`;
+        };
+
+        const esEventMs = (event) => {
+            const raw = event?.created_at || event?.timestamp || event?.last_seen || event?.received_at;
+            if (!raw) return Date.now();
+            const ms = new Date(String(raw).replace("Z", "+00:00")).getTime();
+            return Number.isFinite(ms) ? ms : Date.now();
+        };
+
+        const esChartBucketMs = (row) => {
+            const raw = String(row?.minute || row?.bucket || row?.received_at || "");
+            const ms = new Date(raw.length === 16 ? `${raw}:00Z` : raw.replace("Z", "+00:00")).getTime();
+            return Number.isFinite(ms) ? ms : 0;
+        };
+
+        const esRateBaseline = (rows) => {
+            const values = (Array.isArray(rows) ? rows : [])
+                .map((row) => Number(row.count ?? row.value ?? 0))
+                .filter((value) => Number.isFinite(value) && value > 0);
+            if (values.length < 3) return 0;
+            return values.reduce((sum, value) => sum + value, 0) / values.length;
+        };
+
+        const esNormalizeSeries = (rows, valueKey = "count") => {
+            return (Array.isArray(rows) ? rows : [])
+                .map((row) => ({
+                    label: row.minute || row.bucket || row.received_at || "",
+                    ms: esChartBucketMs(row),
+                    value: Number(row[valueKey] || 0),
+                }))
+                .filter((row) => row.ms || row.label)
+                .sort((a, b) => a.ms - b.ms);
+        };
+
+        const esSvgPointPath = (points) => points.map((point, idx) => `${idx ? "L" : "M"} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(" ");
+
+        const esRenderLineChart = (selector, emptySelector, seriesItems, options = {}) => {
+            const wrap = edgeShell.querySelector(selector);
+            const empty = edgeShell.querySelector(emptySelector);
+            if (!wrap) return;
+            try {
+            const hasFixedMin = options.minMs !== undefined && options.minMs !== null && Number.isFinite(Number(options.minMs));
+            const hasFixedMax = options.maxMs !== undefined && options.maxMs !== null && Number.isFinite(Number(options.maxMs));
+            const fixedMinMs = hasFixedMin ? Number(options.minMs) : null;
+            const fixedMaxMs = hasFixedMax ? Math.max(Number(options.maxMs), Number(options.minMs || 0) + 60000) : null;
+            const chartEvents = Array.isArray(options.events) ? options.events : [];
+            let series = (Array.isArray(seriesItems) ? seriesItems : [])
+                .map((item) => ({
+                    ...item,
+                    rows: esNormalizeSeries(item.rows || [], item.valueKey || "count"),
+                }))
+                .map((item) => {
+                    if (fixedMinMs === null || fixedMaxMs === null || !item.rows.length) return item;
+                    const bucketMs = Number(options.bucketMs || 0);
+                    if (Number.isFinite(bucketMs) && bucketMs > 0 && ((fixedMaxMs - fixedMinMs) / bucketMs) <= 2000) {
+                        const values = new Map();
+                        item.rows.forEach((row) => {
+                            const key = Math.floor(row.ms / bucketMs) * bucketMs;
+                            values.set(key, (values.get(key) || 0) + Number(row.value || 0));
+                        });
+                        const rows = [];
+                        for (let ms = Math.ceil(fixedMinMs / bucketMs) * bucketMs; ms <= fixedMaxMs; ms += bucketMs) {
+                            rows.push({ label: new Date(ms).toISOString(), ms, value: values.get(ms) || 0 });
+                        }
+                        return { ...item, rows };
+                    }
+                    const rows = [
+                        { label: "start", ms: fixedMinMs, value: 0 },
+                        ...item.rows.filter((row) => row.ms >= fixedMinMs && row.ms <= fixedMaxMs),
+                        { label: "end", ms: fixedMaxMs, value: 0 },
+                    ].sort((a, b) => a.ms - b.ms);
+                    return { ...item, rows };
+                })
+                .filter((item) => item.rows.length);
+            if (!series.length && chartEvents.length && fixedMinMs !== null && fixedMaxMs !== null) {
+                series = [{
+                    className: options.fallbackClassName || "es-chart-line-secondary",
+                    rows: [
+                        { label: new Date(fixedMinMs).toISOString(), ms: fixedMinMs, value: 0 },
+                        { label: new Date(fixedMaxMs).toISOString(), ms: fixedMaxMs, value: 0 },
+                    ],
+                }];
+            }
+            const hasData = series.some((item) => item.rows.some((row) => row.value > 0)) || chartEvents.length > 0;
+            if (empty) empty.classList.toggle("es-hidden", hasData);
+            if (!hasData) {
+                wrap.innerHTML = "";
+                return;
+            }
+
+            const width = 920;
+            const height = options.height || 240;
+            const pad = { left: 58, right: 18, top: 18, bottom: 42 };
+            const plotW = width - pad.left - pad.right;
+            const plotH = height - pad.top - pad.bottom;
+            const allRows = series.flatMap((item) => item.rows);
+            const dataMinMs = Math.min(...allRows.map((row) => row.ms || Date.now()));
+            const dataMaxMs = Math.max(...allRows.map((row) => row.ms || Date.now()), dataMinMs + 60000);
+            let minMs = hasFixedMin ? Number(options.minMs) : dataMinMs;
+            let maxMs = hasFixedMax ? Math.max(Number(options.maxMs), minMs + 60000) : dataMaxMs;
+            if (options.focusDataDomain && hasFixedMin && hasFixedMax) {
+                const bucketMs = Math.max(60000, Number(options.bucketMs || 60000));
+                const eventTimes = (Array.isArray(options.events) ? options.events : [])
+                    .map((event) => esEventMs(event))
+                    .filter((ms) => ms >= fixedMinMs && ms <= fixedMaxMs);
+                const dataTimes = allRows
+                    .filter((row) => Number(row.value || 0) > 0 && row.ms >= fixedMinMs && row.ms <= fixedMaxMs)
+                    .map((row) => row.ms);
+                const focusTimes = [...dataTimes, ...eventTimes];
+                if (focusTimes.length) {
+                    const focusMin = Math.min(...focusTimes);
+                    const focusMax = Math.max(...focusTimes);
+                    const selectedSpan = Math.max(60000, fixedMaxMs - fixedMinMs);
+                    const focusSpan = Math.max(bucketMs, focusMax - focusMin);
+                    if (focusSpan < selectedSpan * 0.45) {
+                        const padMs = Math.max(bucketMs * 2, focusSpan * 0.25);
+                        minMs = Math.max(fixedMinMs, focusMin - padMs);
+                        maxMs = Math.min(fixedMaxMs, focusMax + padMs);
+                        if (maxMs - minMs < bucketMs * 6) {
+                            const center = focusMin + ((focusMax - focusMin) / 2);
+                            minMs = Math.max(fixedMinMs, center - (bucketMs * 3));
+                            maxMs = Math.min(fixedMaxMs, center + (bucketMs * 3));
+                        }
+                    }
+                }
+            }
+            const chartSeries = series
+                .map((item) => ({ ...item, rows: item.rows.filter((row) => row.ms >= minMs && row.ms <= maxMs) }))
+                .filter((item) => item.rows.length);
+            const chartRows = chartSeries.flatMap((item) => item.rows);
+            const dataMaxValue = Math.max(1, ...chartRows.map((row) => row.value));
+            const baselineValue = Number(options.baseline || 0);
+            const showBaseline = baselineValue > 0 && baselineValue <= dataMaxValue * 3;
+            const maxValue = Math.max(dataMaxValue, showBaseline ? baselineValue : 0);
+            const x = (ms) => pad.left + (((ms - minMs) / Math.max(1, maxMs - minMs)) * plotW);
+            const y = (value) => pad.top + plotH - ((value / maxValue) * plotH);
+            const yTicks = [0, 0.25, 0.5, 0.75, 1].map((ratio) => Math.round(maxValue * ratio));
+            const xTicks = [0, 0.25, 0.5, 0.75, 1].map((ratio) => minMs + ((maxMs - minMs) * ratio));
+            const primaryRows = chartSeries[0]?.rows || [];
+            const nearestPrimaryRow = (ms) => primaryRows.reduce(
+                (best, row) => !best || Math.abs(row.ms - ms) < Math.abs(best.ms - ms) ? row : best,
+                null,
+            );
+            const lines = yTicks.map((tick) => {
+                const yy = y(tick);
+                return `<line class="es-chart-grid" x1="${pad.left}" y1="${yy.toFixed(1)}" x2="${width - pad.right}" y2="${yy.toFixed(1)}"></line>
+                    <text class="es-chart-axis" x="${pad.left - 10}" y="${(yy + 4).toFixed(1)}" text-anchor="end">${tick}</text>`;
+            }).join("");
+            const xLabels = xTicks.map((tick, idx) => {
+                const label = esChartTickLabel(tick, options.exactTimeAxis ? "datetime" : (options.timeMode || "time"));
+                return `<text class="es-chart-axis" x="${x(tick).toFixed(1)}" y="${height - 12}" text-anchor="${idx === 0 ? "start" : idx === xTicks.length - 1 ? "end" : "middle"}">${esEsc(label)}</text>`;
+            }).join("");
+            const baseline = showBaseline
+                ? `<path class="es-chart-line-baseline" d="M ${pad.left} ${y(baselineValue).toFixed(1)} L ${width - pad.right} ${y(baselineValue).toFixed(1)}"></path>`
+                : "";
+            const paths = chartSeries.map((item) => {
+                const points = item.rows.map((row) => ({ x: x(row.ms), y: y(row.value), row }));
+                const cls = item.className || "es-chart-line-http";
+                return `<path class="${cls}" d="${esSvgPointPath(points)}"></path>`;
+            }).join("");
+            const pointDots = chartSeries.map((item) => {
+                const cls = `${item.className || "es-chart-line-http"}-dot`;
+                return item.rows
+                    .filter((row) => row.value > 0 && row.ms >= minMs && row.ms <= maxMs)
+                    .map((row) => `<circle class="es-chart-point ${cls}" cx="${x(row.ms).toFixed(1)}" cy="${y(row.value).toFixed(1)}" r="${item.rows.length === 1 ? 5 : 3}" data-es-tooltip="${esEsc(`${Number(row.value || 0).toLocaleString()} messages · ${esFullTime(row.ms)}`)}">
+                        <title>${Number(row.value || 0).toLocaleString()} · ${esEsc(esFullTime(row.ms))}</title>
+                    </circle>`)
+                    .join("");
+            }).join("");
+            const alertBucketMs = Math.max(1000, Number(options.eventBucketMs || options.bucketMs || 60000));
+            const groupedEvents = new Map();
+            chartEvents
+                .map((event) => ({ event, ms: esEventMs(event) }))
+                .filter((item) => item.ms >= minMs && item.ms <= maxMs)
+                .forEach((item) => {
+                    const keyMs = Math.floor(item.ms / alertBucketMs) * alertBucketMs;
+                    const key = String(keyMs);
+                    const bucket = groupedEvents.get(key) || { ms: item.ms, count: 0, events: [], severities: new Set(), types: new Set(), firstMs: item.ms, lastMs: item.ms };
+                    bucket.count += 1;
+                    bucket.events.push(item.event);
+                    bucket.severities.add(esSeverityTone(item.event.severity));
+                    bucket.types.add(esEventTitle(item.event.event_type || item.event.type));
+                    bucket.firstMs = Math.min(bucket.firstMs, item.ms);
+                    bucket.lastMs = Math.max(bucket.lastMs, item.ms);
+                    bucket.ms = Math.min(bucket.ms, item.ms);
+                    groupedEvents.set(key, bucket);
+                });
+            const alertBucketForMs = (ms) => groupedEvents.get(String(Math.floor(ms / alertBucketMs) * alertBucketMs));
+            const alertSummaryText = (bucket) => {
+                if (!bucket || !bucket.count) return "0 alerts";
+                const typeList = [...bucket.types].slice(0, 3).join(", ");
+                return `${bucket.count.toLocaleString()} alert${bucket.count === 1 ? "" : "s"}${typeList ? ` · ${typeList}${bucket.types.size > 3 ? ", ..." : ""}` : ""}`;
+            };
+            const bucketHoverTargets = primaryRows
+                .filter((row) => row.ms >= minMs && row.ms <= maxMs)
+                .map((row) => {
+                    const bucket = alertBucketForMs(row.ms);
+                    const messages = Number(row.value || 0);
+                    const bandWidth = Math.max(8, Math.min(42, (Number(options.bucketMs || alertBucketMs) / Math.max(1, maxMs - minMs)) * plotW));
+                    const cx = x(row.ms);
+                    const title = [
+                        `time ${esFullTime(row.ms)}`,
+                        `${messages.toLocaleString()} message${messages === 1 ? "" : "s"}`,
+                        alertSummaryText(bucket),
+                    ].join(" · ");
+                    return `<rect class="es-chart-hover-bucket" x="${Math.max(pad.left, cx - (bandWidth / 2)).toFixed(1)}" y="${pad.top}" width="${bandWidth.toFixed(1)}" height="${plotH.toFixed(1)}" data-es-tooltip="${esEsc(title)}">
+                        <title>${esEsc(title)}</title>
+                    </rect>`;
+                }).join("");
+            const visibleEvents = [...groupedEvents.values()].sort((a, b) => a.ms - b.ms);
+            const eventCollisionCounts = new Map();
+            visibleEvents.forEach((item) => {
+                const key = Math.round(x(item.ms) / 12);
+                eventCollisionCounts.set(key, (eventCollisionCounts.get(key) || 0) + 1);
+            });
+            const eventCollisionSeen = new Map();
+            const alertDots = visibleEvents.map((bucket) => {
+                const ms = bucket.ms;
+                const collisionKey = Math.round(x(ms) / 12);
+                const collisionIndex = eventCollisionSeen.get(collisionKey) || 0;
+                eventCollisionSeen.set(collisionKey, collisionIndex + 1);
+                const collisionTotal = eventCollisionCounts.get(collisionKey) || 1;
+                const cx = Math.max(pad.left + 4, Math.min(width - pad.right - 4, x(ms) + ((collisionIndex - ((collisionTotal - 1) / 2)) * 10)));
+                const rowAtAlert = nearestPrimaryRow(ms);
+                const messagesAtAlert = Number(rowAtAlert?.value || 0);
+                const yy = messagesAtAlert > 0 ? y(messagesAtAlert) : Math.max(pad.top + 8, y(0) - 10);
+                const firstEvent = bucket.events[0] || {};
+                const detail = esEventDetails(firstEvent) || firstEvent.message || "";
+                const typeList = [...bucket.types].slice(0, 3).join(", ");
+                const title = [
+                    `${bucket.count.toLocaleString()} alert${bucket.count === 1 ? "" : "s"}`,
+                    `${messagesAtAlert.toLocaleString()} message${messagesAtAlert === 1 ? "" : "s"} in this bucket`,
+                    typeList ? `type ${typeList}${bucket.types.size > 3 ? ", ..." : ""}` : "",
+                    bucket.firstMs === bucket.lastMs ? `time ${esFullTime(bucket.firstMs)}` : `time ${esFullTime(bucket.firstMs)} - ${esFullTime(bucket.lastMs)}`,
+                    `device ${firstEvent.device_id || firstEvent.source || "unknown"}`,
+                    firstEvent.route ? `route ${firstEvent.route}` : "",
+                    bucket.severities.size ? `severity ${[...bucket.severities].join("/")}` : "",
+                    detail ? `sample measured ${detail}` : "",
+                ].filter(Boolean).join(" · ");
+                return `<g class="es-chart-alert-marker" data-es-tooltip="${esEsc(title)}">
+                    <circle class="es-chart-alert-dot" cx="${cx.toFixed(1)}" cy="${yy.toFixed(1)}" r="4.8">
+                        <title>${esEsc(title)}</title>
+                    </circle>
+                    ${bucket.count > 1 ? `<text class="es-chart-alert-count" x="${cx.toFixed(1)}" y="${(yy - 7).toFixed(1)}" text-anchor="middle">${bucket.count > 99 ? "99+" : bucket.count}</text>` : ""}
+                </g>`;
+            }).join("");
+
+            wrap.innerHTML = `<svg class="es-chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esEsc(options.title || "time series chart")}">
+                ${lines}
+                ${baseline}
+                ${paths}
+                ${bucketHoverTargets}
+                ${pointDots}
+                ${alertDots}
+                ${xLabels}
+                <text class="es-chart-axis-title" x="${pad.left + plotW / 2}" y="${height - 2}" text-anchor="middle">${esEsc(options.xTitle || "time")}</text>
+                <text class="es-chart-axis-title" transform="translate(14 ${pad.top + plotH / 2}) rotate(-90)" text-anchor="middle">${esEsc(options.yTitle || "messages / min")}</text>
+            </svg>`;
+            } catch (error) {
+                console.warn("[Edge Server] line chart render failed:", error);
+                wrap.innerHTML = "";
+                if (empty) {
+                    empty.textContent = "Chart data is not available for this window.";
+                    empty.classList.remove("es-hidden");
+                }
+            }
+        };
+
+        const esRenderTimelineChart = (selector, emptySelector, rows, options = {}) => {
+            const wrap = edgeShell.querySelector(selector);
+            const empty = edgeShell.querySelector(emptySelector);
+            if (!wrap) return;
+            try {
+            const events = Array.isArray(rows) ? rows : [];
+            if (empty) empty.classList.toggle("es-hidden", events.length > 0);
+            if (!events.length) {
+                wrap.innerHTML = "";
+                return;
+            }
+
+            const width = 920;
+            const eventMinMs = Math.min(...events.map(esEventMs));
+            const eventMaxMs = Math.max(...events.map(esEventMs), eventMinMs + 60000);
+            const hasFixedMin = options.minMs !== undefined && options.minMs !== null && Number.isFinite(Number(options.minMs));
+            const hasFixedMax = options.maxMs !== undefined && options.maxMs !== null && Number.isFinite(Number(options.maxMs));
+            const fixedMinMs = hasFixedMin ? Number(options.minMs) : null;
+            const fixedMaxMs = hasFixedMax ? Math.max(Number(options.maxMs), Number(options.minMs || 0) + 60000) : null;
+            let minMs = fixedMinMs ?? eventMinMs;
+            let maxMs = fixedMaxMs ?? eventMaxMs;
+            if (fixedMinMs !== null && fixedMaxMs !== null && options.fitEvents !== false) {
+                const fixedSpan = Math.max(60000, fixedMaxMs - fixedMinMs);
+                const eventSpan = Math.max(0, eventMaxMs - eventMinMs);
+                if (eventSpan / fixedSpan < 0.35) {
+                    const padMs = Math.max(60000, eventSpan * 0.35);
+                    minMs = Math.max(fixedMinMs, eventMinMs - padMs);
+                    maxMs = Math.min(fixedMaxMs, eventMaxMs + padMs);
+                    if (maxMs - minMs < 60000) {
+                        const center = eventMinMs + (eventSpan / 2);
+                        minMs = Math.max(fixedMinMs, center - 30000);
+                        maxMs = Math.min(fixedMaxMs, center + 30000);
+                    }
+                }
+            }
+
+            const typeStats = new Map();
+            events.forEach((event) => {
+                const name = esEventTitle(event.event_type || event.type);
+                const item = typeStats.get(name) || { name, count: 0 };
+                item.count += 1;
+                typeStats.set(name, item);
+            });
+            const sortedTypes = [...typeStats.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+            const topTypes = sortedTypes.slice(0, 9).map((item) => item.name);
+            const laneNames = sortedTypes.length > topTypes.length ? [...topTypes, "Other alerts"] : topTypes;
+            const laneForEvent = (event) => {
+                const name = esEventTitle(event.event_type || event.type);
+                return topTypes.includes(name) ? name : "Other alerts";
+            };
+
+            const height = Math.max(270, 100 + (laneNames.length * 38));
+            const pad = { left: 155, right: 42, top: 24, bottom: 48 };
+            const plotW = width - pad.left - pad.right;
+            const plotH = height - pad.top - pad.bottom;
+            const laneHeight = plotH / Math.max(1, laneNames.length);
+            const x = (ms) => pad.left + (((ms - minMs) / Math.max(1, maxMs - minMs)) * plotW);
+            const y = (idx) => pad.top + ((idx + 0.5) * laneHeight);
+
+            const laneCounts = new Map(laneNames.map((name) => [name, 0]));
+            events.forEach((event) => {
+                const lane = laneForEvent(event);
+                laneCounts.set(lane, (laneCounts.get(lane) || 0) + 1);
+            });
+            const lanes = laneNames.map((name, idx) => `
+                <rect class="es-timeline-lane-band" x="${pad.left}" y="${(y(idx) - laneHeight / 2).toFixed(1)}" width="${plotW}" height="${laneHeight.toFixed(1)}"></rect>
+                <line class="es-chart-grid" x1="${pad.left}" y1="${y(idx).toFixed(1)}" x2="${width - pad.right}" y2="${y(idx).toFixed(1)}"></line>
+                <text class="es-timeline-lane-label" x="${pad.left - 12}" y="${(y(idx) + 4).toFixed(1)}" text-anchor="end">${esEsc(name)}</text>
+                <text class="es-timeline-lane-count" x="${width - pad.right + 8}" y="${(y(idx) + 4).toFixed(1)}">${Number(laneCounts.get(name) || 0).toLocaleString()}</text>
+            `).join("");
+
+            const xTicks = [0, 0.25, 0.5, 0.75, 1].map((ratio) => minMs + ((maxMs - minMs) * ratio));
+            const xLabels = xTicks.map((tick, idx) => {
+                const label = esChartTickLabel(tick, options.timeMode || "datetime");
+                return `<text class="es-chart-axis" x="${x(tick).toFixed(1)}" y="${height - 12}" text-anchor="${idx === 0 ? "start" : idx === xTicks.length - 1 ? "end" : "middle"}">${esEsc(label)}</text>`;
+            }).join("");
+
+            const spanMs = Math.max(60000, maxMs - minMs);
+            const bucketMs = spanMs <= 2 * 3600 * 1000
+                ? 60000
+                : spanMs <= 24 * 3600 * 1000
+                    ? 15 * 60000
+                    : spanMs <= 7 * 86400 * 1000
+                        ? 3600 * 1000
+                        : 6 * 3600 * 1000;
+            const grouped = new Map();
+            events.forEach((event, eventIndex) => {
+                const ms = esEventMs(event);
+                if (ms < minMs || ms > maxMs) return;
+                const lane = laneForEvent(event);
+                const bucketStart = Math.floor(ms / bucketMs) * bucketMs;
+                const key = `${lane}|${bucketStart}`;
+                const item = grouped.get(key) || {
+                    lane,
+                    firstMs: ms,
+                    lastMs: ms,
+                    events: [],
+                    severities: new Map(),
+                    devices: new Map(),
+                    routes: new Set(),
+                    firstIndex: eventIndex,
+                };
+                item.firstMs = Math.min(item.firstMs, ms);
+                item.lastMs = Math.max(item.lastMs, ms);
+                item.firstIndex = Math.min(item.firstIndex, eventIndex);
+                item.events.push(event);
+                const severity = esSeverityTone(event.severity);
+                item.severities.set(severity, (item.severities.get(severity) || 0) + 1);
+                const device = event.device_id || event.source || "unknown";
+                item.devices.set(device, (item.devices.get(device) || 0) + 1);
+                if (event.route) item.routes.add(event.route);
+                grouped.set(key, item);
+            });
+
+            const dots = [...grouped.values()].sort((a, b) => a.firstMs - b.firstMs).map((bucket) => {
+                const laneIdx = Math.max(0, laneNames.indexOf(bucket.lane));
+                const total = bucket.events.length;
+                const tone = bucket.severities.has("critical") ? "critical"
+                    : bucket.severities.has("error") ? "error"
+                        : bucket.severities.has("warning") ? "warning"
+                            : "info";
+                const sample = bucket.events[0] || {};
+                const detail = esEventDetails(sample) || sample.message || "";
+                const deviceList = [...bucket.devices.entries()]
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 3)
+                    .map(([device, count]) => `${device}${count > 1 ? ` (${count})` : ""}`)
+                    .join(", ");
+                const severityList = [...bucket.severities.entries()]
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([severity, count]) => `${severity} ${count}`)
+                    .join(", ");
+                const title = [
+                    `${total.toLocaleString()} ${bucket.lane}`,
+                    bucket.firstMs === bucket.lastMs ? `time ${esFullTime(bucket.firstMs)}` : `time ${esFullTime(bucket.firstMs)} - ${esFullTime(bucket.lastMs)}`,
+                    deviceList ? `devices ${deviceList}` : "",
+                    bucket.routes.size ? `routes ${[...bucket.routes].slice(0, 3).join(", ")}` : "",
+                    severityList ? `severity ${severityList}` : "",
+                    detail ? `sample measured ${detail}` : "",
+                ].filter(Boolean).join(" · ");
+                const selectedClass = bucket.firstIndex === esSelectedAlertIndex ? " is-selected" : "";
+                const eventX = Math.max(pad.left + 6, Math.min(width - pad.right - 6, x(bucket.firstMs)));
+                const radius = Math.min(13, 5.5 + Math.sqrt(total) * 1.15);
+                return `<g class="es-timeline-bubble" data-es-alert-index="${bucket.firstIndex}" data-es-tooltip="${esEsc(title)}">
+                    <circle class="es-timeline-dot is-${tone}${selectedClass}" cx="${eventX.toFixed(1)}" cy="${y(laneIdx).toFixed(1)}" r="${radius.toFixed(1)}">
+                        <title>${esEsc(title)}</title>
+                    </circle>
+                    ${total > 1 ? `<text class="es-timeline-count" x="${eventX.toFixed(1)}" y="${(y(laneIdx) + 3).toFixed(1)}" text-anchor="middle">${total > 99 ? "99+" : total}</text>` : ""}
+                </g>`;
+            }).join("");
+
+            wrap.innerHTML = `<svg class="es-chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="alert timeline">
+                ${lanes}
+                ${dots}
+                ${xLabels}
+                <text class="es-chart-axis-title" x="${pad.left + plotW / 2}" y="${height - 2}" text-anchor="middle">event time</text>
+            </svg>`;
+            } catch (error) {
+                console.warn("[Edge Server] alert timeline render failed:", error);
+                wrap.innerHTML = "";
+                if (empty) {
+                    empty.textContent = "Alert timeline is not available for this filter.";
+                    empty.classList.remove("es-hidden");
+                }
+            }
+        };
+
+        const esRenderActiveAlerts = (group, rows) => {
+            const events = (Array.isArray(rows) ? rows : [])
+                .filter((event) => ["critical", "error", "warning", "warn"].includes(String(event.severity || "info").toLowerCase()))
+                .slice(0, 6)
+                .map((event) => ({ ...event, protocol_group: event.protocol_group || group }));
+            const prefix = group === "http" ? "http" : "mqtt";
+            const list = edgeShell.querySelector(`[data-es-${prefix}-active-alerts]`);
+            const empty = edgeShell.querySelector(`[data-es-${prefix}-active-alerts-empty]`);
+            const summary = edgeShell.querySelector(`[data-es-${prefix}-active-alert-summary]`);
+            const critical = events.filter((event) => ["critical", "error"].includes(esSeverityTone(event.severity))).length;
+            const warning = events.filter((event) => esSeverityTone(event.severity) === "warning").length;
+            if (summary) summary.textContent = events.length ? `${critical} critical/error · ${warning} warning` : "No active alerts";
+            if (empty) empty.classList.toggle("es-hidden", events.length > 0);
+            if (list) list.innerHTML = events.map((event) => esRenderAlertCard(event, true)).join("");
+        };
+
+        const esSetProgress = (selector, value, max) => {
+            const node = edgeShell.querySelector(selector);
+            if (!node) return;
+            const amount = Number(value || 0);
+            const top = Math.max(1, Number(max || 0));
+            const pct = amount <= 0 ? 0 : Math.max(2, Math.min(100, Math.round((amount / top) * 100)));
+            node.style.width = `${pct}%`;
+        };
+
+        const esRefreshOverviewVisuals = () => {
+            const now = Date.now();
+            const httpMetrics = esNormalizeProtocolMetrics("http", esOverviewMetricsCache?.http || esHttpMetricsCache);
+            const mqttMetrics = esNormalizeProtocolMetrics("mqtt", esOverviewMetricsCache?.mqtt || esMqttMetricsCache);
+            esRenderWatchlist("[data-es-overview-watchlist]", "all");
+            esRenderLineChart("[data-es-overview-traffic]", "[data-es-overview-traffic-empty]", [
+                { rows: httpMetrics.minute_series, className: "es-chart-line-http" },
+                { rows: mqttMetrics.minute_series, className: "es-chart-line-mqtt" },
+            ], {
+                title: "Inbound traffic",
+                xTitle: "gateway receive time",
+                yTitle: "messages / min",
+                events: [...httpMetrics.recent_events, ...mqttMetrics.recent_events],
+                bucketMs: 60000,
+                minMs: now - (60 * 60 * 1000),
+                maxMs: now,
+                relativeStart: "-60m",
+                relativeEnd: "now",
+                exactTimeAxis: true,
+            });
+        };
+
+        const esRefreshOverviewMetrics = async () => {
+            try {
+                const response = await fetch("/api/edge-server/overview/metrics?minutes=60");
+                if (!response.ok) {
+                    throw new Error(`${response.status} ${response.statusText}`);
+                }
+                const data = await response.json();
+                esOverviewMetricsCache = {
+                    http: esNormalizeProtocolMetrics("http", data.http),
+                    mqtt: esNormalizeProtocolMetrics("mqtt", data.mqtt),
+                };
+            } catch (error) {
+                console.warn("[Edge Server] overview metrics fetch failed:", error);
+                esOverviewMetricsCache = null;
+            }
+            esRefreshOverviewVisuals();
         };
 
         const esRenderBars = (selector, emptySelector, rows) => {
@@ -6491,6 +7071,32 @@ document.addEventListener("DOMContentLoaded", () => {
             }).join("");
         };
 
+        const esRenderTypeBars = (selector, emptySelector, rows) => {
+            const wrap = edgeShell.querySelector(selector);
+            const empty = edgeShell.querySelector(emptySelector);
+            const items = (Array.isArray(rows) ? rows : [])
+                .map((row) => ({
+                    event_type: row.event_type || row.type || "event",
+                    count: Number(row.count || 0),
+                    last_seen: row.last_seen || row.created_at || row.timestamp || "",
+                }))
+                .filter((row) => row.count > 0)
+                .sort((a, b) => b.count - a.count);
+            if (empty) empty.classList.toggle("es-hidden", items.length > 0);
+            if (!wrap) return;
+            const max = Math.max(1, ...items.map((row) => row.count));
+            wrap.innerHTML = items.map((row) => {
+                const width = Math.max(2, (row.count / max) * 100);
+                const title = `${esEventTitle(row.event_type)} · ${row.count.toLocaleString()} event${row.count === 1 ? "" : "s"}${row.last_seen ? ` · latest ${esFullTime(row.last_seen)}` : ""}`;
+                return `
+                    <div class="es-type-bar-row" title="${esEsc(title)}">
+                        <strong>${esEsc(esEventTitle(row.event_type))}</strong>
+                        <div class="es-type-track"><span class="es-type-fill" style="width:${width.toFixed(1)}%"></span></div>
+                        <span>${row.count.toLocaleString()}</span>
+                    </div>`;
+            }).join("");
+        };
+
         const esRenderProtocolEvents = (selector, emptySelector, rows) => {
             const wrap = edgeShell.querySelector(selector);
             const empty = edgeShell.querySelector(emptySelector);
@@ -6498,6 +7104,72 @@ document.addEventListener("DOMContentLoaded", () => {
             if (empty) empty.classList.toggle("es-hidden", items.length > 0);
             if (!wrap) return;
             wrap.innerHTML = items.map(esRenderAlertCard).join("");
+        };
+
+        const esRenderAlertEvents = (selector, emptySelector, rows) => {
+            const wrap = edgeShell.querySelector(selector);
+            const empty = edgeShell.querySelector(emptySelector);
+            const items = Array.isArray(rows) ? rows : [];
+            if (empty) empty.classList.toggle("es-hidden", items.length > 0);
+            if (!wrap) return;
+            wrap.innerHTML = items.map((event, index) => esRenderAlertCard(event, false, index)).join("");
+        };
+
+        const esRenderSelectedAlert = () => {
+            const wrap = edgeShell.querySelector("[data-es-alert-selected]");
+            if (!wrap) return;
+            const event = esAlertEventsCache[esSelectedAlertIndex];
+            if (!event) {
+                wrap.innerHTML = `<strong>Select an alert point or row</strong><span>Click a timeline dot or alert card to inspect the exact device, time, and measured values.</span>`;
+                return;
+            }
+            const type = event.event_type || event.type || "event";
+            const detail = esEventDetails(event) || event.message || esEventMeaning(type);
+            const device = event.device_id || event.source || "unknown device";
+            const protocol = event.protocol || "unknown";
+            const route = event.route || "no route/topic";
+            const when = event.created_at || event.timestamp || event.last_seen;
+            wrap.innerHTML = `
+                <strong>${esEsc(esEventTitle(type))}</strong>
+                <span>${esProtocolTag(protocol)} ${esEsc(device)} · ${esEsc(route)} · ${esEsc(esFullTime(when))}</span>
+                <small>${esEsc(detail)}</small>
+                <small>${esEsc(esEventMeaning(type))}</small>
+            `;
+        };
+
+        const esRenderAlertDevicePills = (events) => {
+            const wrap = edgeShell.querySelector("[data-es-alert-device-pills]");
+            if (!wrap) return;
+            const selected = edgeShell.querySelector("[data-es-alert-device]")?.value || "";
+            const counts = new Map();
+            (Array.isArray(events) ? events : []).forEach((event) => {
+                const device = String(event.device_id || event.source || "unknown");
+                counts.set(device, (counts.get(device) || 0) + 1);
+            });
+            const rows = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
+            wrap.innerHTML = [
+                `<button type="button" class="es-alert-device-pill ${selected ? "" : "is-active"}" data-es-alert-device-pill="">All devices</button>`,
+                ...rows.map(([device, count]) => `<button type="button" class="es-alert-device-pill ${selected === device ? "is-active" : ""}" data-es-alert-device-pill="${esEsc(device)}">${esEsc(device)} · ${count}</button>`),
+            ].join("");
+        };
+
+        const esMergeAlertDeviceOptions = (events) => {
+            const select = edgeShell.querySelector("[data-es-alert-device]");
+            if (!select) return;
+            const selected = select.value;
+            const existing = new Set([...select.options].map((option) => option.value));
+            const devices = [...new Set((Array.isArray(events) ? events : [])
+                .map((event) => String(event.device_id || event.source || "unknown"))
+                .filter(Boolean))]
+                .sort();
+            devices.forEach((device) => {
+                if (existing.has(device)) return;
+                const option = document.createElement("option");
+                option.value = device;
+                option.textContent = `${device} · alert source`;
+                select.appendChild(option);
+            });
+            if (selected) select.value = selected;
         };
 
         const esRenderMetricBars = (selector, emptySelector, rows, valueKey, formatter = (value) => value) => {
@@ -6521,13 +7193,42 @@ document.addEventListener("DOMContentLoaded", () => {
             }).join("");
         };
 
-        const esSelectedHttpDevice = () => edgeShell.querySelector("[data-es-http-device-filter]")?.value || "";
+        const esProtocolWindowMinutes = (group) => {
+            const raw = edgeShell.querySelector(`[data-es-protocol-window="${group}"]`)?.value || "60";
+            const minutes = Number(raw);
+            return Number.isFinite(minutes) ? Math.max(5, Math.min(1440, minutes)) : 60;
+        };
 
-        const esRenderHttpDeviceOptions = (devices) => {
-            const select = edgeShell.querySelector("[data-es-http-device-filter]");
+        const esLiveWindowInfo = (group) => {
+            const minutes = esProtocolWindowMinutes(group);
+            const now = Date.now();
+            const label = minutes < 60
+                ? `Last ${minutes} minutes`
+                : minutes === 60
+                    ? "Last 60 minutes"
+                    : minutes === 1440
+                        ? "Last 24 hours"
+                        : `Last ${Math.round(minutes / 60)} hours`;
+            return {
+                minutes,
+                label,
+                minMs: now - (minutes * 60 * 1000),
+                maxMs: now,
+                relativeStart: minutes === 60 ? "-60m" : `-${minutes}m`,
+                relativeEnd: "now",
+                timeMode: minutes > 360 ? "datetime" : "time",
+            };
+        };
+
+        const esSelectedProtocolDevice = (group) => edgeShell.querySelector(`[data-es-${group}-device-filter]`)?.value || "";
+
+        const esProtocolDeviceSearch = (group) => group === "http" ? esHttpDeviceSearch : esMqttDeviceSearch;
+
+        const esRenderProtocolDeviceOptions = (devices, group) => {
+            const select = edgeShell.querySelector(`[data-es-${group}-device-filter]`);
             if (!select) return;
             const selected = select.value;
-            const search = esHttpDeviceSearch.trim().toLowerCase();
+            const search = esProtocolDeviceSearch(group).trim().toLowerCase();
             const rows = Array.isArray(devices) ? devices : [];
             const filtered = rows.filter((device) => {
                 if (!search) return true;
@@ -6535,6 +7236,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     device.device_id,
                     device.endpoint,
                     device.last_route,
+                    device.topic,
                     device.health,
                     device.health_label,
                     device.status,
@@ -6544,8 +7246,9 @@ document.addEventListener("DOMContentLoaded", () => {
             const optionRows = selectedDevice && !filtered.some((device) => String(device.device_id || "") === selected)
                 ? [selectedDevice, ...filtered]
                 : filtered;
+            const label = group === "http" ? "HTTP" : "MQTT";
             select.innerHTML = [
-                '<option value="">All HTTP devices</option>',
+                `<option value="">All ${label} devices</option>`,
                 ...optionRows.map((device) => {
                     const id = String(device.device_id || "unknown");
                     const label = `${id} · ${device.health_label || device.status || "seen"} · ${esAge(device.last_seen)}`;
@@ -6555,88 +7258,282 @@ document.addEventListener("DOMContentLoaded", () => {
             select.value = selected && optionRows.some((device) => String(device.device_id || "") === selected) ? selected : "";
         };
 
-        const esUpdateHttpSelectedCards = (device) => {
+        const esUpdateProtocolSelectedCards = (group, device) => {
+            const label = group === "http" ? "HTTP" : "MQTT";
             if (!device) {
-                esSetText("[data-es-http-selected-status]", "All devices");
-                esSetText("[data-es-http-selected-last]", "No single device selected");
-                esSetText("[data-es-http-selected-gap]", "n/a");
-                esSetText("[data-es-http-selected-normal-gap]", "n/a");
-                esSetText("[data-es-http-selected-payload]", "n/a");
+                esSetText(`[data-es-${group}-selected-status]`, "All devices");
+                esSetText(`[data-es-${group}-selected-last]`, "No single device selected");
+                esSetText(`[data-es-${group}-selected-gap]`, "n/a");
+                esSetText(`[data-es-${group}-selected-normal-gap]`, "n/a");
+                esSetText(`[data-es-${group}-selected-payload]`, "n/a");
                 return;
             }
-            esSetText("[data-es-http-selected-status]", device.health_label || device.status || "Seen");
-            esSetText("[data-es-http-selected-last]", `${device.device_id || "unknown"} · last seen ${esAge(device.last_seen || device.last_seen_at)}`);
-            esSetText("[data-es-http-selected-gap]", esFormatMs(device.last_interval_ms));
-            esSetText("[data-es-http-selected-normal-gap]", esFormatMs(device.avg_interval_ms));
-            esSetText("[data-es-http-selected-payload]", `${esFormatBytes(device.last_payload_size)} / ${esFormatBytes(device.avg_payload_size)}`);
+            esSetText(`[data-es-${group}-selected-status]`, device.health_label || device.status || "Seen");
+            esSetText(`[data-es-${group}-selected-last]`, `${device.device_id || "unknown"} · ${label} · last seen ${esAge(device.last_seen || device.last_seen_at)}`);
+            esSetText(`[data-es-${group}-selected-gap]`, esFormatMs(device.last_interval_ms));
+            esSetText(`[data-es-${group}-selected-normal-gap]`, esFormatMs(device.avg_interval_ms));
+            esSetText(`[data-es-${group}-selected-payload]`, `${esFormatBytes(device.last_payload_size)} / ${esFormatBytes(device.avg_payload_size)}`);
         };
 
-        const esRefreshHttpDeviceDetail = async (deviceId = esSelectedHttpDevice()) => {
+        const esRefreshProtocolDeviceDetail = async (group, deviceId = esSelectedProtocolDevice(group)) => {
             if (!deviceId) return;
-            try {
-                const params = new URLSearchParams({ device_id: deviceId, protocol_group: "http" });
-                const response = await fetch(`/api/edge-server/history/device?${params.toString()}`);
-                const data = await response.json();
-                const device = data.device || {};
-                if (device.device_id) {
-                    esUpdateHttpSelectedCards(device);
-                }
-                esRenderBars("[data-es-http-device-rate-chart]", "[data-es-http-device-rate-empty]", data.message_series || []);
-                esRenderMetricBars("[data-es-http-device-payload-chart]", "[data-es-http-device-payload-empty]", data.payload_series || data.message_series || [], "avg_payload_size", esFormatBytes);
-                esRenderAnomalySummary("[data-es-http-anomaly-summary]", "[data-es-http-anomaly-summary-empty]", data.event_summary || []);
-                esRenderProtocolEvents("[data-es-http-events]", "[data-es-http-events-empty]", data.recent_events || []);
-                esRenderMessages("[data-es-http-recent]", "[data-es-http-recent-empty]", data.recent_messages || []);
-            } catch (error) {
-                console.warn("[Edge Server] HTTP device detail fetch failed:", error);
-            }
+            const windowInfo = esLiveWindowInfo(group);
+            const cache = group === "mqtt" ? esMqttMetricsCache : esHttpMetricsCache;
+            const device = (cache?.devices || []).find((item) => String(item.device_id || "") === String(deviceId));
+            const trace = cache?.device_traces?.[deviceId] || { message_series: [], recent_events: [] };
+            if (device) esUpdateProtocolSelectedCards(group, device);
+            const lineClass = group === "mqtt" ? "es-chart-line-mqtt" : "es-chart-line-http";
+            const action = group === "mqtt" ? "publishes" : "requests";
+            const baseline = esRateBaseline(trace.message_series || []);
+            esSetText(`[data-es-${group}-device-rate-caption]`, `Live selected device only · line is accepted ${action} per minute · red markers are grouped alert times`);
+            esRenderLineChart(`[data-es-${group}-device-rate-chart]`, `[data-es-${group}-device-rate-empty]`, [
+                { rows: trace.message_series || [], className: lineClass },
+            ], {
+                title: `Live selected ${group.toUpperCase()} device rate`,
+                xTitle: "gateway receive time",
+                yTitle: `${action} / min`,
+                events: trace.recent_events || [],
+                baseline,
+                bucketMs: 60000,
+                minMs: windowInfo.minMs,
+                maxMs: windowInfo.maxMs,
+                relativeStart: windowInfo.relativeStart,
+                relativeEnd: windowInfo.relativeEnd,
+                timeMode: windowInfo.timeMode,
+                exactTimeAxis: true,
+            });
         };
 
-        const esApplyHttpMetrics = async (data) => {
-            esHttpMetricsCache = data || {};
-            esSetText("[data-es-http-total]", Number(data.total_messages || 0).toLocaleString());
-            esSetText("[data-es-http-devices]", Number(data.device_count || 0).toLocaleString());
-            esSetText("[data-es-http-missing]", Number(data.route_missing || 0).toLocaleString());
-            esSetText("[data-es-http-auth-fail]", Number(data.auth_failures || 0).toLocaleString());
-            esSetText("[data-es-http-route-count]", `${(data.routes || []).length} paths with traffic`);
-            esRenderHttpDeviceOptions(data.devices || []);
-            esRenderWatchlist("[data-es-http-watchlist]", "http");
-            esRenderBars("[data-es-http-chart]", "[data-es-http-chart-empty]", data.minute_series || []);
-            esRenderRoutes("[data-es-http-routes]", "[data-es-http-routes-empty]", data.routes || []);
+        const esEmptyProtocolMetrics = (group) => ({
+            ok: true,
+            protocol_group: group,
+            total_messages: 0,
+            device_count: 0,
+            avg_payload_size: 0,
+            max_payload_size: 0,
+            route_missing: 0,
+            auth_failures: 0,
+            routes: [],
+            minute_series: [],
+            recent_messages: [],
+            devices: [],
+            anomaly_summary: [],
+            recent_events: [],
+            device_traces: {},
+        });
 
-            const selected = esSelectedHttpDevice();
+        const esNormalizeProtocolMetrics = (group, data) => {
+            const fallback = esEmptyProtocolMetrics(group);
+            const metrics = data && typeof data === "object" ? { ...fallback, ...data } : fallback;
+            metrics.routes = Array.isArray(metrics.routes) ? metrics.routes : [];
+            metrics.minute_series = Array.isArray(metrics.minute_series) ? metrics.minute_series : [];
+            metrics.recent_messages = Array.isArray(metrics.recent_messages) ? metrics.recent_messages : [];
+            metrics.devices = Array.isArray(metrics.devices) ? metrics.devices : [];
+            metrics.anomaly_summary = Array.isArray(metrics.anomaly_summary) ? metrics.anomaly_summary : [];
+            metrics.recent_events = Array.isArray(metrics.recent_events) ? metrics.recent_events : [];
+            metrics.device_traces = metrics.device_traces && typeof metrics.device_traces === "object" ? metrics.device_traces : {};
+            return metrics;
+        };
+
+        const esApplyProtocolMetrics = async (group, data) => {
+            data = esNormalizeProtocolMetrics(group, data);
+            if (group === "http") esHttpMetricsCache = data || {};
+            if (group === "mqtt") esMqttMetricsCache = data || {};
+
+            const windowInfo = esLiveWindowInfo(group);
+            const action = group === "mqtt" ? "publishes" : "requests";
+            const routeLabel = group === "http" ? "paths with traffic" : "topics with traffic";
+            const lineClass = group === "mqtt" ? "es-chart-line-mqtt" : "es-chart-line-http";
+
+            esSetText(`[data-es-${group}-total]`, Number(data.total_messages || 0).toLocaleString());
+            esSetText(`[data-es-${group}-devices]`, Number(data.device_count || 0).toLocaleString());
+            esSetText(`[data-es-${group}-missing]`, Number(data.route_missing || 0).toLocaleString());
+            esSetText(`[data-es-${group}-auth-fail]`, Number(data.auth_failures || 0).toLocaleString());
+            esSetText(`[data-es-${group}-route-count]`, `${(data.routes || []).length} ${routeLabel}`);
+            esSetText(`[data-es-${group}-chart-caption]`, `Live ${group.toUpperCase()} fleet · line is accepted ${action} per minute · red markers are grouped alert times/counts`);
+
+            esRenderProtocolDeviceOptions(data.devices || [], group);
+            esRenderActiveAlerts(group, data.recent_events || []);
+            esRenderLineChart(`[data-es-${group}-chart]`, `[data-es-${group}-chart-empty]`, [
+                { rows: data.minute_series || [], className: lineClass },
+            ], {
+                title: `${group.toUpperCase()} traffic by minute`,
+                xTitle: "gateway receive time",
+                yTitle: `${action} / min`,
+                events: data.recent_events || [],
+                bucketMs: 60000,
+                minMs: windowInfo.minMs,
+                maxMs: windowInfo.maxMs,
+                relativeStart: windowInfo.relativeStart,
+                relativeEnd: windowInfo.relativeEnd,
+                timeMode: windowInfo.timeMode,
+                exactTimeAxis: true,
+            });
+            esRenderRoutes(`[data-es-${group}-routes]`, `[data-es-${group}-routes-empty]`, data.routes || []);
+            esRefreshOverviewVisuals();
+
+            const selected = esSelectedProtocolDevice(group);
             const selectedDevice = selected
                 ? (data.devices || []).find((device) => String(device.device_id || "") === selected)
                 : null;
-            esUpdateHttpSelectedCards(selectedDevice);
+            esUpdateProtocolSelectedCards(group, selectedDevice);
             const deviceRows = selected ? (data.devices || []).filter((device) => String(device.device_id || "") === selected) : (data.devices || []);
-            esRenderProtocolDevices("[data-es-http-devices-list]", "[data-es-http-devices-empty]", deviceRows, "http");
+            esRenderProtocolDevices(`[data-es-${group}-devices-list]`, `[data-es-${group}-devices-empty]`, deviceRows, group);
 
             if (!selected) {
-                esRenderMetricBars("[data-es-http-device-rate-chart]", "[data-es-http-device-rate-empty]", [], "count");
-                esRenderMetricBars("[data-es-http-device-payload-chart]", "[data-es-http-device-payload-empty]", [], "avg_payload_size", esFormatBytes);
-                esRenderAnomalySummary("[data-es-http-anomaly-summary]", "[data-es-http-anomaly-summary-empty]", data.anomaly_summary || []);
-                esRenderProtocolEvents("[data-es-http-events]", "[data-es-http-events-empty]", data.recent_events || []);
-                esRenderMessages("[data-es-http-recent]", "[data-es-http-recent-empty]", data.recent_messages || []);
-                esSetText("[data-es-http-device-summary]", `${Number(data.device_count || 0).toLocaleString()} HTTP device${Number(data.device_count || 0) === 1 ? "" : "s"} · showing all`);
+                esRenderLineChart(`[data-es-${group}-device-rate-chart]`, `[data-es-${group}-device-rate-empty]`, [], {
+                    title: `Selected ${group.toUpperCase()} device rate`,
+                    xTitle: `time (${windowInfo.label.toLowerCase()})`,
+                    yTitle: "messages / min",
+                });
+                esSetText(`[data-es-${group}-device-rate-caption]`, `Select a live device to show its accepted ${action} per minute and grouped alert markers.`);
+                esSetText(`[data-es-${group}-device-summary]`, `${Number(data.device_count || 0).toLocaleString()} ${group.toUpperCase()} device${Number(data.device_count || 0) === 1 ? "" : "s"} · showing all`);
                 return;
             }
 
-            esSetText("[data-es-http-device-summary]", `Showing ${selected}. Graphs and latest rows are filtered to this device.`);
-            await esRefreshHttpDeviceDetail(selected);
+            esSetText(`[data-es-${group}-device-summary]`, `Showing ${selected}. Graphs and latest rows are filtered to this device.`);
+            await esRefreshProtocolDeviceDetail(group, selected);
         };
 
-        const esHistoryRangeParams = () => {
+        const esPad2 = (value) => String(value).padStart(2, "0");
+
+        const esLocalDateValue = (date = new Date()) => {
+            return `${date.getFullYear()}-${esPad2(date.getMonth() + 1)}-${esPad2(date.getDate())}`;
+        };
+
+        const esHistoryDateValue = () => {
+            const input = edgeShell.querySelector("[data-es-history-date]");
+            if (!input) return esLocalDateValue();
+            if (!input.value) input.value = esLocalDateValue();
+            return input.value;
+        };
+
+        const esHistoryHourValue = () => {
+            const input = edgeShell.querySelector("[data-es-history-hour]");
+            if (!input) return esPad2(new Date().getHours());
+            if (!input.value) input.value = esPad2(new Date().getHours());
+            return input.value;
+        };
+
+        const esLocalRangeFromDay = (dayValue, hourValue = null) => {
+            const [year, month, day] = String(dayValue || esLocalDateValue()).split("-").map((part) => Number(part));
+            const hour = hourValue === null ? 0 : Number(hourValue);
+            const start = new Date(year, Math.max(0, month - 1), day, hour, 0, 0, 0);
+            const end = hourValue === null
+                ? new Date(year, Math.max(0, month - 1), day + 1, 0, 0, 0, 0)
+                : new Date(year, Math.max(0, month - 1), day, hour + 1, 0, 0, 0);
+            return { start, end };
+        };
+
+        const esSetHistoryWindowControls = () => {
+            const range = edgeShell.querySelector("[data-es-history-range]")?.value || "30d";
+            const dateWrap = edgeShell.querySelector("[data-es-history-date-wrap]");
+            const hourWrap = edgeShell.querySelector("[data-es-history-hour-wrap]");
+            esHistoryDateValue();
+            esHistoryHourValue();
+            if (dateWrap) dateWrap.classList.toggle("is-hidden", range !== "day" && range !== "hour");
+            if (hourWrap) hourWrap.classList.toggle("is-hidden", range !== "hour");
+        };
+
+        const esHistoryWindowInfo = () => {
             const range = edgeShell.querySelector("[data-es-history-range]")?.value || "30d";
             const params = new URLSearchParams();
             const protocol = edgeShell.querySelector("[data-es-history-protocol]")?.value || "";
             if (protocol) params.set("protocol_group", protocol);
-            if (range !== "all") {
-                const now = Date.now();
+
+            const now = Date.now();
+            let startMs = null;
+            let endMs = null;
+            let label = "All stored data";
+            let relativeStart = "";
+            let relativeEnd = "";
+            let timeMode = "datetime";
+            let bucketMs = 86400 * 1000;
+            let bucketLabel = "per day";
+
+            if (range === "hour") {
+                const day = esHistoryDateValue();
+                const hour = esHistoryHourValue();
+                const { start, end } = esLocalRangeFromDay(day, hour);
+                startMs = start.getTime();
+                endMs = end.getTime();
+                label = `${start.toLocaleDateString()} ${hour}:00-${hour}:59`;
+                timeMode = "time";
+                bucketMs = 60000;
+                bucketLabel = "per minute";
+            } else if (range === "day") {
+                const { start, end } = esLocalRangeFromDay(esHistoryDateValue());
+                startMs = start.getTime();
+                endMs = end.getTime();
+                label = start.toLocaleDateString([], { year: "numeric", month: "short", day: "2-digit" });
+                timeMode = "time";
+                bucketMs = 60000;
+                bucketLabel = "per minute";
+            } else if (range !== "all") {
                 const duration = range === "24h" ? 24 * 3600 * 1000 : range === "7d" ? 7 * 86400 * 1000 : 30 * 86400 * 1000;
-                params.set("from", new Date(now - duration).toISOString());
+                startMs = now - duration;
+                endMs = now;
+                label = range === "24h" ? "Last 24 hours" : range === "7d" ? "Last 7 days" : "Last 30 days";
+                relativeStart = range === "24h" ? "-24h" : range === "7d" ? "-7d" : "-30d";
+                relativeEnd = "now";
+                timeMode = range === "24h" ? "time" : "datetime";
+                bucketMs = range === "24h" ? 60000 : 3600 * 1000;
+                bucketLabel = range === "24h" ? "per minute" : "per hour";
             }
-            return params;
+
+            if (startMs !== null && endMs !== null) {
+                params.set("from", new Date(startMs).toISOString());
+                params.set("to", new Date(endMs).toISOString());
+            }
+            return { params, range, label, startMs, endMs, relativeStart, relativeEnd, timeMode, bucketMs, bucketLabel };
         };
+
+        const esHistoryRangeParams = () => {
+            return esHistoryWindowInfo().params;
+        };
+
+        const esAlertWindowInfo = () => {
+            const range = edgeShell.querySelector("[data-es-alert-range]")?.value || "30d";
+            const params = new URLSearchParams({ limit: "10000" });
+            const protocolGroup = edgeShell.querySelector("[data-es-alert-protocol-group]")?.value || "";
+            const protocol = edgeShell.querySelector("[data-es-alert-protocol]")?.value || "";
+            const deviceId = edgeShell.querySelector("[data-es-alert-device]")?.value || "";
+            if (protocol) {
+                params.set("protocol", protocol);
+            } else if (protocolGroup) {
+                params.set("protocol_group", protocolGroup);
+            }
+            if (deviceId) params.set("device_id", deviceId);
+
+            const now = Date.now();
+            let startMs = null;
+            let endMs = null;
+            let label = "All stored data";
+            let relativeStart = "";
+            let relativeEnd = "";
+            let timeMode = "datetime";
+
+            if (range !== "all") {
+                const duration = range === "24h" ? 24 * 3600 * 1000 : range === "7d" ? 7 * 86400 * 1000 : 30 * 86400 * 1000;
+                startMs = now - duration;
+                endMs = now;
+                label = range === "24h" ? "Last 24 hours" : range === "7d" ? "Last 7 days" : "Last 30 days";
+                relativeStart = range === "24h" ? "-24h" : range === "7d" ? "-7d" : "-30d";
+                relativeEnd = "now";
+                timeMode = range === "24h" ? "time" : "datetime";
+                params.set("from", new Date(startMs).toISOString());
+                params.set("to", new Date(endMs).toISOString());
+            }
+            return { params, range, label, startMs, endMs, relativeStart, relativeEnd, timeMode };
+        };
+
+        const esAlertTimelineOptions = (windowInfo = esAlertWindowInfo()) => ({
+            minMs: windowInfo.startMs,
+            maxMs: windowInfo.endMs,
+            relativeStart: windowInfo.relativeStart,
+            relativeEnd: windowInfo.relativeEnd,
+            timeMode: windowInfo.timeMode,
+        });
 
         const esSelectedHistoryDevice = () => edgeShell.querySelector("[data-es-history-device]")?.value || "";
 
@@ -6673,7 +7570,42 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         };
 
+        const esRenderAlertDevices = async () => {
+            const select = edgeShell.querySelector("[data-es-alert-device]");
+            if (!select) return;
+            try {
+                const response = await fetch("/api/edge-server/history/devices");
+                const data = await response.json();
+                const protocolGroup = edgeShell.querySelector("[data-es-alert-protocol-group]")?.value || "";
+                const protocol = edgeShell.querySelector("[data-es-alert-protocol]")?.value || "";
+                const protocols = protocolGroup === "http" ? ["HTTP", "HTTPS"] : protocolGroup === "mqtt" ? ["MQTT", "MQTTS"] : null;
+                const previous = select.value;
+                const devices = (data.devices || []).filter((device) => {
+                    const itemProtocol = String(device.protocol || "").toUpperCase();
+                    if (protocol && itemProtocol !== protocol) return false;
+                    if (!protocol && protocols && !protocols.includes(itemProtocol)) return false;
+                    return true;
+                });
+                select.innerHTML = `<option value="">All devices</option>${devices.map((device) => {
+                    const label = `${device.device_id || "unknown"} · ${device.protocol || "unknown"} · ${esAge(device.last_seen || device.last_seen_at)}`;
+                    return `<option value="${esEsc(device.device_id || "unknown")}">${esEsc(label)}</option>`;
+                }).join("")}`;
+                if (previous && devices.some((device) => String(device.device_id || "") === previous)) {
+                    select.value = previous;
+                } else if (previous) {
+                    const option = document.createElement("option");
+                    option.value = previous;
+                    option.textContent = `${previous} · alert source`;
+                    select.appendChild(option);
+                    select.value = previous;
+                }
+            } catch (error) {
+                console.warn("[Edge Server] alert devices fetch failed:", error);
+            }
+        };
+
         const esRefreshDeviceHistory = async () => {
+            esSetHistoryWindowControls();
             const deviceId = esSelectedHistoryDevice();
             esUpdateHistoryExports();
             if (!deviceId) {
@@ -6684,24 +7616,41 @@ document.addEventListener("DOMContentLoaded", () => {
                 esSetText("[data-es-history-payload]", "0 B");
                 return;
             }
-            const params = esHistoryRangeParams();
+            const windowInfo = esHistoryWindowInfo();
+            const params = windowInfo.params;
             params.set("device_id", deviceId);
             try {
                 const response = await fetch(`/api/edge-server/history/device?${params.toString()}`);
                 const data = await response.json();
                 const summary = data.summary || {};
                 const device = data.device || {};
+                const baseline = esRateBaseline(data.message_series || []);
                 esSetText("[data-es-history-total]", Number(summary.total_messages || 0).toLocaleString());
                 esSetText("[data-es-history-events]", Number(summary.event_count || 0).toLocaleString());
                 esSetText("[data-es-history-last]", esShortTime(summary.last_message_at || device.last_seen));
                 esSetText("[data-es-history-status]", `${device.health_label || "Stored"} · ${esAge(summary.last_message_at || device.last_seen)}`);
                 esSetText("[data-es-history-payload]", esFormatBytes(summary.avg_payload_size));
-                esRenderBars("[data-es-history-message-chart]", "[data-es-history-message-empty]", data.message_series || []);
-                esRenderBars("[data-es-history-anomaly-chart]", "[data-es-history-anomaly-empty]", data.anomaly_series || []);
-                esRenderRoutes("[data-es-history-routes]", "[data-es-history-routes-empty]", data.routes || []);
-                esRenderAnomalySummary("[data-es-history-event-summary]", "[data-es-history-event-summary-empty]", data.event_summary || []);
+                esSetText("[data-es-history-message-window]", `${windowInfo.label} · messages ${windowInfo.bucketLabel}`);
+                esSetText("[data-es-history-message-caption]", `Persisted device history · focused on data inside ${windowInfo.label} · line is stored messages ${windowInfo.bucketLabel} · red markers are grouped anomaly times/counts`);
+                esRenderLineChart("[data-es-history-message-chart]", "[data-es-history-message-empty]", [
+                    { rows: data.message_series || [], className: "es-chart-line-secondary" },
+                ], {
+                    title: "Stored message rate history",
+                    xTitle: "gateway receive time",
+                    yTitle: `messages ${windowInfo.bucketLabel}`,
+                    events: data.recent_events || [],
+                    baseline,
+                    bucketMs: windowInfo.bucketMs,
+                    minMs: windowInfo.startMs,
+                    maxMs: windowInfo.endMs,
+                    relativeStart: windowInfo.relativeStart,
+                    relativeEnd: windowInfo.relativeEnd,
+                    timeMode: windowInfo.timeMode,
+                    exactTimeAxis: true,
+                    focusDataDomain: true,
+                });
+                esRenderTypeBars("[data-es-history-event-summary]", "[data-es-history-event-summary-empty]", data.event_summary || []);
                 esRenderProtocolEvents("[data-es-history-events-list]", "[data-es-history-events-empty]", data.recent_events || []);
-                esRenderMessages("[data-es-history-messages-list]", "[data-es-history-messages-empty]", data.recent_messages || []);
             } catch (error) {
                 console.warn("[Edge Server] device history fetch failed:", error);
             }
@@ -6740,47 +7689,107 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const esRefreshProtocolMetrics = async (group) => {
             try {
-                const response = await fetch(`/api/edge-server/${group}/metrics`);
-                const data = await response.json();
-                if (group === "http") {
-                    await esApplyHttpMetrics(data);
-                    return;
+                const params = new URLSearchParams({ minutes: String(esProtocolWindowMinutes(group)) });
+                const response = await fetch(`/api/edge-server/${group}/metrics?${params.toString()}`);
+                if (!response.ok) {
+                    throw new Error(`${response.status} ${response.statusText}`);
                 }
-                const prefix = group === "http" ? "http" : "mqtt";
-                esSetText(`[data-es-${prefix}-total]`, Number(data.total_messages || 0).toLocaleString());
-                esSetText(`[data-es-${prefix}-devices]`, Number(data.device_count || 0).toLocaleString());
-                esSetText(`[data-es-${prefix}-missing]`, Number(data.route_missing || 0).toLocaleString());
-                esSetText(`[data-es-${prefix}-auth-fail]`, Number(data.auth_failures || 0).toLocaleString());
-                const routeLabel = group === "http" ? "paths with traffic" : "topics with traffic";
-                esSetText(`[data-es-${prefix}-route-count]`, `${(data.routes || []).length} ${routeLabel}`);
-                esRenderWatchlist(`[data-es-${prefix}-watchlist]`, group);
-                esRenderBars(`[data-es-${prefix}-chart]`, `[data-es-${prefix}-chart-empty]`, data.minute_series || []);
-                esRenderRoutes(`[data-es-${prefix}-routes]`, `[data-es-${prefix}-routes-empty]`, data.routes || []);
-                esRenderProtocolDevices(`[data-es-${prefix}-devices-list]`, `[data-es-${prefix}-devices-empty]`, data.devices || [], group);
-                esRenderAnomalySummary(`[data-es-${prefix}-anomaly-summary]`, `[data-es-${prefix}-anomaly-summary-empty]`, data.anomaly_summary || []);
-                esRenderProtocolEvents(`[data-es-${prefix}-events]`, `[data-es-${prefix}-events-empty]`, data.recent_events || []);
-                esRenderMessages(`[data-es-${prefix}-recent]`, `[data-es-${prefix}-recent-empty]`, data.recent_messages || []);
+                const data = await response.json();
+                await esApplyProtocolMetrics(group, data);
             } catch (error) {
                 console.warn(`[Edge Server] ${group} metrics fetch failed:`, error);
+                await esApplyProtocolMetrics(group, esEmptyProtocolMetrics(group));
             }
         };
 
         const esRefreshAlerts = async () => {
             try {
-                const response = await fetch("/api/edge-server/alerts");
+                await esRenderAlertDevices();
+                const windowInfo = esAlertWindowInfo();
+                const query = windowInfo.params.toString();
+                const csv = edgeShell.querySelector("[data-es-alert-events-csv]");
+                const jsonl = edgeShell.querySelector("[data-es-alert-events-jsonl]");
+                if (csv) csv.setAttribute("href", `/api/edge-server/events.csv${query ? `?${query}` : ""}`);
+                if (jsonl) jsonl.setAttribute("href", `/api/edge-server/events.jsonl${query ? `?${query}` : ""}`);
+                const response = await fetch(`/api/edge-server/alerts?${windowInfo.params.toString()}`);
                 const data = await response.json();
                 const summary = data.summary || {};
                 const events = data.events || [];
+                esAlertEventsCache = events;
+                if (esSelectedAlertIndex >= events.length) esSelectedAlertIndex = events.length ? 0 : -1;
+                if (esSelectedAlertIndex < 0 && events.length) esSelectedAlertIndex = 0;
+                esMergeAlertDeviceOptions(events);
+                esRenderAlertDevicePills(events);
                 esSetText("[data-es-alert-total]", Number(summary.total || 0).toLocaleString());
                 esSetText("[data-es-alert-warning]", Number(summary.warning || 0).toLocaleString());
                 esSetText("[data-es-alert-error]", Number(summary.error || 0).toLocaleString());
                 esSetText("[data-es-alert-critical]", Number(summary.critical || 0).toLocaleString());
                 esSetText("[data-es-alert-summary]", `${Number(summary.total || 0).toLocaleString()} alerts`);
-                esRenderProtocolEvents("[data-es-alert-list]", "[data-es-alert-empty]", events);
-                esRenderWatchlist("[data-es-alert-watchlist]", "all");
+                esSetText("[data-es-alert-window]", `${windowInfo.label} · ${Number(summary.total || 0).toLocaleString()} filtered alert${Number(summary.total || 0) === 1 ? "" : "s"}`);
+                esSetText("[data-es-alert-timeline-caption]", `x - exact alert time inside ${windowInfo.label} · y - anomaly type · each dot is clickable`);
+                esRenderTimelineChart("[data-es-alert-timeline-chart]", "[data-es-alert-timeline-empty]", events, esAlertTimelineOptions(windowInfo));
+                esRenderTypeBars("[data-es-alert-type-summary]", "[data-es-alert-type-empty]", data.type_summary || []);
+                esRenderAlertEvents("[data-es-alert-list]", "[data-es-alert-empty]", events);
+                esRenderSelectedAlert();
+                esRefreshOverviewVisuals();
             } catch (error) {
                 console.warn("[Edge Server] alerts fetch failed:", error);
             }
+        };
+
+        const esNormaliseAlertFilterPair = (source) => {
+            const groupSelect = edgeShell.querySelector("[data-es-alert-protocol-group]");
+            const protocolSelect = edgeShell.querySelector("[data-es-alert-protocol]");
+            const group = groupSelect?.value || "";
+            const protocol = protocolSelect?.value || "";
+            const protocolGroup = ["HTTP", "HTTPS"].includes(protocol) ? "http" : ["MQTT", "MQTTS"].includes(protocol) ? "mqtt" : "";
+            if (source === "group" && protocol) {
+                const matches = group === "" || group === protocolGroup;
+                if (!matches && protocolSelect) protocolSelect.value = "";
+            }
+            if (source === "protocol" && protocolGroup && groupSelect) {
+                groupSelect.value = protocolGroup;
+            }
+        };
+
+        const esRefreshAlertsResetSelection = async () => {
+            esSelectedAlertIndex = -1;
+            await esRefreshAlerts();
+        };
+
+        const esRenderStorageStatus = (storage, fallbackRecords = 0) => {
+            const info = storage || {};
+            const maxSizeInput = edgeShell.querySelector("[data-es-max-size]");
+            const configuredMb = Math.max(5120, Number(info.max_size_mb || maxSizeInput?.value || 5120));
+            const usedBytes = Math.max(0, Number(info.db_size_bytes || 0));
+            const usedMb = usedBytes / (1024 * 1024);
+            const pct = configuredMb > 0 ? Math.min(100, Math.max(0, (usedMb / configuredMb) * 100)) : 0;
+            const records = Number(info.message_count ?? fallbackRecords ?? 0);
+            const backend = String(info.backend || "memory");
+            const mode = backend === "memory"
+                ? "Memory only"
+                : backend === "sqlcipher"
+                    ? "SQLCipher encrypted"
+                    : "SQLite persistent";
+            const encryption = backend === "sqlcipher" || info.encrypted
+                ? "SQLCipher"
+                : backend === "memory"
+                    ? "Memory"
+                    : "SQLite";
+
+            esSetText("[data-es-storage-mode]", info.configured_enabled === false ? "Storage disabled" : mode);
+            esSetText("[data-es-storage-used]", esFormatStoreBytes(usedBytes));
+            esSetText("[data-es-storage-limit]", `${configuredMb.toLocaleString()} MiB`);
+            esSetText("[data-es-storage-percent]", `${pct.toFixed(pct < 10 && pct > 0 ? 1 : 0)}%`);
+            esSetText("[data-es-storage-records]", records.toLocaleString());
+            esSetText("[data-es-storage-oldest]", info.oldest_record_at ? esFullTime(info.oldest_record_at) : "No records");
+            esSetText("[data-es-storage-newest]", info.newest_record_at ? esFullTime(info.newest_record_at) : "No records");
+            esSetText("[data-es-storage-encryption]", encryption);
+            esSetText("[data-es-storage-path]", info.path ? `Database: ${info.path}` : "Database: in-memory fallback");
+
+            const bar = edgeShell.querySelector("[data-es-storage-used-bar]");
+            if (bar) bar.style.width = `${pct}%`;
+            if (maxSizeInput && document.activeElement !== maxSizeInput) maxSizeInput.value = configuredMb;
         };
 
         const esRefreshStatus = async () => {
@@ -6792,11 +7801,19 @@ document.addEventListener("DOMContentLoaded", () => {
                 const httpCount = edgeShell.querySelector("[data-es-http-count]");
                 const mqttCount = edgeShell.querySelector("[data-es-mqtt-count]");
                 const stored = edgeShell.querySelector("[data-es-stored]");
+                const storageBackend = edgeShell.querySelector("[data-es-storage-backend]");
                 if (state) state.textContent = status.state || "standby";
                 if (message) message.textContent = status.message || "";
                 if (httpCount) httpCount.textContent = status.active_http_endpoints ?? 0;
                 if (mqttCount) mqttCount.textContent = status.active_mqtt_topics ?? 0;
                 if (stored) stored.textContent = status.stored_records ?? 0;
+                if (storageBackend) {
+                    const storage = status.storage || {};
+                    storageBackend.textContent = storage.backend === "memory"
+                        ? "memory only"
+                        : `${storage.backend || "storage"} ${storage.encrypted ? "encrypted" : "persistent"}`;
+                }
+                esRenderStorageStatus(status.storage || {}, status.stored_records || 0);
 
                 const services = status.services || [];
                 const listenerMap = status.listeners || {};
@@ -6838,10 +7855,31 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (liveBuffered) liveBuffered.textContent = Number(status.stored_records || 0).toLocaleString();
                 if (liveEvents) liveEvents.textContent = audit.total ?? 0;
 
-                esSetText("[data-es-buffer-pending]", buffer.pending ?? 0);
-                esSetText("[data-es-buffer-processed]", buffer.processed ?? 0);
-                esSetText("[data-es-buffer-forwarded]", buffer.forwarded ?? 0);
-                esSetText("[data-es-buffer-dropped]", buffer.dropped ?? 0);
+                const accepted = Number(buffer.pending ?? status.stored_records ?? 0);
+                const processed = Number(buffer.processed ?? accepted);
+                const forwarded = Number(buffer.forwarded ?? 0);
+                const dropped = Number(buffer.dropped ?? 0);
+                const progressMax = Math.max(accepted, processed, forwarded, dropped, 1);
+                esSetText("[data-es-buffer-pending]", accepted.toLocaleString());
+                esSetText("[data-es-buffer-processed]", processed.toLocaleString());
+                esSetText("[data-es-buffer-forwarded]", forwarded.toLocaleString());
+                esSetText("[data-es-buffer-dropped]", dropped.toLocaleString());
+                esSetProgress("[data-es-buffer-pending-bar]", accepted, progressMax);
+                esSetProgress("[data-es-buffer-processed-bar]", processed, progressMax);
+                esSetProgress("[data-es-buffer-forwarded-bar]", forwarded, progressMax);
+                esSetProgress("[data-es-buffer-dropped-bar]", dropped, progressMax);
+
+                const protocolCounts = devices.reduce((counts, device) => {
+                    const protocol = String(device.protocol || "").toUpperCase();
+                    if (protocol === "HTTP" || protocol === "HTTPS" || protocol === "MQTT" || protocol === "MQTTS") {
+                        counts[protocol] = (counts[protocol] || 0) + 1;
+                    }
+                    return counts;
+                }, { HTTP: 0, HTTPS: 0, MQTT: 0, MQTTS: 0 });
+                esSetText("[data-es-conn-http]", protocolCounts.HTTP || 0);
+                esSetText("[data-es-conn-https]", protocolCounts.HTTPS || 0);
+                esSetText("[data-es-conn-mqtt]", protocolCounts.MQTT || 0);
+                esSetText("[data-es-conn-mqtts]", protocolCounts.MQTTS || 0);
                 esSetText("[data-es-device-count]", `${devices.length} device${devices.length === 1 ? "" : "s"}`);
                 esSetText("[data-es-audit-summary]", `${audit.outages ?? 0} outages · ${audit.errors ?? 0} errors · ${audit.auth_failures ?? 0} auth failures`);
 
@@ -6849,7 +7887,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 const deviceEmpty = edgeShell.querySelector("[data-es-device-empty]");
                 if (deviceEmpty) deviceEmpty.classList.toggle("es-hidden", devices.length > 0);
                 if (deviceList) {
-                    deviceList.innerHTML = devices.map((device) => `
+                    deviceList.innerHTML = devices.slice(0, 4).map((device) => `
                         <div class="es-device-row es-device-row-health is-${esEsc(device.health || "active")}">
                             <strong>${esEsc(device.device_id || "unknown")}</strong>
                             <span>${esEsc(device.health_label || device.protocol || "Receiving")}</span>
@@ -6864,14 +7902,12 @@ document.addEventListener("DOMContentLoaded", () => {
                 const auditEmpty = edgeShell.querySelector("[data-es-audit-empty]");
                 if (auditEmpty) auditEmpty.classList.toggle("es-hidden", events.length > 0);
                 if (auditList) {
-                    auditList.innerHTML = events.map((event) => `
-                        <div class="es-audit-row">
-                            <strong>${esEsc(event.type || "event")}</strong>
-                            <span>${esEsc(event.device_id || event.source || "edge-server")}</span>
-                            <small>${esEsc(event.message || "")}</small>
-                            <em>${esEsc(event.timestamp || "")}</em>
-                        </div>
-                    `).join("");
+                    auditList.innerHTML = events.slice(0, 5).map((event) => esRenderAlertCard({
+                        ...event,
+                        event_type: event.event_type || event.type,
+                        created_at: event.created_at || event.timestamp,
+                        severity: event.severity || "warning",
+                    }, true)).join("");
                 }
             } catch (error) {
                 console.warn("[Edge Server] status fetch failed:", error);
@@ -6892,6 +7928,12 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (tab === "history") {
                     esRefreshHistory();
                 }
+                if (tab === "http" || tab === "mqtt") {
+                    esRefreshProtocolMetrics(tab);
+                }
+                if (tab === "alerts") {
+                    esRefreshAlerts();
+                }
                 if (tab === "funnel") {
                     esRefreshFunnel();
                 }
@@ -6900,16 +7942,68 @@ document.addEventListener("DOMContentLoaded", () => {
 
         edgeShell.querySelector("[data-es-history-device]")?.addEventListener("change", esRefreshDeviceHistory);
         edgeShell.querySelector("[data-es-history-protocol]")?.addEventListener("change", esRefreshDeviceHistory);
-        edgeShell.querySelector("[data-es-history-range]")?.addEventListener("change", esRefreshDeviceHistory);
+        edgeShell.querySelector("[data-es-history-range]")?.addEventListener("change", () => {
+            esSetHistoryWindowControls();
+            esRefreshDeviceHistory();
+        });
+        edgeShell.querySelector("[data-es-history-date]")?.addEventListener("change", esRefreshDeviceHistory);
+        edgeShell.querySelector("[data-es-history-hour]")?.addEventListener("change", esRefreshDeviceHistory);
         edgeShell.querySelector("[data-es-history-refresh]")?.addEventListener("click", esRefreshHistory);
+        edgeShell.querySelector("[data-es-alert-protocol-group]")?.addEventListener("change", () => {
+            esNormaliseAlertFilterPair("group");
+            esRefreshAlertsResetSelection();
+        });
+        edgeShell.querySelector("[data-es-alert-protocol]")?.addEventListener("change", () => {
+            esNormaliseAlertFilterPair("protocol");
+            esRefreshAlertsResetSelection();
+        });
+        edgeShell.querySelector("[data-es-alert-device]")?.addEventListener("change", esRefreshAlertsResetSelection);
+        edgeShell.querySelector("[data-es-alert-range]")?.addEventListener("change", esRefreshAlertsResetSelection);
+        edgeShell.querySelector("[data-es-alert-refresh]")?.addEventListener("click", esRefreshAlertsResetSelection);
+        edgeShell.addEventListener("click", (event) => {
+            const alertTarget = event.target?.closest?.("[data-es-alert-index]");
+            if (alertTarget) {
+                const index = Number(alertTarget.getAttribute("data-es-alert-index"));
+                if (Number.isInteger(index) && index >= 0 && index < esAlertEventsCache.length) {
+                    esSelectedAlertIndex = index;
+                    esRenderTimelineChart("[data-es-alert-timeline-chart]", "[data-es-alert-timeline-empty]", esAlertEventsCache, esAlertTimelineOptions());
+                    esRenderAlertEvents("[data-es-alert-list]", "[data-es-alert-empty]", esAlertEventsCache);
+                    esRenderSelectedAlert();
+                }
+                return;
+            }
+            const pill = event.target?.closest?.("[data-es-alert-device-pill]");
+            if (pill) {
+                const select = edgeShell.querySelector("[data-es-alert-device]");
+                if (select) select.value = pill.getAttribute("data-es-alert-device-pill") || "";
+                esRefreshAlertsResetSelection();
+            }
+        });
         edgeShell.querySelector("[data-es-http-device-search]")?.addEventListener("input", (event) => {
             esHttpDeviceSearch = event.target?.value || "";
-            esRenderHttpDeviceOptions(esHttpMetricsCache?.devices || []);
+            esRenderProtocolDeviceOptions(esHttpMetricsCache?.devices || [], "http");
         });
         edgeShell.querySelector("[data-es-http-device-filter]")?.addEventListener("change", async () => {
             if (esHttpMetricsCache) {
-                await esApplyHttpMetrics(esHttpMetricsCache);
+                await esApplyProtocolMetrics("http", esHttpMetricsCache);
             }
+        });
+        edgeShell.querySelector("[data-es-mqtt-device-search]")?.addEventListener("input", (event) => {
+            esMqttDeviceSearch = event.target?.value || "";
+            esRenderProtocolDeviceOptions(esMqttMetricsCache?.devices || [], "mqtt");
+        });
+        edgeShell.querySelector("[data-es-mqtt-device-filter]")?.addEventListener("change", async () => {
+            if (esMqttMetricsCache) {
+                await esApplyProtocolMetrics("mqtt", esMqttMetricsCache);
+            }
+        });
+        edgeShell.querySelectorAll("[data-es-protocol-window]").forEach((select) => {
+            select.addEventListener("change", () => {
+                const group = select.getAttribute("data-es-protocol-window");
+                if (group === "http" || group === "mqtt") {
+                    esRefreshProtocolMetrics(group);
+                }
+            });
         });
         edgeShell.querySelector("[data-es-funnel-enabled]")?.addEventListener("click", () => {
             esConfig = esConfig || esDefaultConfig();
@@ -7022,6 +8116,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const esRefreshAllRuntime = async () => {
             await esRefreshStatus();
+            await esRefreshOverviewMetrics();
             await esRefreshProtocolMetrics("http");
             await esRefreshProtocolMetrics("mqtt");
             await esRefreshAlerts();
@@ -7029,8 +8124,10 @@ document.addEventListener("DOMContentLoaded", () => {
             await esRefreshFunnel();
         };
 
+        esSetHistoryWindowControls();
         esLoad().then(esRefreshAllRuntime);
         window.setInterval(esRefreshStatus, 6000);
+        window.setInterval(esRefreshOverviewMetrics, 8000);
         window.setInterval(() => esRefreshProtocolMetrics("http"), 8000);
         window.setInterval(() => esRefreshProtocolMetrics("mqtt"), 8000);
         window.setInterval(esRefreshAlerts, 10000);

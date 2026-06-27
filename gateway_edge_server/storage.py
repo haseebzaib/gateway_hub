@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ from typing import Any
 LOGGER = logging.getLogger("edge_server")
 
 DEFAULT_DB_PATH = Path("/opt/metacrust/data/edge_server/edge_server.db")
+DEFAULT_SQLITE_PATH = Path.home() / ".metacrust" / "data" / "edge_server" / "edge_server.sqlite3"
 ANOMALY_EVENT_TYPES = (
     "new_device",
     "message_gap",
@@ -35,6 +37,42 @@ ANOMALY_EVENT_TYPES = (
 )
 
 
+def _parse_iso_datetime(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _database_file_size(path: Path) -> int:
+    total = 0
+    for candidate in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+        try:
+            total += candidate.stat().st_size
+        except FileNotFoundError:
+            continue
+        except OSError:
+            LOGGER.debug("storage_size_failed path=%s", candidate, exc_info=True)
+    return total
+
+
+def _history_bucket_expr(column: str, from_value: str, to_value: str) -> str:
+    start = _parse_iso_datetime(from_value)
+    end = _parse_iso_datetime(to_value)
+    if start and end:
+        span_seconds = max(0, (end - start).total_seconds())
+        if span_seconds <= 2 * 86400:
+            return f"substr({column}, 1, 16)"
+        if span_seconds <= 45 * 86400:
+            return f"substr({column}, 1, 13) || ':00'"
+    return f"substr({column}, 1, 10) || 'T00:00'"
+
+
 try:
     from sqlcipher3 import dbapi2 as sqlcipher  # type: ignore
 except Exception:  # pragma: no cover - depends on target image packages
@@ -46,12 +84,12 @@ except Exception:  # pragma: no cover - depends on target image packages
 
 class EdgeServerStorage:
     def __init__(self, db_path: Path | None = None, db_key: str | None = None) -> None:
-        self.db_path = Path(
-            db_path
-            or os.environ.get("METACRUST_EDGE_DB_PATH")
-            or DEFAULT_DB_PATH
-        )
+        configured_path = db_path or os.environ.get("METACRUST_EDGE_DB_PATH")
+        self.db_path = Path(configured_path or DEFAULT_DB_PATH)
+        self.sqlite_path = Path(os.environ.get("METACRUST_EDGE_SQLITE_PATH") or (self.db_path if configured_path else DEFAULT_SQLITE_PATH))
         self.db_key = db_key or os.environ.get("METACRUST_EDGE_DB_KEY") or os.environ.get("METACRUST_DB_KEY") or ""
+        self.encrypted = False
+        self.backend = "closed"
         self._lock = threading.RLock()
         self._conn: Any | None = None
 
@@ -59,16 +97,23 @@ class EdgeServerStorage:
         with self._lock:
             if self._conn is not None:
                 return
-            if sqlcipher is None:
-                raise RuntimeError("SQLCipher Python binding missing. Install sqlcipher3.")
-            if not self.db_key:
-                raise RuntimeError("SQLCipher DB key missing. Set METACRUST_EDGE_DB_KEY or METACRUST_DB_KEY.")
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
-            self._conn = sqlcipher.connect(str(self.db_path), check_same_thread=False)
-            self._conn.row_factory = sqlcipher.Row
-            self._conn.execute(f"PRAGMA key = {_sql_quote(self.db_key)}")
-            self._conn.execute("PRAGMA cipher_memory_security = ON")
-            LOGGER.info("storage_open encrypted=true path=%s", self.db_path)
+            if sqlcipher is not None and self.db_key:
+                self.db_path.parent.mkdir(parents=True, exist_ok=True)
+                self._conn = sqlcipher.connect(str(self.db_path), check_same_thread=False)
+                self._conn.row_factory = sqlcipher.Row
+                self._conn.execute(f"PRAGMA key = {_sql_quote(self.db_key)}")
+                self._conn.execute("PRAGMA cipher_memory_security = ON")
+                self.encrypted = True
+                self.backend = "sqlcipher"
+                LOGGER.info("storage_open encrypted=true path=%s", self.db_path)
+            else:
+                reason = "SQLCipher Python binding missing" if sqlcipher is None else "SQLCipher DB key missing"
+                self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+                self._conn = sqlite3.connect(str(self.sqlite_path), check_same_thread=False)
+                self._conn.row_factory = sqlite3.Row
+                self.encrypted = False
+                self.backend = "sqlite"
+                LOGGER.warning("storage_open encrypted=false path=%s reason=%s", self.sqlite_path, reason)
             self._conn.execute("PRAGMA journal_mode = WAL")
             self._conn.execute("PRAGMA synchronous = NORMAL")
             self._migrate_locked()
@@ -339,6 +384,30 @@ class EdgeServerStorage:
             row = self._conn.execute("SELECT COUNT(*) AS count FROM messages").fetchone()
             return int(row["count"] if row else 0)
 
+    def status(self) -> dict[str, Any]:
+        self.open()
+        path = self.db_path if self.encrypted else self.sqlite_path
+        with self._lock:
+            message_row = self._conn.execute(
+                """
+                SELECT COUNT(*) AS count, MIN(received_at) AS oldest_record_at,
+                       MAX(received_at) AS newest_record_at
+                FROM messages
+                """
+            ).fetchone()
+            event_row = self._conn.execute("SELECT COUNT(*) AS count FROM events").fetchone()
+        return {
+            "enabled": True,
+            "backend": self.backend,
+            "encrypted": bool(self.encrypted),
+            "path": str(path),
+            "db_size_bytes": _database_file_size(path),
+            "message_count": int(message_row["count"] if message_row else 0),
+            "event_count": int(event_row["count"] if event_row else 0),
+            "oldest_record_at": message_row["oldest_record_at"] if message_row else None,
+            "newest_record_at": message_row["newest_record_at"] if message_row else None,
+        }
+
     def recent_devices(self, limit: int = 30) -> list[dict[str, Any]]:
         self.open()
         with self._lock:
@@ -356,10 +425,12 @@ class EdgeServerStorage:
             ).fetchall()
             return [_device_health(dict(row)) for row in rows]
 
-    def protocol_metrics(self, protocol_group: str) -> dict[str, Any]:
+    def protocol_metrics(self, protocol_group: str, minutes: int = 60) -> dict[str, Any]:
         self.open()
         protocols = ("HTTP", "HTTPS") if protocol_group == "http" else ("MQTT", "MQTTS")
         placeholders = ",".join("?" for _ in protocols)
+        window_minutes = max(5, min(1440, int(minutes or 60)))
+        since_window = (datetime.now(UTC) - timedelta(minutes=window_minutes)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         with self._lock:
             total = self._conn.execute(
                 f"SELECT COUNT(*) AS count FROM messages WHERE protocol IN ({placeholders})",
@@ -390,14 +461,13 @@ class EdgeServerStorage:
             ).fetchall()
             minute_rows = self._conn.execute(
                 f"""
-                SELECT substr(received_at, 1, 16) AS minute, COUNT(*) AS count
+                SELECT substr(received_at, 1, 16) || ':00Z' AS minute, COUNT(*) AS count
                 FROM messages
-                WHERE protocol IN ({placeholders})
+                WHERE protocol IN ({placeholders}) AND received_at >= ?
                 GROUP BY minute
-                ORDER BY minute DESC
-                LIMIT 30
+                ORDER BY minute ASC
                 """,
-                protocols,
+                (*protocols, since_window),
             ).fetchall()
             recent = self._conn.execute(
                 f"""
@@ -472,7 +542,7 @@ class EdgeServerStorage:
                 "route_missing": int(route_missing or 0),
                 "auth_failures": int(auth_failures or 0),
                 "routes": [dict(row) for row in routes],
-                "minute_series": [dict(row) for row in reversed(minute_rows)],
+                "minute_series": [dict(row) for row in minute_rows],
                 "recent_messages": [dict(row) for row in recent],
                 "devices": [_device_health(dict(row)) for row in device_rows],
                 "anomaly_summary": [dict(row) for row in anomaly_summary],
@@ -533,6 +603,8 @@ class EdgeServerStorage:
 
         message_where_sql = "WHERE " + " AND ".join(message_where)
         event_where_sql = "WHERE " + " AND ".join(event_where)
+        message_bucket_expr = _history_bucket_expr("received_at", from_value, to_value)
+        event_bucket_expr = _history_bucket_expr("created_at", from_value, to_value)
         with self._lock:
             device_row = self._conn.execute(
                 """
@@ -562,24 +634,24 @@ class EdgeServerStorage:
             ).fetchone()["count"]
             message_series_rows = self._conn.execute(
                 f"""
-                SELECT substr(received_at, 1, 16) AS bucket, COUNT(*) AS count,
+                SELECT {message_bucket_expr} AS bucket, COUNT(*) AS count,
                        AVG(payload_size) AS avg_payload_size, MAX(payload_size) AS max_payload_size
                 FROM messages
                 {message_where_sql}
                 GROUP BY bucket
                 ORDER BY bucket ASC
-                LIMIT 720
+                LIMIT 2000
                 """,
                 message_params,
             ).fetchall()
             anomaly_series_rows = self._conn.execute(
                 f"""
-                SELECT substr(created_at, 1, 16) AS bucket, COUNT(*) AS count
+                SELECT {event_bucket_expr} AS bucket, COUNT(*) AS count
                 FROM events
                 {event_where_sql}
                 GROUP BY bucket
                 ORDER BY bucket ASC
-                LIMIT 720
+                LIMIT 2000
                 """,
                 event_params,
             ).fetchall()

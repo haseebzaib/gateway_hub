@@ -591,7 +591,7 @@ def _normalise_edge_server_config(payload: dict[str, Any]) -> dict[str, Any]:
     storage.update(raw_storage)
     storage["enabled"] = _bool_config(storage.get("enabled"), True)
     storage["retention_days"] = max(1, min(3650, int(storage.get("retention_days") or 30)))
-    storage["max_size_mb"] = max(64, min(1_048_576, int(storage.get("max_size_mb") or 5120)))
+    storage["max_size_mb"] = max(5120, min(1_048_576, int(storage.get("max_size_mb") or 5120)))
 
     raw_tls = dict(payload.get("tls") or {})
     tls = dict(defaults["tls"])
@@ -1048,6 +1048,13 @@ def _edge_server_status() -> dict[str, Any]:
         "message": "Configuration ready",
         "timestamp_ms": _now_ms(),
     }
+
+
+def _edge_server_window_minutes(request: Request) -> int:
+    try:
+        return max(5, min(1440, int(request.query_params.get("minutes") or 60)))
+    except (TypeError, ValueError):
+        return 60
 
 
 def _template_context(active: str, page_title: str) -> dict[str, Any]:
@@ -1537,9 +1544,10 @@ async def get_edge_server_events(request: Request) -> JSONResponse:
 async def get_edge_server_http_metrics(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
+    minutes = _edge_server_window_minutes(request)
     edge_server = getattr(request.app.state, "edge_server", None)
     if edge_server is not None:
-        return JSONResponse(edge_server.protocol_metrics("http"))
+        return JSONResponse(edge_server.protocol_metrics("http", minutes=minutes))
     return JSONResponse({"ok": True, "protocol_group": "http", "total_messages": 0, "device_count": 0, "routes": [], "minute_series": [], "recent_messages": []})
 
 
@@ -1547,10 +1555,27 @@ async def get_edge_server_http_metrics(request: Request) -> JSONResponse:
 async def get_edge_server_mqtt_metrics(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
+    minutes = _edge_server_window_minutes(request)
     edge_server = getattr(request.app.state, "edge_server", None)
     if edge_server is not None:
-        return JSONResponse(edge_server.protocol_metrics("mqtt"))
+        return JSONResponse(edge_server.protocol_metrics("mqtt", minutes=minutes))
     return JSONResponse({"ok": True, "protocol_group": "mqtt", "total_messages": 0, "device_count": 0, "routes": [], "minute_series": [], "recent_messages": []})
+
+
+@router.get("/api/edge-server/overview/metrics")
+async def get_edge_server_overview_metrics(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    minutes = _edge_server_window_minutes(request)
+    edge_server = getattr(request.app.state, "edge_server", None)
+    if edge_server is not None:
+        return JSONResponse(edge_server.overview_metrics(minutes=minutes))
+    return JSONResponse({
+        "ok": True,
+        "minutes": minutes,
+        "http": {"ok": True, "protocol_group": "http", "total_messages": 0, "device_count": 0, "routes": [], "minute_series": [], "recent_messages": []},
+        "mqtt": {"ok": True, "protocol_group": "mqtt", "total_messages": 0, "device_count": 0, "routes": [], "minute_series": [], "recent_messages": []},
+    })
 
 
 @router.get("/api/edge-server/alerts")
@@ -1559,7 +1584,7 @@ async def get_edge_server_alerts(request: Request) -> JSONResponse:
         return auth
     edge_server = getattr(request.app.state, "edge_server", None)
     if edge_server is not None:
-        return JSONResponse(edge_server.alert_metrics())
+        return JSONResponse(edge_server.alert_metrics(_edge_export_filters(request)))
     return JSONResponse({"ok": True, "summary": {"total": 0, "warning": 0, "error": 0, "critical": 0}, "events": []})
 
 
