@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from .client import GatewayCoreTcpClient
 from .config import IpcClientConfig
+from .message_protocol import decode_inbound_message, device_metric_history_sample, inbound_message_type, normalize_device_data_message
 
 @dataclass
 class IpcStatus:
@@ -34,6 +38,8 @@ class GatewayCoreIpcTask:
             port=self.config.port,
             framing=self.config.framing,
         )
+        self._latest_device_metrics: dict[str, Any] | None = None
+        self._device_metric_history: deque[dict[str, Any]] = deque(maxlen=600)
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
 
@@ -80,7 +86,14 @@ class GatewayCoreIpcTask:
             "rx_count": self.status.rx_count,
             "tx_count": self.status.tx_count,
             "heartbeat_count": self.status.heartbeat_count,
+            "latest_device_metrics_at": self._latest_device_metrics.get("received_at") if self._latest_device_metrics else None,
         }
+
+    def latest_device_metrics(self) -> dict[str, Any] | None:
+        return dict(self._latest_device_metrics) if self._latest_device_metrics else None
+
+    def device_metric_history(self) -> list[dict[str, Any]]:
+        return list(self._device_metric_history)
 
     async def _run(self) -> None:
         while not self._stop_event.is_set():
@@ -96,6 +109,7 @@ class GatewayCoreIpcTask:
                 async for payload in self.client.read_messages():
                     self.status.rx_count += 1
                     self.status.last_rx_text = _decode_preview(payload)
+                    self._handle_rx_payload(payload)
                     _console(f"RX {self.status.last_rx_text}")
                     if self._stop_event.is_set():
                         break
@@ -116,6 +130,21 @@ class GatewayCoreIpcTask:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=self.config.reconnect_delay_s)
             except TimeoutError:
                 continue
+
+    def _handle_rx_payload(self, payload: bytes) -> None:
+        try:
+            message = decode_inbound_message(payload)
+            message_type = inbound_message_type(message)
+            if message_type == "deviceData":
+                metrics = normalize_device_data_message(message)
+                self._latest_device_metrics = metrics
+                self._device_metric_history.append(device_metric_history_sample(metrics))
+            elif message_type == "heartBeat":
+                self.status.heartbeat_count += 1
+        except json.JSONDecodeError as exc:
+            self.status.last_error = f"invalid IPC JSON: {exc}"
+        except Exception as exc:
+            self.status.last_error = f"IPC message parse failed: {exc}"
 
 def _utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")

@@ -2046,6 +2046,23 @@ document.addEventListener("DOMContentLoaded", () => {
             return `${Math.round(b / 1024)} KB`;
         };
 
+        const fmtMb = (mb) => {
+            const value = Number(mb || 0);
+            if (value >= 1024) return `${(value / 1024).toFixed(1)} GB`;
+            return `${Math.round(value).toLocaleString()} MB`;
+        };
+
+        const fmtDuration = (seconds) => {
+            const total = Math.max(0, Number(seconds || 0));
+            const days = Math.floor(total / 86400);
+            const hours = Math.floor((total % 86400) / 3600);
+            const mins = Math.floor((total % 3600) / 60);
+            if (days > 0) return `${days}d ${hours}h`;
+            if (hours > 0) return `${hours}h ${mins}m`;
+            if (mins > 0) return `${mins}m`;
+            return `${Math.floor(total)}s`;
+        };
+
         const setKpiBar = (name, pct) => {
             const bar = monitorShell.querySelector(`[data-kpi-bar="${name}"]`);
             if (!bar) return;
@@ -2056,102 +2073,178 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         };
 
-        const applyCurrentMetrics = (m) => {
-            if (!m?.cpu) return;
+        const clearChart = (name, label = "Waiting for telemetry") => {
+            const container = monitorShell.querySelector(`[data-chart-svg="${name}"]`);
+            if (container) {
+                container.innerHTML = `<div class="chart-empty-state">${label}</div>`;
+            }
+        };
 
-            // CPU — m.cpu.total_percent, m.cpu.per_core: [{core, usage_percent}]
-            const cpuPct = m.cpu.total_percent ?? 0;
+        const applyTelemetryUnavailable = () => {
+            ["cpu", "memory", "temp", "disk"].forEach((name) => setKpiBar(name, 0));
+            [
+                ["cpu", "--"],
+                ["memory", "--"],
+                ["temp", "--"],
+                ["disk", "--"],
+            ].forEach(([name, value]) => {
+                const el = monitorShell.querySelector(`[data-kpi-value="${name}"]`);
+                if (el) el.textContent = value;
+            });
+            ["cpu", "memory", "temp", "disk"].forEach((name) => {
+                const el = monitorShell.querySelector(`[data-kpi-sub="${name}"]`);
+                if (el) el.textContent = "Waiting for telemetry";
+            });
+            [
+                ["cpu", "--%"],
+                ["memory", "--%"],
+                ["temp", "-- °C"],
+                ["storage", "--%"],
+            ].forEach(([name, value]) => {
+                const el = monitorShell.querySelector(`[data-chart-live="${name}"]`);
+                if (el) el.textContent = value;
+            });
+            ["cpu", "memory", "temp", "storage"].forEach((name) => clearChart(name));
+
+            const coreGrid = monitorShell.querySelector("[data-core-grid]");
+            if (coreGrid) coreGrid.innerHTML = `<p class="insights-empty-note">Waiting for system telemetry...</p>`;
+            ["1m", "5m", "15m"].forEach((key) => {
+                const el = monitorShell.querySelector(`[data-load-avg="${key}"]`);
+                if (el) el.textContent = "--";
+            });
+            const loadSummary = monitorShell.querySelector("[data-load-summary]");
+            if (loadSummary) loadSummary.textContent = "Waiting for system telemetry.";
+            [
+                "[data-monitor-throttle]",
+                "[data-monitor-emmc-life]",
+                "[data-monitor-uptime]",
+                "[data-monitor-swap]",
+            ].forEach((selector) => {
+                const el = monitorShell.querySelector(selector);
+                if (el) el.textContent = "--";
+            });
+        };
+
+        const applyCurrentMetrics = (m) => {
+            if (!m?.cpu || m.source !== "gateway_core_ipc") {
+                applyTelemetryUnavailable();
+                return;
+            }
+
+            // CPU.
+            const cpuPct = Number(m.cpu.total_percent ?? 0);
             const perCore = Array.isArray(m.cpu.per_core) ? m.cpu.per_core : [];
+            const maxFreq = Math.max(0, ...perCore.map((c) => Number(c.freq_mhz || 0)));
             const cpuVal = monitorShell.querySelector("[data-kpi-value=\"cpu\"]");
             const cpuSub = monitorShell.querySelector("[data-kpi-sub=\"cpu\"]");
             const cpuLive = monitorShell.querySelector("[data-chart-live=\"cpu\"]");
-            if (cpuVal) cpuVal.textContent = `${cpuPct}%`;
-            if (cpuSub) cpuSub.textContent = `${perCore.length} core${perCore.length !== 1 ? "s" : ""}`;
-            if (cpuLive) cpuLive.textContent = `${cpuPct}%`;
+            if (cpuVal) cpuVal.textContent = `${cpuPct.toFixed(1)}%`;
+            if (cpuSub) {
+                cpuSub.textContent = maxFreq
+                    ? `${perCore.length} core${perCore.length !== 1 ? "s" : ""} · max ${maxFreq} MHz`
+                    : `${perCore.length} core${perCore.length !== 1 ? "s" : ""}`;
+            }
+            if (cpuLive) cpuLive.textContent = `${cpuPct.toFixed(1)}%`;
             setKpiBar("cpu", cpuPct);
 
-            // Memory — m.memory.memory_bytes.{used_percent, used, total}
-            const memPct = m.memory?.memory_bytes?.used_percent ?? 0;
+            // Memory.
+            const memPct = Number(m.memory?.memory_bytes?.used_percent ?? 0);
             const memUsed = m.memory?.memory_bytes?.used ?? 0;
             const memTotal = m.memory?.memory_bytes?.total ?? 0;
             const memVal = monitorShell.querySelector("[data-kpi-value=\"memory\"]");
             const memSub = monitorShell.querySelector("[data-kpi-sub=\"memory\"]");
             const memLive = monitorShell.querySelector("[data-chart-live=\"memory\"]");
-            if (memVal) memVal.textContent = `${memPct}%`;
+            if (memVal) memVal.textContent = `${memPct.toFixed(1)}%`;
             if (memSub) memSub.textContent = memTotal ? `${fmtBytes(memUsed)} of ${fmtBytes(memTotal)}` : "No data";
-            if (memLive) memLive.textContent = `${memPct}%`;
+            if (memLive) memLive.textContent = `${memPct.toFixed(1)}%`;
             setKpiBar("memory", memPct);
 
-            // Temperature
-            const tempC = m.temperature_c ?? null;
+            // Temperature.
+            const tempC = m.temperature_c != null ? Number(m.temperature_c) : null;
             const tempVal = monitorShell.querySelector("[data-kpi-value=\"temp\"]");
             const tempSub = monitorShell.querySelector("[data-kpi-sub=\"temp\"]");
             const tempLive = monitorShell.querySelector("[data-chart-live=\"temp\"]");
-            if (tempVal) tempVal.textContent = tempC != null ? `${tempC}\u00b0C` : "--";
-            if (tempSub) tempSub.textContent = tempC == null ? "No sensor" : tempC < 50 ? "Normal" : tempC < 70 ? "Warm" : "Hot";
-            if (tempLive) tempLive.textContent = tempC != null ? `${tempC} \u00b0C` : "-- \u00b0C";
+            if (tempVal) tempVal.textContent = tempC != null ? `${tempC.toFixed(1)}\u00b0C` : "--";
+            if (tempSub) tempSub.textContent = tempC == null ? "No sensor" : tempC < 50 ? "Normal operating range" : tempC < 70 ? "Warm, monitor load" : "Thermal risk";
+            if (tempLive) tempLive.textContent = tempC != null ? `${tempC.toFixed(1)} \u00b0C` : "-- \u00b0C";
             setKpiBar("temp", tempC != null ? Math.min(100, (tempC / 85) * 100) : 0);
 
-            // Filesystem — m.filesystem.{used_percent, used_bytes, total_bytes}
-            const diskPct = m.filesystem?.used_percent ?? 0;
-            const diskUsed = m.filesystem?.used_bytes ?? 0;
-            const diskTotal = m.filesystem?.total_bytes ?? 0;
+            // Storage.
+            const diskPct = Number(m.filesystem?.used_percent ?? 0);
+            const emmc = m.emmc ?? {};
+            const emmcPct = Number(emmc.used_percent ?? diskPct);
+            const emmcUsed = Number(emmc.used_mb ?? 0);
+            const emmcTotal = Number(emmc.total_mb ?? 0);
             const diskVal = monitorShell.querySelector("[data-kpi-value=\"disk\"]");
             const diskSub = monitorShell.querySelector("[data-kpi-sub=\"disk\"]");
-            if (diskVal) diskVal.textContent = `${diskPct}%`;
-            if (diskSub) diskSub.textContent = diskTotal ? `${fmtBytes(diskUsed)} of ${fmtBytes(diskTotal)}` : "No data";
+            const storageLive = monitorShell.querySelector("[data-chart-live=\"storage\"]");
+            if (diskVal) diskVal.textContent = `${diskPct.toFixed(1)}%`;
+            if (diskSub) {
+                diskSub.textContent = emmcTotal > 0
+                    ? `root ${diskPct.toFixed(1)}% · eMMC ${fmtMb(emmcUsed)} of ${fmtMb(emmcTotal)}`
+                    : `root ${diskPct.toFixed(1)}%`;
+            }
+            if (storageLive) storageLive.textContent = `${emmcPct.toFixed(1)}%`;
             setKpiBar("disk", diskPct);
 
-            // Per-core bars — each entry is {core: int, usage_percent: float}
+            // Per-core bars.
             const coreGrid = monitorShell.querySelector("[data-core-grid]");
             if (coreGrid && perCore.length > 0) {
-                coreGrid.innerHTML = perCore.map((c) => `<div class="core-item">
-                    <div class="core-bar-track"><div class="core-bar-fill" style="height:${Math.min(100, c.usage_percent)}%"></div></div>
-                    <p class="core-item-value">${c.usage_percent}%</p>
-                    <p class="core-item-label">C${c.core}</p>
-                </div>`).join("");
+                coreGrid.innerHTML = perCore.map((c) => {
+                    const usage = Number(c.usage_percent || 0);
+                    const freq = Number(c.freq_mhz || 0);
+                    return `<div class="core-item">
+                    <div class="core-bar-track"><div class="core-bar-fill" style="height:${Math.min(100, usage)}%"></div></div>
+                    <p class="core-item-value">${usage.toFixed(1)}%</p>
+                    <p class="core-item-label">C${c.core}${freq ? `<span>${freq} MHz</span>` : ""}</p>
+                </div>`;
+                }).join("");
             }
 
-            // Load average — m.cpu.load_average: {"1m", "5m", "15m"}
+            // Load average.
             const loadAvg = m.cpu.load_average ?? {};
             ["1m", "5m", "15m"].forEach((key) => {
                 const el = monitorShell.querySelector(`[data-load-avg="${key}"]`);
                 if (el) el.textContent = loadAvg[key] != null ? Number(loadAvg[key]).toFixed(2) : "--";
             });
-
-            // Network rates
-            const eth0Rates = m.network?.eth0?.rates;
-            const eth1Rates = m.network?.eth1?.rates;
-            const wifiRates = m.network?.wlan0?.rates;
-            const netLive = monitorShell.querySelector("[data-chart-live=\"network\"]");
-            if (netLive) {
-                const rx = (eth0Rates?.rx_bytes_per_sec ?? 0) + (eth1Rates?.rx_bytes_per_sec ?? 0) + (wifiRates?.rx_bytes_per_sec ?? 0);
-                netLive.textContent = fmtBps(rx);
+            const loadSummary = monitorShell.querySelector("[data-load-summary]");
+            if (loadSummary) {
+                const load1m = Number(loadAvg["1m"] ?? 0);
+                const coreCount = Number(m.cpu.core_count || perCore.length || 1);
+                const ratio = coreCount > 0 ? load1m / coreCount : 0;
+                const tone = ratio < 0.5 ? "light" : ratio < 0.85 ? "moderate" : ratio <= 1.05 ? "near capacity" : "over capacity";
+                loadSummary.textContent = `${load1m.toFixed(2)} active/queued tasks on ${coreCount} CPU core${coreCount !== 1 ? "s" : ""}; ${coreCount.toFixed(2)} means full CPU capacity. Current load is ${tone}.`;
             }
-            ["eth0", "eth1", "wlan0"].forEach((iface) => {
-                const rates = m.network?.[iface]?.rates;
-                const rxEl = monitorShell.querySelector(`[data-net-rx="${iface}"]`);
-                const txEl = monitorShell.querySelector(`[data-net-tx="${iface}"]`);
-                if (rxEl) rxEl.textContent = `rx ${rates ? fmtBps(rates.rx_bytes_per_sec) : "--"}`;
-                if (txEl) txEl.textContent = `tx ${rates ? fmtBps(rates.tx_bytes_per_sec) : "--"}`;
-            });
+
+            const throttleFlags = Number(m.cpu.throttle_flags || 0);
+            const throttleEl = monitorShell.querySelector("[data-monitor-throttle]");
+            const emmcLifeEl = monitorShell.querySelector("[data-monitor-emmc-life]");
+            const uptimeEl = monitorShell.querySelector("[data-monitor-uptime]");
+            const swapEl = monitorShell.querySelector("[data-monitor-swap]");
+            if (throttleEl) throttleEl.textContent = throttleFlags ? `0x${throttleFlags.toString(16)} active` : "None";
+            if (emmcLifeEl) emmcLifeEl.textContent = Number(emmc.life_used_percent || 0) ? `${Number(emmc.life_used_percent)}%` : "Unavailable";
+            if (uptimeEl) uptimeEl.textContent = fmtDuration(m.uptime_sec);
+            if (swapEl) swapEl.textContent = fmtMb(m.memory?.swap_mb?.used || 0);
         };
 
         const applyHistoryMetrics = (history) => {
             const samples = Array.isArray(history?.samples) ? history.samples : [];
-            if (samples.length < 2) return;
+            if (history?.source !== "gateway_core_ipc" || samples.length < 2) {
+                ["cpu", "memory", "temp", "storage"].forEach((name) => clearChart(name));
+                return;
+            }
             const cpuData = samples.map((s) => s.cpu_total_percent ?? 0);
             const memData = samples.map((s) => s.memory_used_percent ?? 0);
             const tempData = samples.map((s) => s.temperature_c ?? 0);
-            const netRxData = samples.map((s) => (s.network?.eth0?.rx_bytes_per_sec ?? 0) + (s.network?.eth1?.rx_bytes_per_sec ?? 0) + (s.network?.wlan0?.rx_bytes_per_sec ?? 0));
-            const netTxData = samples.map((s) => (s.network?.eth0?.tx_bytes_per_sec ?? 0) + (s.network?.eth1?.tx_bytes_per_sec ?? 0) + (s.network?.wlan0?.tx_bytes_per_sec ?? 0));
+            const storageData = samples.map((s) => s.emmc_used_percent ?? s.disk_used_percent ?? 0);
             // Auto-scale: anchor min at 0, max = actual peak + 30% headroom (minimum 10 for %)
             const cpuMax = Math.max(10, ...cpuData) * 1.3;
             const memMax = Math.max(10, ...memData) * 1.3;
+            const storageMax = Math.max(10, ...storageData) * 1.2;
             drawSparkline(monitorShell.querySelector("[data-chart-svg=\"cpu\"]"), cpuData, { stroke: "#39d0c8", min: 0, max: cpuMax, fmt: (v) => `${v.toFixed(1)}%` });
             drawSparkline(monitorShell.querySelector("[data-chart-svg=\"memory\"]"), memData, { stroke: "#f0a64b", min: 0, max: memMax, fmt: (v) => `${v.toFixed(1)}%` });
             drawSparkline(monitorShell.querySelector("[data-chart-svg=\"temp\"]"), tempData, { stroke: "#62d39e", fmt: (v) => `${v.toFixed(1)}°C` });
-            drawDualSparkline(monitorShell.querySelector("[data-chart-svg=\"network\"]"), netRxData, netTxData);
+            drawSparkline(monitorShell.querySelector("[data-chart-svg=\"storage\"]"), storageData, { stroke: "#60a5fa", min: 0, max: storageMax, fmt: (v) => `${v.toFixed(1)}% used` });
         };
 
         const refreshMonitorCurrent = async () => {

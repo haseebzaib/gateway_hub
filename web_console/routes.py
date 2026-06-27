@@ -350,28 +350,40 @@ def _overview_status_payload(network_state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _system_metrics() -> dict[str, Any]:
+def _system_metrics(core_ipc: Any | None = None) -> dict[str, Any]:
+    if core_ipc is not None:
+        latest = core_ipc.latest_device_metrics()
+        if latest:
+            payload = dict(latest)
+            payload["ipc"] = core_ipc.snapshot()
+            payload["stale_ms"] = max(0, _now_ms() - int(payload.get("timestamp_ms") or _now_ms()))
+            return payload
     now = _now_ms()
     return {
         "ok": True,
+        "source": "unavailable",
         "timestamp_ms": now,
         "cpu": {
             "total_percent": 0,
-            "per_core": [{"core": i, "usage_percent": 0} for i in range(4)],
+            "core_count": 4,
+            "per_core": [{"core": i, "usage_percent": 0, "freq_mhz": 0} for i in range(4)],
             "load_average": {"1m": 0, "5m": 0, "15m": 0},
+            "throttle_flags": 0,
         },
-        "memory": {"memory_bytes": {"used_percent": 0, "used": 0, "total": 0}},
+        "memory": {"memory_bytes": {"used_percent": 0, "used": 0, "total": 0}, "swap_mb": {"used": 0}},
         "temperature_c": None,
-        "filesystem": {"used_percent": 0, "used_bytes": 0, "total_bytes": 0},
-        "network": {
-            "eth0": {"rates": {"rx_bytes_per_sec": 0, "tx_bytes_per_sec": 0}, "totals": {"rx_bytes": 0, "tx_bytes": 0}},
-            "eth1": {"rates": {"rx_bytes_per_sec": 0, "tx_bytes_per_sec": 0}, "totals": {"rx_bytes": 0, "tx_bytes": 0}},
-            "wlan0": {"rates": {"rx_bytes_per_sec": 0, "tx_bytes_per_sec": 0}, "totals": {"rx_bytes": 0, "tx_bytes": 0}},
-        },
+        "filesystem": {"used_percent": 0, "label": "root filesystem"},
+        "emmc": {"used_percent": 0, "used_mb": 0, "total_mb": 0, "life_used_percent": 0},
+        "uptime_sec": 0,
+        "ipc": core_ipc.snapshot() if core_ipc is not None else None,
     }
 
 
-def _system_metric_history() -> dict[str, Any]:
+def _system_metric_history(core_ipc: Any | None = None) -> dict[str, Any]:
+    if core_ipc is not None:
+        samples = core_ipc.device_metric_history()
+        if len(samples) >= 2:
+            return {"ok": True, "source": "gateway_core_ipc", "samples": samples}
     samples = []
     now = _now_ms()
     for i in range(30, 0, -1):
@@ -380,13 +392,11 @@ def _system_metric_history() -> dict[str, Any]:
             "cpu_total_percent": 0,
             "memory_used_percent": 0,
             "temperature_c": 0,
-            "network": {
-                "eth0": {"rx_bytes_per_sec": 0, "tx_bytes_per_sec": 0},
-                "eth1": {"rx_bytes_per_sec": 0, "tx_bytes_per_sec": 0},
-                "wlan0": {"rx_bytes_per_sec": 0, "tx_bytes_per_sec": 0},
-            },
+            "disk_used_percent": 0,
+            "emmc_used_percent": 0,
+            "load_avg_1m": 0,
         })
-    return {"ok": True, "samples": samples}
+    return {"ok": True, "source": "unavailable", "samples": samples}
 
 
 def _default_rs232_config() -> dict[str, Any]:
@@ -1106,7 +1116,7 @@ async def dashboard_page(request: Request) -> HTMLResponse:
         "status_chips": overview["status_chips"],
         "connectivity_items": overview["connectivity_items"],
         "overview_visual": overview["visual"],
-        "system_metrics": _system_metrics(),
+        "system_metrics": _system_metrics(getattr(request.app.state, "core_ipc", None)),
         "system_uptime": _system_uptime(),
         "disk": _disk_usage(),
         "gateway_id": GATEWAY_ID,
@@ -1286,14 +1296,14 @@ async def cellular_refresh_state(request: Request) -> JSONResponse:
 async def get_system_metrics(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    return JSONResponse(_system_metrics())
+    return JSONResponse(_system_metrics(getattr(request.app.state, "core_ipc", None)))
 
 
 @router.get("/api/system/metrics/history")
 async def get_system_metrics_history(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    return JSONResponse(_system_metric_history())
+    return JSONResponse(_system_metric_history(getattr(request.app.state, "core_ipc", None)))
 
 
 @router.get("/api/interfaces/rs232/config")
