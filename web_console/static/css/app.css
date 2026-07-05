@@ -9274,3 +9274,552 @@ a.ov-feature-card:hover .ov-feature-eyebrow { color: var(--accent-cool); }
     .net-status-hero { flex-direction: column; }
     .net-status-hero-kpis { grid-template-columns: repeat(4, 1fr); }
 }
+
+/* ── Monitor tabs (Live / Anomaly Detection) ─────────────────────────── */
+.monitor-tabs {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+    width: fit-content;
+    max-width: 100%;
+    margin-bottom: 1.1rem;
+    padding: 0.4rem;
+    border-radius: 1.35rem;
+    background: rgba(6, 17, 23, 0.7);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+.monitor-tab {
+    min-height: 2.7rem;
+    padding: 0.7rem 1.2rem;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--text);
+    font: inherit;
+    font-size: 0.94rem;
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: border-color 180ms ease, background 180ms ease;
+}
+.monitor-tab.is-current {
+    background: linear-gradient(135deg, rgba(240, 166, 75, 0.12), rgba(57, 208, 200, 0.12));
+    border-color: rgba(57, 208, 200, 0.24);
+}
+.monitor-panel.is-hidden { display: none; }
+
+/* ── Anomaly panel ───────────────────────────────────────────────────── */
+.anomaly-intro {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1.1rem;
+}
+.anomaly-intro-text h3 {
+    margin: 0 0 0.3rem;
+    font-size: 1.05rem;
+    color: var(--text);
+}
+.anomaly-intro-text p {
+    margin: 0;
+    max-width: 46rem;
+    color: var(--muted);
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+.anomaly-range {
+    display: inline-flex;
+    gap: 0.3rem;
+    padding: 0.3rem;
+    border-radius: 999px;
+    background: rgba(6, 17, 23, 0.7);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.anomaly-range-btn {
+    min-width: 2.6rem;
+    padding: 0.4rem 0.7rem;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-weight: 600;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: background 160ms ease, color 160ms ease;
+}
+.anomaly-range-btn.is-current {
+    background: rgba(57, 208, 200, 0.16);
+    border-color: rgba(57, 208, 200, 0.28);
+    color: var(--text);
+}
+
+.anomaly-summary {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.9rem;
+    margin-bottom: 1.2rem;
+}
+.anomaly-stat {
+    padding: 1rem 1.1rem;
+    border-radius: 1rem;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--line);
+}
+.anomaly-stat.is-critical { border-left-color: #f2545b; }
+.anomaly-stat.is-warning  { border-left-color: #f0a64b; }
+.anomaly-stat.is-info     { border-left-color: #60a5fa; }
+.anomaly-stat.is-total    { border-left-color: var(--accent-cool); }
+.anomaly-stat-value {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 1.8rem;
+    font-weight: 700;
+    color: var(--text);
+}
+.anomaly-stat-label {
+    margin: 0.15rem 0 0;
+    font-size: 0.8rem;
+    color: var(--muted);
+}
+
+.anomaly-chart-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+    gap: 1rem;
+    margin-bottom: 1.2rem;
+}
+.anomaly-chart-card { padding: 1rem 1.1rem 0.6rem; }
+.anomaly-chart-card .chart-eyebrow { color: var(--muted); }
+.anomaly-plot {
+    width: 100%;
+    min-height: 190px;
+    margin-top: 0.4rem;
+}
+/* uPlot overrides to fit the dark theme */
+.anomaly-plot .u-legend { display: none; }
+.anomaly-plot .u-title { color: var(--text); }
+
+.anomaly-recent-card { margin-bottom: 0.5rem; }
+.anomaly-recent-list { display: flex; flex-direction: column; gap: 0.2rem; }
+.anomaly-recent-row {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    padding: 0.6rem 0.4rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.anomaly-recent-row:last-child { border-bottom: none; }
+.anomaly-recent-body { flex: 1; min-width: 0; }
+.anomaly-recent-headline {
+    margin: 0;
+    font-size: 0.9rem;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.anomaly-recent-meta {
+    margin: 0.1rem 0 0;
+    font-size: 0.78rem;
+    color: var(--muted);
+}
+.anomaly-recent-time {
+    flex-shrink: 0;
+    font-size: 0.78rem;
+    color: var(--muted);
+}
+.anomaly-dot {
+    flex-shrink: 0;
+    width: 0.6rem;
+    height: 0.6rem;
+    border-radius: 50%;
+    background: #60a5fa;
+}
+.anomaly-dot.is-critical { background: #f2545b; }
+.anomaly-dot.is-warning  { background: #f0a64b; }
+.anomaly-dot.is-info     { background: #60a5fa; }
+
+/* ── Anomaly hover tooltip ───────────────────────────────────────────── */
+.anomaly-tooltip {
+    position: fixed;
+    z-index: 95;
+    max-width: 22rem;
+    padding: 0.7rem 0.85rem;
+    border-radius: 0.8rem;
+    background: var(--surface-strong);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: var(--shadow);
+    pointer-events: none;
+}
+.anomaly-tip-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.78rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.anomaly-tip-badge {
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: #08141a;
+}
+.anomaly-tip-badge.is-critical { background: #f2545b; }
+.anomaly-tip-badge.is-warning  { background: #f0a64b; }
+.anomaly-tip-badge.is-info     { background: #60a5fa; }
+.anomaly-tip-headline {
+    margin: 0.45rem 0 0.3rem;
+    font-size: 0.9rem;
+    color: var(--text);
+    line-height: 1.4;
+}
+.anomaly-tip-time {
+    margin: 0;
+    font-size: 0.76rem;
+    color: var(--muted);
+}
+
+@media (max-width: 720px) {
+    .anomaly-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* ── Overview: self-monitoring band ──────────────────────────────────── */
+.ov-anomaly-band {
+    margin: 1.4rem 0;
+    padding: 1.4rem 1.5rem;
+    border-radius: 1.2rem;
+    background: linear-gradient(135deg, rgba(57, 208, 200, 0.07), rgba(240, 166, 75, 0.05));
+    border: 1px solid var(--line);
+}
+.ov-anomaly-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.2rem;
+    align-items: flex-start;
+    justify-content: space-between;
+}
+.ov-anomaly-title {
+    margin: 0.2rem 0 0.4rem;
+    font-family: var(--font-display);
+    font-size: 1.3rem;
+    color: var(--text);
+}
+.ov-anomaly-lede {
+    margin: 0;
+    max-width: 46rem;
+    color: var(--muted);
+    font-size: 0.92rem;
+    line-height: 1.55;
+}
+.ov-anomaly-lede a { color: var(--accent-cool); }
+.ov-anomaly-cta {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.1rem;
+    min-width: 9rem;
+    padding: 1rem 1.2rem;
+    border-radius: 1rem;
+    background: rgba(6, 17, 23, 0.6);
+    border: 1px solid rgba(57, 208, 200, 0.24);
+    text-decoration: none;
+    transition: border-color 160ms ease, transform 160ms ease;
+}
+.ov-anomaly-cta:hover { border-color: rgba(57, 208, 200, 0.5); transform: translateY(-2px); }
+.ov-anomaly-cta-count {
+    font-family: var(--font-display);
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--text);
+    line-height: 1;
+}
+.ov-anomaly-cta-label { font-size: 0.78rem; color: var(--muted); }
+.ov-anomaly-cta-open { margin-top: 0.4rem; font-size: 0.82rem; font-weight: 600; color: var(--accent-cool); }
+
+.ov-anomaly-checks {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+    gap: 0.8rem;
+    margin-top: 1.3rem;
+}
+.ov-anomaly-check {
+    padding: 0.8rem 0.9rem;
+    border-radius: 0.8rem;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-left: 3px solid var(--accent-cool);
+}
+.ov-anomaly-check-title {
+    margin: 0 0 0.25rem;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text);
+}
+.ov-anomaly-check-detail {
+    margin: 0;
+    font-size: 0.82rem;
+    line-height: 1.45;
+    color: var(--muted);
+}
+
+/* ── Anomaly toolbar (range + hint), value tooltip, overview rules ───── */
+.anomaly-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.8rem;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1.1rem;
+}
+.anomaly-hint {
+    margin: 0;
+    font-size: 0.82rem;
+    color: var(--muted);
+}
+.anomaly-plot { cursor: crosshair; }
+
+/* value readout variant of the shared tooltip */
+.anomaly-tooltip.is-value { min-width: 8rem; text-align: left; }
+.anomaly-tip-metric {
+    margin: 0;
+    font-size: 0.76rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+}
+.anomaly-tip-value {
+    margin: 0.15rem 0 0.1rem;
+    font-family: var(--font-display);
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--text);
+}
+
+/* Overview: current detection rules list */
+.ov-anomaly-rules-head {
+    margin: 1.6rem 0 0.9rem;
+}
+.ov-anomaly-rules-head h3 {
+    margin: 0 0 0.25rem;
+    font-size: 1.02rem;
+    color: var(--text);
+}
+.ov-anomaly-rules-head p {
+    margin: 0;
+    font-size: 0.85rem;
+    color: var(--muted);
+}
+.ov-anomaly-rules {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+    gap: 0.8rem;
+}
+.ov-anomaly-rule {
+    padding: 0.9rem 1rem;
+    border-radius: 0.85rem;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+}
+.ov-anomaly-rule-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.35rem;
+}
+.ov-anomaly-rule-label {
+    margin: 0;
+    font-size: 0.94rem;
+    font-weight: 700;
+    color: var(--text);
+}
+.ov-anomaly-rule-watches {
+    font-size: 0.76rem;
+    color: var(--muted);
+}
+.ov-anomaly-rule-text {
+    margin: 0;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    color: var(--muted);
+}
+
+/* ── Anomaly redesign: bigger cards, status, expand modal, grouped list ─ */
+.anomaly-chart-grid {
+    grid-template-columns: repeat(auto-fit, minmax(32rem, 1fr));
+    gap: 1.1rem;
+}
+.anomaly-chart-card {
+    padding: 1.1rem 1.2rem 0.9rem;
+    cursor: pointer;
+    transition: border-color 160ms ease, transform 160ms ease;
+}
+.anomaly-chart-card:hover {
+    border-color: rgba(57, 208, 200, 0.35);
+    transform: translateY(-2px);
+}
+.anomaly-card-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.5rem;
+}
+.anomaly-card-title { margin: 0; font-size: 1.1rem; color: var(--text); }
+.anomaly-card-plain { margin: 0.15rem 0 0; font-size: 0.84rem; color: var(--muted); }
+.anomaly-card-status { text-align: right; flex-shrink: 0; }
+.anomaly-card-value {
+    display: block;
+    font-family: var(--font-display);
+    font-size: 1.55rem;
+    font-weight: 700;
+    color: var(--text);
+    line-height: 1.1;
+}
+.anomaly-status-pill {
+    display: inline-block;
+    margin-top: 0.3rem;
+    padding: 0.15rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.74rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+}
+.anomaly-status-pill.is-healthy  { background: rgba(98, 211, 158, 0.18); color: #8ff0c0; }
+.anomaly-status-pill.is-warning  { background: rgba(240, 166, 75, 0.20); color: #ffc98a; }
+.anomaly-status-pill.is-critical { background: rgba(242, 84, 91, 0.22); color: #ff9ba0; }
+.anomaly-status-pill.is-idle     { background: rgba(148, 163, 184, 0.16); color: var(--muted); }
+.anomaly-plot { width: 100%; min-height: 220px; margin-top: 0.3rem; }
+.anomaly-card-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 0.6rem;
+    font-size: 0.8rem;
+    color: var(--muted);
+}
+.anomaly-card-expand { color: var(--accent-cool); font-weight: 600; }
+
+/* grouped issue list */
+.anomaly-groups-note { margin: 0 0 0.6rem; font-size: 0.82rem; color: var(--muted); }
+.anomaly-groups-list { display: flex; flex-direction: column; gap: 0.2rem; }
+.anomaly-group-row {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    padding: 0.6rem 0.4rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.anomaly-group-row:last-child { border-bottom: none; }
+.anomaly-group-body { flex: 1; min-width: 0; }
+.anomaly-group-headline {
+    margin: 0;
+    font-size: 0.92rem;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.anomaly-group-meta { margin: 0.1rem 0 0; font-size: 0.78rem; color: var(--muted); }
+.anomaly-group-count {
+    flex-shrink: 0;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--text);
+}
+
+/* expand modal */
+body.anomaly-modal-open { overflow: hidden; }
+.anomaly-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 80;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+}
+.anomaly-modal[hidden] { display: none; }
+.anomaly-modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(4, 10, 14, 0.72);
+    backdrop-filter: blur(2px);
+}
+.anomaly-modal-card {
+    position: relative;
+    z-index: 1;
+    width: min(60rem, 100%);
+    max-height: 90vh;
+    overflow: auto;
+    padding: 1.4rem 1.5rem 1.5rem;
+    border-radius: 1.2rem;
+    background: var(--surface-strong);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: var(--shadow);
+}
+.anomaly-modal-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+.anomaly-modal-title { margin: 0; font-size: 1.3rem; color: var(--text); }
+.anomaly-modal-sub { margin: 0.2rem 0 0; font-size: 0.88rem; color: var(--muted); }
+.anomaly-modal-x {
+    flex-shrink: 0;
+    width: 2.2rem;
+    height: 2.2rem;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text);
+    font-size: 1.2rem;
+    line-height: 1;
+    cursor: pointer;
+}
+.anomaly-modal-x:hover { border-color: rgba(242, 84, 91, 0.5); }
+.anomaly-modal-hint {
+    margin: 0 0 0.6rem;
+    font-size: 0.82rem;
+    color: var(--muted);
+}
+.anomaly-modal-plot { width: 100%; min-height: 380px; }
+.anomaly-modal-plot .u-over { cursor: grab; }
+.anomaly-modal-detail {
+    margin-top: 1.1rem;
+    padding: 1rem 1.1rem;
+    border-radius: 0.9rem;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    min-height: 5rem;
+}
+.anomaly-detail-head { display: flex; align-items: center; gap: 0.6rem; }
+.anomaly-detail-cat {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+}
+.anomaly-detail-headline { margin: 0.5rem 0 0.8rem; font-size: 1rem; color: var(--text); line-height: 1.45; }
+.anomaly-detail-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: 0.7rem;
+    margin: 0;
+}
+.anomaly-detail-grid dt { font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.anomaly-detail-grid dd { margin: 0.15rem 0 0; font-size: 0.95rem; font-weight: 600; color: var(--text); }

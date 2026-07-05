@@ -60,6 +60,13 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _number(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _iso_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -348,6 +355,60 @@ def _overview_status_payload(network_state: dict[str, Any]) -> dict[str, Any]:
             "cellular_active": False,
         },
     }
+
+
+# Charts shown on the Monitor > Anomalies tab. `metric` matches the C++
+# metricName so stored series and anomaly overlays line up. `safe_limit` /
+# `crit_limit` are the warning + critical thresholds the engine uses today
+# (rules are hard-coded in gateway_core); they are display-only, used to draw
+# the coloured safe/warning/critical zones and the at-a-glance status.
+MONITOR_CHARTS = [
+    {"metric": "cpu.usage", "label": "CPU Usage", "unit": "%", "min": 0, "max": 100, "safe_limit": 85, "crit_limit": 95,
+     "plain": "How hard the processor is working."},
+    {"metric": "cpu.temp", "label": "CPU Temperature", "unit": "°C", "min": 0, "max": 100, "safe_limit": 75, "crit_limit": 85,
+     "plain": "How hot the processor is running."},
+    {"metric": "memory.ram_used_pct", "label": "Memory Usage", "unit": "%", "min": 0, "max": 100, "safe_limit": 80, "crit_limit": 90,
+     "plain": "How much working memory is in use."},
+    {"metric": "storage.disk_used_pct", "label": "System Storage", "unit": "%", "min": 0, "max": 100, "safe_limit": 80, "crit_limit": 90,
+     "plain": "How full the main system storage is."},
+    {"metric": "storage.emmc_used_pct", "label": "Disk (eMMC) Usage", "unit": "%", "min": 0, "max": 100, "safe_limit": 80, "crit_limit": 90,
+     "plain": "How full the device's flash storage is."},
+    {"metric": "cpu.load_1m", "label": "System Load", "unit": "", "min": 0, "max": 2, "safe_limit": 0.9, "crit_limit": 1.5,
+     "plain": "Overall demand on the device right now."},
+]
+
+# Plain-English description of what the anomaly engine does, for the Overview
+# page. Deliberately avoids jargon (no "z-score", "delta", etc.).
+ANOMALY_ENGINE_CHECKS = [
+    {"title": "Crosses a safe limit", "detail": "A value goes past a level you consider healthy, such as a temperature getting too high."},
+    {"title": "Spikes suddenly", "detail": "A value jumps sharply in a moment instead of changing gradually."},
+    {"title": "Climbs too fast", "detail": "A value keeps rising quickly, hinting at a leak or runaway trend."},
+    {"title": "Behaves unusually", "detail": "A value drifts away from its own normal pattern."},
+    {"title": "Goes quiet", "detail": "A signal stops reporting, so we flag the blind spot."},
+    {"title": "Looks invalid", "detail": "A reading is impossible or out of range, pointing to a faulty source."},
+]
+
+# Plain-language summary of the rules currently active on the device. Rules are
+# hard-coded in gateway_core today; a future release lets users define their own
+# per metric / per sensor. Display-only.
+ANOMALY_RULES = [
+    {"label": "CPU Usage", "watches": "How hard the processor is working",
+     "rule": "Flagged when usage stays above 85% (warning) or 95% (critical). Sudden spikes and unusual behaviour are flagged too."},
+    {"label": "CPU Temperature", "watches": "How hot the processor is running",
+     "rule": "Flagged above 75 °C (warning) or 85 °C (critical). Sudden jumps and fast-rising temperature are flagged too."},
+    {"label": "Memory Usage", "watches": "How much working memory is in use",
+     "rule": "Flagged above 80% (warning) or 90% (critical). Sudden jumps and a steady climb (possible leak) are flagged too."},
+    {"label": "System Storage", "watches": "How full the main storage is",
+     "rule": "Flagged above 80% (warning) or 90% (critical). Storage that fills up quickly is flagged too."},
+    {"label": "Disk (eMMC) Usage", "watches": "How full the device's flash storage is",
+     "rule": "Flagged above 80% (warning) or 90% (critical). Fast-filling storage is flagged too."},
+    {"label": "System Load", "watches": "Overall demand on the device",
+     "rule": "Flagged when demand stays above 0.9 (warning) or 1.5 (critical) per processor core, or looks unusual."},
+]
+
+
+def _monitor_chart_catalog() -> list[dict[str, Any]]:
+    return [dict(chart) for chart in MONITOR_CHARTS]
 
 
 def _system_metrics(core_ipc: Any | None = None) -> dict[str, Any]:
@@ -1304,6 +1365,94 @@ async def get_system_metrics_history(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     return JSONResponse(_system_metric_history(getattr(request.app.state, "core_ipc", None)))
+
+
+@router.get("/api/monitor/anomaly-config")
+async def get_monitor_anomaly_config(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    core_ipc = getattr(request.app.state, "core_ipc", None)
+    window_ms = 24 * 3600 * 1000
+    counts = {"Info": 0, "Warning": 0, "Critical": 0, "total": 0}
+    if core_ipc is not None:
+        try:
+            counts = core_ipc.storage.anomaly_counts(_now_ms() - window_ms)
+        except Exception as exc:  # storage optional; never fail the page
+            LOGGER.warning("anomaly_counts_failed error=%s", exc)
+    return JSONResponse({
+        "ok": True,
+        "charts": _monitor_chart_catalog(),
+        "checks": ANOMALY_ENGINE_CHECKS,
+        "rules": ANOMALY_RULES,
+        "counts_24h": counts,
+    })
+
+
+@router.get("/api/monitor/timeseries")
+async def get_monitor_timeseries(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    metric = request.query_params.get("metric") or ""
+    valid_metrics = {chart["metric"] for chart in MONITOR_CHARTS}
+    if metric not in valid_metrics:
+        return JSONResponse({"ok": False, "message": "Unknown metric."}, status_code=status.HTTP_400_BAD_REQUEST)
+
+    now = _now_ms()
+    default_span = 3600 * 1000  # last hour
+    from_ms = int(_number(request.query_params.get("from"), now - default_span))
+    to_ms = int(_number(request.query_params.get("to"), now))
+    if to_ms <= from_ms:
+        from_ms, to_ms = now - default_span, now
+
+    core_ipc = getattr(request.app.state, "core_ipc", None)
+    if core_ipc is None:
+        return JSONResponse({"ok": True, "metric": metric, "points": [], "anomalies": [], "tier": "fine"})
+    try:
+        series = core_ipc.storage.timeseries(metric, from_ms, to_ms)
+    except Exception as exc:
+        LOGGER.warning("timeseries_failed metric=%s error=%s", metric, exc)
+        return JSONResponse({"ok": True, "metric": metric, "points": [], "anomalies": [], "tier": "fine"})
+    series["ok"] = True
+    series["from"] = from_ms
+    series["to"] = to_ms
+    return JSONResponse(series)
+
+
+@router.get("/api/monitor/anomalies/recent")
+async def get_monitor_recent_anomalies(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    now = _now_ms()
+    since_ms = int(_number(request.query_params.get("since"), now - 24 * 3600 * 1000))
+    limit = min(500, max(1, int(_number(request.query_params.get("limit"), 200))))
+    core_ipc = getattr(request.app.state, "core_ipc", None)
+    if core_ipc is None:
+        return JSONResponse({"ok": True, "events": [], "counts": {"Info": 0, "Warning": 0, "Critical": 0, "total": 0}})
+    try:
+        events = core_ipc.storage.recent_anomalies(since_ms, limit)
+        counts = core_ipc.storage.anomaly_counts(since_ms)
+    except Exception as exc:
+        LOGGER.warning("recent_anomalies_failed error=%s", exc)
+        return JSONResponse({"ok": True, "events": [], "counts": {"Info": 0, "Warning": 0, "Critical": 0, "total": 0}})
+    return JSONResponse({"ok": True, "events": events, "counts": counts})
+
+
+@router.get("/api/monitor/anomalies/grouped")
+async def get_monitor_grouped_anomalies(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    now = _now_ms()
+    since_ms = int(_number(request.query_params.get("since"), now - 24 * 3600 * 1000))
+    core_ipc = getattr(request.app.state, "core_ipc", None)
+    if core_ipc is None:
+        return JSONResponse({"ok": True, "groups": [], "counts": {"Info": 0, "Warning": 0, "Critical": 0, "total": 0}})
+    try:
+        groups = core_ipc.storage.grouped_anomalies(since_ms)
+        counts = core_ipc.storage.anomaly_counts(since_ms)
+    except Exception as exc:
+        LOGGER.warning("grouped_anomalies_failed error=%s", exc)
+        return JSONResponse({"ok": True, "groups": [], "counts": {"Info": 0, "Warning": 0, "Critical": 0, "total": 0}})
+    return JSONResponse({"ok": True, "groups": groups, "counts": counts})
 
 
 @router.get("/api/interfaces/rs232/config")

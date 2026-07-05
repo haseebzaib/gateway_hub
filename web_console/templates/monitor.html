@@ -3,8 +3,24 @@
 {% block page_eyebrow %}System Health{% endblock %}
 {% block page_title %}Monitor{% endblock %}
 
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', path='css/uPlot.min.css') }}">
+<script src="{{ url_for('static', path='js/uPlot.min.js') }}" defer></script>
+{% endblock %}
+
 {% block console_content %}
 <section class="monitor-shell" data-monitor-shell>
+    <div class="monitor-tabs" role="tablist" aria-label="Monitor sections">
+        <button type="button" class="monitor-tab is-current" data-monitor-tab="live" role="tab" aria-selected="true">
+            Live Metrics
+        </button>
+        <button type="button" class="monitor-tab" data-monitor-tab="anomaly" role="tab" aria-selected="false">
+            Anomaly Detection
+        </button>
+    </div>
+
+    <!-- ───────────────────────── LIVE METRICS ───────────────────────── -->
+    <div class="monitor-panel" data-monitor-panel="live">
     <div class="insights-kpi-strip">
         <article class="insights-kpi-card">
             <p class="kpi-label">CPU Usage</p>
@@ -122,7 +138,71 @@
             </div>
         </article>
     </div>
+    </div>
 
+    <!-- ─────────────────────── ANOMALY DETECTION ─────────────────────── -->
+    <div class="monitor-panel is-hidden" data-monitor-panel="anomaly" data-monitor-anomaly hidden>
+        <div class="anomaly-toolbar">
+            <p class="anomaly-hint">Green is healthy, amber is a warning, red is critical. Click a chart to open it full size, then click any marked point to see what happened.</p>
+            <div class="anomaly-range" role="group" aria-label="Time range">
+                <button type="button" class="anomaly-range-btn is-current" data-anomaly-range="1h">1h</button>
+                <button type="button" class="anomaly-range-btn" data-anomaly-range="6h">6h</button>
+                <button type="button" class="anomaly-range-btn" data-anomaly-range="24h">24h</button>
+                <button type="button" class="anomaly-range-btn" data-anomaly-range="7d">7d</button>
+                <button type="button" class="anomaly-range-btn" data-anomaly-range="30d">30d</button>
+            </div>
+        </div>
 
+        <div class="anomaly-summary" data-anomaly-summary>
+            <article class="anomaly-stat is-critical">
+                <p class="anomaly-stat-value" data-anomaly-count="Critical">0</p>
+                <p class="anomaly-stat-label">Critical</p>
+            </article>
+            <article class="anomaly-stat is-warning">
+                <p class="anomaly-stat-value" data-anomaly-count="Warning">0</p>
+                <p class="anomaly-stat-label">Warning</p>
+            </article>
+            <article class="anomaly-stat is-info">
+                <p class="anomaly-stat-value" data-anomaly-count="Info">0</p>
+                <p class="anomaly-stat-label">Notices</p>
+            </article>
+            <article class="anomaly-stat is-total">
+                <p class="anomaly-stat-value" data-anomaly-count="total">0</p>
+                <p class="anomaly-stat-label">Flagged in last 24h</p>
+            </article>
+        </div>
+
+        <div class="anomaly-chart-grid" data-anomaly-chart-grid>
+            <p class="insights-empty-note">Preparing charts&hellip;</p>
+        </div>
+
+        <article class="insight-detail-card anomaly-groups-card">
+            <h3 class="detail-card-title">Flagged issues</h3>
+            <p class="anomaly-groups-note">Repeated flags of the same kind are grouped together with a count.</p>
+            <div class="anomaly-groups-list" data-anomaly-groups>
+                <p class="insights-empty-note">No anomalies recorded yet. That is a good sign.</p>
+            </div>
+        </article>
+
+        <div class="anomaly-tooltip" data-anomaly-tooltip hidden></div>
+
+        <div class="anomaly-modal" data-anomaly-modal hidden>
+            <div class="anomaly-modal-backdrop" data-anomaly-modal-close></div>
+            <div class="anomaly-modal-card" role="dialog" aria-modal="true">
+                <div class="anomaly-modal-head">
+                    <div>
+                        <h3 class="anomaly-modal-title" data-anomaly-modal-title>Metric</h3>
+                        <p class="anomaly-modal-sub" data-anomaly-modal-sub></p>
+                    </div>
+                    <button type="button" class="anomaly-modal-x" data-anomaly-modal-close aria-label="Close">&times;</button>
+                </div>
+                <p class="anomaly-modal-hint">Scroll to zoom &middot; drag to pan &middot; double-click to reset &middot; click a coloured point for details</p>
+                <div class="anomaly-modal-plot" data-anomaly-modal-plot></div>
+                <div class="anomaly-modal-detail" data-anomaly-modal-detail>
+                    <p class="insights-empty-note">Click a marked point on the chart to see what happened.</p>
+                </div>
+            </div>
+        </div>
+    </div>
 </section>
 {% endblock %}

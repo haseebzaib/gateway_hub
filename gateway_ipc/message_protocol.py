@@ -143,6 +143,165 @@ def normalize_device_data_message(message: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ── anomaly translation: raw engine output -> plain client language ──────────
+#
+# The C++ engine speaks in metric IDs (cpu.temp) and detector class names
+# (ZScoreDetector). A non-technical operator should never see either. These
+# tables turn every event into a friendly label + a plain-English category +
+# a one-line headline they can read at a glance.
+
+# metricName -> (friendly label, unit suffix)
+_METRIC_LABELS: dict[str, tuple[str, str]] = {
+    "cpu.usage": ("CPU Usage", "%"),
+    "cpu.temp": ("CPU Temperature", " °C"),
+    "cpu.core_count": ("CPU Core Count", ""),
+    "cpu.load_1m": ("System Load (1 min)", ""),
+    "cpu.load_5m": ("System Load (5 min)", ""),
+    "cpu.load_15m": ("System Load (15 min)", ""),
+    "cpu.throttle_flags": ("CPU Throttling", ""),
+    "memory.ram_used_pct": ("Memory Usage", "%"),
+    "memory.ram_used_mb": ("Memory Used", " MB"),
+    "memory.ram_total_mb": ("Memory Total", " MB"),
+    "memory.swap_used_mb": ("Swap Usage", " MB"),
+    "storage.disk_used_pct": ("System Storage", "%"),
+    "storage.emmc_used_pct": ("Disk (eMMC) Usage", "%"),
+    "storage.emmc_used_mb": ("Disk Used", " MB"),
+    "storage.emmc_total_mb": ("Disk Total", " MB"),
+    "storage.emmc_life_used_pct": ("Storage Wear", "%"),
+    "system.uptime_sec": ("Uptime", " s"),
+}
+
+# detectorName (lower-cased) -> plain-English "what kind of problem" category
+_DETECTOR_CATEGORY: dict[str, str] = {
+    "thresholddetector": "Crossed a safe limit",
+    "rangecheckdetector": "Reading looks invalid",
+    "deltadetector": "Sudden spike",
+    "slopedetector": "Rising quickly",
+    "zscoredetector": "Behaving unusually vs normal",
+    "timeoutdetector": "Sensor stopped reporting",
+    "multiconditiondetector": "Combined warning",
+}
+
+
+def _metric_label(metric_name: str) -> str:
+    if metric_name in _METRIC_LABELS:
+        return _METRIC_LABELS[metric_name][0]
+    # per-core metrics: cpu.core0.usage / cpu.core0.freq_mhz
+    if metric_name.startswith("cpu.core"):
+        try:
+            core = metric_name.split(".")[1].replace("core", "")
+            kind = "Frequency" if metric_name.endswith("freq_mhz") else "Usage"
+            return f"CPU Core {core} {kind}"
+        except (IndexError, ValueError):
+            pass
+    return metric_name or "Device"
+
+
+def _metric_unit(metric_name: str) -> str:
+    return _METRIC_LABELS.get(metric_name, ("", ""))[1]
+
+
+def _format_value(value: Any, unit: str) -> str:
+    number = _number(value, 0.0)
+    text = f"{number:.0f}" if float(number).is_integer() else f"{number:.1f}"
+    return f"{text}{unit}"
+
+
+def normalize_anomaly_message(message: dict[str, Any]) -> list[dict[str, Any]]:
+    """Turn a raw deviceAnamoly IPC message into client-friendly event rows.
+
+    Returns a list ready to hand to MonitorStorage.add_anomaly_events(). Each
+    row carries the raw fields the UI may want plus precomputed plain-English
+    `category`, `metric_label`, and `headline` fields.
+    """
+    data = message.get("data") if isinstance(message.get("data"), dict) else {}
+    raw_events = data.get("events") if isinstance(data.get("events"), list) else []
+    fallback_ts = int(_number(data.get("timestamp_ms"), time.time() * 1000))
+
+    rows: list[dict[str, Any]] = []
+    for event in raw_events:
+        if not isinstance(event, dict):
+            continue
+        metric_name = str(event.get("metricName") or "")
+        detector = str(event.get("detectorName") or "")
+        alarm_name = str(event.get("alarmName") or "")
+        severity = str(event.get("severity") or "Info")
+        category = _DETECTOR_CATEGORY.get(detector.lower(), "Anomaly detected")
+        unit = _metric_unit(metric_name)
+        label = alarm_name.replace("_", " ").title() if alarm_name else _metric_label(metric_name)
+        headline = _anomaly_headline(event, label, category, unit)
+
+        rows.append(
+            {
+                "timestamp_ms": int(_number(event.get("timestamp_ms"), fallback_ts)),
+                "metric": metric_name or None,
+                "detector": detector or None,
+                "severity": severity,
+                "value": event.get("value"),
+                "warning_limit": event.get("warningLimit"),
+                "critical_limit": event.get("criticalLimit"),
+                "min_value": event.get("minValue"),
+                "max_value": event.get("maxValue"),
+                "alarm_name": alarm_name or None,
+                "category": category,
+                "metric_label": label,
+                "headline": headline,
+                "message": str(event.get("message") or ""),
+            }
+        )
+    return rows
+
+
+def _anomaly_headline(event: dict[str, Any], label: str, category: str, unit: str) -> str:
+    """A single readable sentence, e.g. 'CPU Temperature reached 87 °C (safe limit 85 °C).'"""
+    detector = str(event.get("detectorName") or "").lower()
+    value_text = _format_value(event.get("value"), unit)
+
+    if detector == "thresholddetector":
+        limit = event.get("criticalLimit")
+        if not _number(limit, 0.0):
+            limit = event.get("warningLimit")
+        return f"{label} reached {value_text} (safe limit {_format_value(limit, unit)})."
+    if detector == "rangecheckdetector":
+        return (
+            f"{label} read {value_text}, outside the expected "
+            f"{_format_value(event.get('minValue'), unit)}–{_format_value(event.get('maxValue'), unit)} range."
+        )
+    if detector == "deltadetector":
+        return f"{label} jumped suddenly to {value_text}."
+    if detector == "slopedetector":
+        return f"{label} is climbing quickly (now {value_text})."
+    if detector == "zscoredetector":
+        return f"{label} is behaving unusually for this device (now {value_text})."
+    if detector == "timeoutdetector":
+        return f"{label} stopped reporting."
+    if detector == "multiconditiondetector":
+        return f"{label}: {event.get('message') or category}."
+    return f"{label}: {value_text}."
+
+
+def chart_metric_values(metrics: dict[str, Any]) -> dict[str, float]:
+    """Pull the charted metrics out of normalized device data, keyed by the
+    C++ metricName strings so stored series line up with anomaly overlays."""
+    cpu = metrics.get("cpu", {}) if isinstance(metrics.get("cpu"), dict) else {}
+    memory = metrics.get("memory", {}) if isinstance(metrics.get("memory"), dict) else {}
+    filesystem = metrics.get("filesystem", {}) if isinstance(metrics.get("filesystem"), dict) else {}
+    emmc = metrics.get("emmc", {}) if isinstance(metrics.get("emmc"), dict) else {}
+
+    values: dict[str, float] = {
+        "cpu.usage": _number(cpu.get("total_percent"), 0.0),
+        "memory.ram_used_pct": _number(memory.get("memory_bytes", {}).get("used_percent"), 0.0),
+        "storage.disk_used_pct": _number(filesystem.get("used_percent"), 0.0),
+        "storage.emmc_used_pct": _number(emmc.get("used_percent"), 0.0),
+        "cpu.load_1m": _number(cpu.get("load_average", {}).get("1m"), 0.0),
+    }
+    # temperature is None when the sensor is unreadable; skip rather than store 0.
+    temperature = metrics.get("temperature_c")
+    if temperature is not None:
+        values["cpu.temp"] = _number(temperature, 0.0)
+    return values
+
+
 def device_metric_history_sample(metrics: dict[str, Any]) -> dict[str, Any]:
     return {
         "timestamp_ms": metrics.get("timestamp_ms"),

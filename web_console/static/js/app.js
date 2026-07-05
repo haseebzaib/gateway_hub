@@ -2421,6 +2421,526 @@ document.addEventListener("DOMContentLoaded", () => {
             window.setInterval(refreshUplinkStats, 10000);
         }
         } // end if(false)
+
+        // ── Anomaly Detection tab: interactive uPlot charts ─────────────
+        const anomalyController = (() => {
+            const root = monitorShell.querySelector("[data-monitor-anomaly]");
+            if (!root) return { activate() {}, resizeAll() {} };
+
+            const grid = root.querySelector("[data-anomaly-chart-grid]");
+            const tooltip = root.querySelector("[data-anomaly-tooltip]");
+            const groupsList = root.querySelector("[data-anomaly-groups]");
+            const rangeButtons = Array.from(root.querySelectorAll("[data-anomaly-range]"));
+            const modal = root.querySelector("[data-anomaly-modal]");
+            const modalPlot = modal.querySelector("[data-anomaly-modal-plot]");
+            const modalDetail = modal.querySelector("[data-anomaly-modal-detail]");
+            const modalTitle = modal.querySelector("[data-anomaly-modal-title]");
+            const modalSub = modal.querySelector("[data-anomaly-modal-sub]");
+
+            const RANGES = { "1h": 3600e3, "6h": 6 * 3600e3, "24h": 24 * 3600e3, "7d": 7 * 86400e3, "30d": 30 * 86400e3 };
+            const RANGE_LABELS = { "1h": "hour", "6h": "6 hours", "24h": "24 hours", "7d": "7 days", "30d": "30 days" };
+            const SEV_COLOR = { Critical: "#f2545b", Warning: "#f0a64b", Info: "#60a5fa" };
+            const STROKES = ["#39d0c8", "#62d39e", "#f0a64b", "#60a5fa", "#c084fc", "#f472b6"];
+
+            let currentRange = "1h";
+            let catalog = [];
+            const units = {};                    // metric -> unit string
+            const charts = {};                   // metric -> { cfg, plotEl, liveEl, statusEl, footEl, u, anomalies, markers, xs, ys }
+            const modalState = { metric: null, cfg: null, u: null, anomalies: [], markers: [] };
+            let started = false;
+            let refreshTimer = null;
+
+            const dpr = () => window.devicePixelRatio || 1;
+
+            const fmtVal = (v, unit) => {
+                if (v == null || Number.isNaN(v)) return "--";
+                const txt = Number.isInteger(v) ? String(v) : Number(v).toFixed(1);
+                return `${txt}${unit || ""}`;
+            };
+            const fmtAgo = (ms) => {
+                const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+                if (s < 60) return `${s}s ago`;
+                if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+                if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+                return `${Math.floor(s / 86400)}d ago`;
+            };
+            const hexToRgba = (hex, a) => {
+                const h = hex.replace("#", "");
+                const n = parseInt(h, 16);
+                return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+            };
+            const statusFor = (cfg, v) => {
+                if (v == null) return { label: "No data", cls: "is-idle" };
+                if (cfg.crit_limit != null && v >= cfg.crit_limit) return { label: "Critical", cls: "is-critical" };
+                if (cfg.safe_limit != null && v >= cfg.safe_limit) return { label: "Warning", cls: "is-warning" };
+                return { label: "Healthy", cls: "is-healthy" };
+            };
+
+            const drawDiamond = (ctx, x, y, r, color) => {
+                ctx.beginPath();
+                ctx.moveTo(x, y - r); ctx.lineTo(x + r, y);
+                ctx.lineTo(x, y + r); ctx.lineTo(x - r, y);
+                ctx.closePath();
+                ctx.fillStyle = color;
+                ctx.fill();
+                ctx.lineWidth = 1.5;
+                ctx.strokeStyle = "rgba(15,23,42,0.85)";
+                ctx.stroke();
+            };
+
+            // Shared plugin: coloured safe/warning/critical zones (behind the line)
+            // + clickable anomaly markers (on top). `ref` supplies live anomalies
+            // and receives computed marker pixel positions. Higher value = worse
+            // for every charted metric, so green sits low and red sits high.
+            const zonesMarkersPlugin = (cfg, ref, big) => ({
+                hooks: {
+                    drawClear: (u) => {
+                        const ctx = u.ctx;
+                        const { left, top, width, height } = u.bbox;
+                        const bottom = top + height;
+                        const clamp = (v) => Math.max(top, Math.min(bottom, u.valToPos(v, "y", true)));
+                        ctx.save();
+                        if (cfg.safe_limit != null) {
+                            const ySafe = clamp(cfg.safe_limit);
+                            const yCrit = cfg.crit_limit != null ? clamp(cfg.crit_limit) : top;
+                            ctx.fillStyle = "rgba(98,211,158,0.08)";   // healthy
+                            ctx.fillRect(left, ySafe, width, bottom - ySafe);
+                            ctx.fillStyle = "rgba(240,166,75,0.10)";   // warning
+                            ctx.fillRect(left, yCrit, width, ySafe - yCrit);
+                            ctx.fillStyle = "rgba(242,84,91,0.11)";    // critical
+                            ctx.fillRect(left, top, width, yCrit - top);
+                        }
+                        ctx.restore();
+                    },
+                    draw: (u) => {
+                        const ctx = u.ctx;
+                        const { left, top, width } = u.bbox;
+                        ref.markers = [];
+                        ctx.save();
+                        for (const a of ref.anomalies) {
+                            const xp = u.valToPos(a.ts_ms / 1000, "x", true);
+                            if (xp < left || xp > left + width) continue;
+                            const yp = (typeof a.value === "number" && a.value >= cfg.min && a.value <= cfg.max)
+                                ? u.valToPos(a.value, "y", true) : top + 12;
+                            drawDiamond(ctx, xp, yp, big ? 6 : 5, SEV_COLOR[a.severity] || SEV_COLOR.Info);
+                            ref.markers.push({ x: xp, y: yp, a });
+                        }
+                        ctx.restore();
+                    },
+                },
+            });
+
+            const makeChartOpts = (cfg, ref, height, big) => ({
+                width: 320,
+                height,
+                legend: { show: false },
+                cursor: { drag: { x: false, y: false }, y: false },
+                scales: { x: { time: true }, y: { range: [cfg.min, cfg.max] } },
+                axes: [
+                    { stroke: "rgba(148,163,184,0.9)", grid: { stroke: "rgba(148,163,184,0.10)" }, ticks: { stroke: "rgba(148,163,184,0.2)" } },
+                    { stroke: "rgba(148,163,184,0.9)", grid: { stroke: "rgba(148,163,184,0.10)" }, size: 48 },
+                ],
+                series: [{}, { stroke: cfg.stroke, width: 2, fill: hexToRgba(cfg.stroke, 0.10), points: { show: false } }],
+                plugins: [zonesMarkersPlugin(cfg, ref, big)],
+            });
+
+            // Real timeline interaction for the expanded chart: scroll to zoom
+            // (centred on the cursor), drag to pan, double-click to reset. All
+            // clamped to the loaded data window.
+            const wheelPanZoom = (getFull) => ({
+                hooks: {
+                    ready: (u) => {
+                        const over = u.over;
+                        over.style.cursor = "grab";
+                        const clampToFull = (nMin, nMax) => {
+                            const full = getFull();
+                            if (!full) return [nMin, nMax];
+                            const range = nMax - nMin;
+                            if (range >= full[1] - full[0]) return [full[0], full[1]];
+                            if (nMin < full[0]) { nMin = full[0]; nMax = nMin + range; }
+                            if (nMax > full[1]) { nMax = full[1]; nMin = nMax - range; }
+                            return [nMin, nMax];
+                        };
+                        over.addEventListener("wheel", (e) => {
+                            e.preventDefault();
+                            const rect = over.getBoundingClientRect();
+                            const curMin = u.scales.x.min, curMax = u.scales.x.max;
+                            const range = curMax - curMin;
+                            const cursorVal = u.posToVal(e.clientX - rect.left, "x");
+                            const leftPct = (cursorVal - curMin) / range;
+                            const factor = e.deltaY < 0 ? 0.8 : 1.25;
+                            const newRange = range * factor;
+                            const [nMin, nMax] = clampToFull(cursorVal - leftPct * newRange, cursorVal - leftPct * newRange + newRange);
+                            u.setScale("x", { min: nMin, max: nMax });
+                        }, { passive: false });
+                        over.addEventListener("mousedown", (e) => {
+                            if (e.button !== 0) return;
+                            const rect = over.getBoundingClientRect();
+                            const startX = e.clientX;
+                            const min0 = u.scales.x.min, max0 = u.scales.x.max;
+                            const perPx = (max0 - min0) / rect.width;
+                            over.__dragged = false;
+                            over.style.cursor = "grabbing";
+                            const move = (e2) => {
+                                const dx = e2.clientX - startX;
+                                if (Math.abs(dx) > 3) over.__dragged = true;
+                                const d = dx * perPx;
+                                const [nMin, nMax] = clampToFull(min0 - d, max0 - d);
+                                u.setScale("x", { min: nMin, max: nMax });
+                            };
+                            const up = () => {
+                                over.style.cursor = "grab";
+                                document.removeEventListener("mousemove", move);
+                                document.removeEventListener("mouseup", up);
+                            };
+                            document.addEventListener("mousemove", move);
+                            document.addEventListener("mouseup", up);
+                        });
+                        over.addEventListener("dblclick", () => {
+                            const full = getFull();
+                            if (full) u.setScale("x", { min: full[0], max: full[1] });
+                        });
+                    },
+                },
+            });
+
+            // ── tooltip (hover) ──────────────────────────────────────────
+            const positionTooltip = (ev) => {
+                const pad = 14;
+                let x = ev.clientX + pad, y = ev.clientY + pad;
+                const rect = tooltip.getBoundingClientRect();
+                if (x + rect.width > window.innerWidth) x = ev.clientX - rect.width - pad;
+                if (y + rect.height > window.innerHeight) y = ev.clientY - rect.height - pad;
+                tooltip.style.left = `${x}px`;
+                tooltip.style.top = `${y}px`;
+            };
+            const showAnomalyTooltip = (ev, a) => {
+                const badge = `<span class="anomaly-tip-badge is-${(a.severity || "Info").toLowerCase()}">${a.severity || "Info"}</span>`;
+                tooltip.classList.remove("is-value");
+                tooltip.innerHTML =
+                    `<div class="anomaly-tip-head">${badge}<span>${a.category || "Anomaly"}</span></div>` +
+                    `<p class="anomaly-tip-headline">${a.headline || a.message || ""}</p>` +
+                    `<p class="anomaly-tip-time">${new Date(a.ts_ms).toLocaleString()}</p>`;
+                tooltip.hidden = false;
+                positionTooltip(ev);
+            };
+            const showValueTooltip = (ev, u, cfg) => {
+                const xs = u.data && u.data[0], ys = u.data && u.data[1];
+                if (!xs || !xs.length) { hideTooltip(); return; }
+                const rect = u.over.getBoundingClientRect();
+                const t = u.posToVal(ev.clientX - rect.left, "x");
+                let idx = 0, bestD = Infinity;
+                for (let i = 0; i < xs.length; i++) {
+                    const d = Math.abs(xs[i] - t);
+                    if (d < bestD) { bestD = d; idx = i; }
+                }
+                if (ys[idx] == null) { hideTooltip(); return; }
+                tooltip.classList.add("is-value");
+                tooltip.innerHTML =
+                    `<p class="anomaly-tip-metric">${cfg.label}</p>` +
+                    `<p class="anomaly-tip-value">${fmtVal(ys[idx], cfg.unit)}</p>` +
+                    `<p class="anomaly-tip-time">${new Date(xs[idx] * 1000).toLocaleTimeString()}</p>`;
+                tooltip.hidden = false;
+                positionTooltip(ev);
+            };
+            const hideTooltip = () => { tooltip.hidden = true; };
+
+            const nearestMarker = (ref, u, ev) => {
+                const rect = u.over.getBoundingClientRect();
+                const canvasX = (ev.clientX - rect.left) * dpr();
+                let nearest = null, best = 12 * dpr();
+                for (const m of ref.markers) {
+                    const d = Math.abs(m.x - canvasX);
+                    if (d <= best) { best = d; nearest = m.a; }
+                }
+                return nearest;
+            };
+            const attachHover = (ref, cfg) => {
+                const over = ref.u.over;
+                over.addEventListener("mousemove", (ev) => {
+                    const near = nearestMarker(ref, ref.u, ev);
+                    if (near) { over.style.cursor = "pointer"; showAnomalyTooltip(ev, near); }
+                    else { over.style.cursor = ref === modalState ? "crosshair" : "pointer"; showValueTooltip(ev, ref.u, cfg); }
+                });
+                over.addEventListener("mouseleave", hideTooltip);
+            };
+
+            // ── cards ────────────────────────────────────────────────────
+            const buildCards = () => {
+                grid.innerHTML = "";
+                catalog.forEach((cfg, idx) => {
+                    cfg.stroke = STROKES[idx % STROKES.length];
+                    units[cfg.metric] = cfg.unit || "";
+                    const card = document.createElement("article");
+                    card.className = "insight-chart-card anomaly-chart-card";
+                    card.innerHTML =
+                        `<div class="anomaly-card-head"><div>` +
+                        `<h3 class="anomaly-card-title">${cfg.label}</h3>` +
+                        `<p class="anomaly-card-plain">${cfg.plain || ""}</p></div>` +
+                        `<div class="anomaly-card-status">` +
+                        `<span class="anomaly-card-value" data-live>--</span>` +
+                        `<span class="anomaly-status-pill is-idle" data-status>--</span></div></div>` +
+                        `<div class="anomaly-plot" data-plot></div>` +
+                        `<div class="anomaly-card-foot"><span data-flags>No flags in this window</span>` +
+                        `<span class="anomaly-card-expand">Click to expand &#8599;</span></div>`;
+                    grid.appendChild(card);
+                    const entry = charts[cfg.metric] = {
+                        cfg,
+                        plotEl: card.querySelector("[data-plot]"),
+                        liveEl: card.querySelector("[data-live]"),
+                        statusEl: card.querySelector("[data-status]"),
+                        footEl: card.querySelector("[data-flags]"),
+                        u: null, anomalies: [], markers: [], xs: [], ys: [],
+                    };
+                    card.addEventListener("click", () => openModal(cfg.metric));
+                });
+            };
+
+            const makeCardChart = (entry) => {
+                const opts = makeChartOpts(entry.cfg, entry, 220, false);
+                opts.width = entry.plotEl.clientWidth || 320;
+                entry.u = new uPlot(opts, [[], []], entry.plotEl);
+                attachHover(entry, entry.cfg);
+            };
+
+            const applySeries = (entry, data) => {
+                const pts = data.points || [];
+                entry.xs = pts.map((p) => p.t / 1000);
+                entry.ys = pts.map((p) => p.avg);
+                entry.anomalies = data.anomalies || [];
+                if (!entry.u) makeCardChart(entry);
+                entry.u.setData([entry.xs, entry.ys]);
+                const last = entry.ys.length ? entry.ys[entry.ys.length - 1] : null;
+                entry.liveEl.textContent = last != null ? fmtVal(last, entry.cfg.unit) : "no data yet";
+                const st = statusFor(entry.cfg, last);
+                entry.statusEl.textContent = st.label;
+                entry.statusEl.className = `anomaly-status-pill ${st.cls}`;
+                const n = entry.anomalies.length;
+                entry.footEl.textContent = n ? `${n} flag${n === 1 ? "" : "s"} in this window` : "No flags in this window";
+            };
+
+            // ── expand modal ─────────────────────────────────────────────
+            const renderPointDetail = (a, cfg) => {
+                const unit = cfg.unit;
+                const rows = [];
+                rows.push(["When", new Date(a.ts_ms).toLocaleString()]);
+                if (a.value != null) rows.push(["Reading", fmtVal(a.value, unit)]);
+                if (a.warning_limit) rows.push(["Warning limit", fmtVal(a.warning_limit, unit)]);
+                if (a.critical_limit) rows.push(["Critical limit", fmtVal(a.critical_limit, unit)]);
+                const sev = (a.severity || "Info").toLowerCase();
+                modalDetail.innerHTML =
+                    `<div class="anomaly-detail-head">` +
+                    `<span class="anomaly-tip-badge is-${sev}">${a.severity || "Info"}</span>` +
+                    `<span class="anomaly-detail-cat">${a.category || "Anomaly"}</span></div>` +
+                    `<p class="anomaly-detail-headline">${a.headline || a.message || ""}</p>` +
+                    `<dl class="anomaly-detail-grid">` +
+                    rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("") +
+                    `</dl>`;
+            };
+
+            const modalFull = () => {
+                const xs = modalState.xs;
+                return (xs && xs.length) ? [xs[0], xs[xs.length - 1]] : null;
+            };
+
+            const makeModalChart = () => {
+                if (modalState.u) { modalState.u.destroy(); modalState.u = null; }
+                const opts = makeChartOpts(modalState.cfg, modalState, 380, true);
+                opts.width = modalPlot.clientWidth || 640;
+                opts.plugins.push(wheelPanZoom(modalFull));
+                modalState.u = new uPlot(opts, [[], []], modalPlot);
+                attachHover(modalState, modalState.cfg);
+                modalState.u.over.addEventListener("click", (ev) => {
+                    if (modalState.u.over.__dragged) { modalState.u.over.__dragged = false; return; }
+                    const near = nearestMarker(modalState, modalState.u, ev);
+                    if (near) renderPointDetail(near, modalState.cfg);
+                });
+            };
+
+            const syncModal = () => {
+                if (!modalState.metric) return;
+                const entry = charts[modalState.metric];
+                if (!entry) return;
+                modalState.anomalies = entry.anomalies;
+                modalState.xs = entry.xs;
+                modalState.ys = entry.ys;
+                // keep the user's current zoom/pan while live data streams in
+                if (modalState.u) modalState.u.setData([entry.xs, entry.ys], false);
+            };
+
+            const openModal = (metric) => {
+                const entry = charts[metric];
+                if (!entry) return;
+                hideTooltip();
+                modalState.metric = metric;
+                modalState.cfg = entry.cfg;
+                modalState.anomalies = entry.anomalies;
+                modalState.xs = entry.xs;
+                modalState.ys = entry.ys;
+                modalTitle.textContent = entry.cfg.label;
+                modalSub.textContent = entry.cfg.plain || "";
+                modalDetail.innerHTML = '<p class="insights-empty-note">Click a marked point on the chart to see what happened.</p>';
+                modal.hidden = false;
+                document.body.classList.add("anomaly-modal-open");
+                makeModalChart();
+                modalState.u.setData([entry.xs, entry.ys]);
+            };
+            const closeModal = () => {
+                modal.hidden = true;
+                document.body.classList.remove("anomaly-modal-open");
+                modalState.metric = null;
+                if (modalState.u) { modalState.u.destroy(); modalState.u = null; }
+            };
+            modal.querySelectorAll("[data-anomaly-modal-close]").forEach((el) => el.addEventListener("click", closeModal));
+            document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && !modal.hidden) closeModal(); });
+
+            // ── summary + grouped issues ─────────────────────────────────
+            const updateCounts = (counts) => {
+                counts = counts || {};
+                ["Critical", "Warning", "Info", "total"].forEach((k) => {
+                    const el = root.querySelector(`[data-anomaly-count="${k}"]`);
+                    if (el) el.textContent = counts[k] || 0;
+                });
+                const totalStat = root.querySelector('[data-anomaly-count="total"]');
+                const totalLabel = totalStat && totalStat.closest(".anomaly-stat") && totalStat.closest(".anomaly-stat").querySelector(".anomaly-stat-label");
+                if (totalLabel) totalLabel.textContent = `Flagged in last ${RANGE_LABELS[currentRange]}`;
+            };
+
+            const renderGroups = (groups) => {
+                if (!groups || !groups.length) {
+                    groupsList.innerHTML = '<p class="insights-empty-note">No anomalies in this window. That is a good sign.</p>';
+                    return;
+                }
+                groupsList.innerHTML = groups.map((g) => {
+                    const sev = (g.severity || "Info").toLowerCase();
+                    const unit = units[g.metric] || "";
+                    let valueText = "";
+                    if (g.latest_value != null) {
+                        valueText = (g.min_value != null && g.max_value != null && g.min_value !== g.max_value)
+                            ? `${fmtVal(g.min_value, unit)}–${fmtVal(g.max_value, unit)}`
+                            : fmtVal(g.latest_value, unit);
+                        valueText = ` &middot; ${valueText}`;
+                    }
+                    return `<div class="anomaly-group-row">` +
+                        `<span class="anomaly-dot is-${sev}"></span>` +
+                        `<div class="anomaly-group-body">` +
+                        `<p class="anomaly-group-headline">${g.metric_label || "Device"}: ${g.category || "Anomaly"}</p>` +
+                        `<p class="anomaly-group-meta">latest ${fmtAgo(g.latest_ts)}${valueText}</p></div>` +
+                        `<span class="anomaly-group-count">${g.count}&times;</span>` +
+                        `</div>`;
+                }).join("");
+            };
+
+            // ── refresh loop ─────────────────────────────────────────────
+            const refreshAll = async () => {
+                if (root.hidden) return;
+                const to = Date.now();
+                const from = to - RANGES[currentRange];
+                await Promise.all(catalog.map(async (cfg) => {
+                    const entry = charts[cfg.metric];
+                    if (!entry) return;
+                    try {
+                        const r = await fetch(`/api/monitor/timeseries?metric=${encodeURIComponent(cfg.metric)}&from=${from}&to=${to}`);
+                        if (!r.ok) return;
+                        applySeries(entry, await r.json());
+                    } catch (err) { /* ignore transient */ }
+                }));
+                syncModal();
+                try {
+                    const r = await fetch(`/api/monitor/anomalies/grouped?since=${from}`);
+                    if (r.ok) {
+                        const data = await r.json();
+                        updateCounts(data.counts);
+                        renderGroups(data.groups);
+                    }
+                } catch (err) { /* ignore */ }
+            };
+
+            const resizeAll = () => {
+                Object.values(charts).forEach((entry) => {
+                    if (entry.u) entry.u.setSize({ width: entry.plotEl.clientWidth || 320, height: 220 });
+                });
+                if (modalState.u && !modal.hidden) {
+                    modalState.u.setSize({ width: modalPlot.clientWidth || 640, height: 380 });
+                }
+            };
+
+            rangeButtons.forEach((btn) => btn.addEventListener("click", () => {
+                rangeButtons.forEach((b) => b.classList.toggle("is-current", b === btn));
+                currentRange = btn.getAttribute("data-anomaly-range");
+                refreshAll();
+            }));
+
+            const activate = async () => {
+                if (started) { resizeAll(); refreshAll(); return; }
+                started = true;
+                // The console content sits inside a backdrop-filtered ancestor,
+                // which would trap position:fixed. Move the overlay + tooltip to
+                // <body> so they anchor to the viewport instead.
+                document.body.appendChild(modal);
+                document.body.appendChild(tooltip);
+                if (typeof window.uPlot !== "function") {
+                    grid.innerHTML = '<p class="insights-empty-note">Charts unavailable (uPlot failed to load).</p>';
+                    return;
+                }
+                try {
+                    const cfg = await fetch("/api/monitor/anomaly-config").then((r) => r.json());
+                    catalog = cfg.charts || [];
+                } catch (err) {
+                    catalog = [];
+                }
+                if (!catalog.length) {
+                    grid.innerHTML = '<p class="insights-empty-note">No monitored metrics available.</p>';
+                    return;
+                }
+                buildCards();
+                await refreshAll();
+                if (!refreshTimer) refreshTimer = window.setInterval(refreshAll, 5000);
+                window.addEventListener("resize", resizeAll);
+            };
+
+            return { activate, resizeAll };
+        })();
+
+        // ── Live / Anomaly tab switching ────────────────────────────────
+        const monitorTabs = Array.from(monitorShell.querySelectorAll("[data-monitor-tab]"));
+        const monitorPanels = Array.from(monitorShell.querySelectorAll("[data-monitor-panel]"));
+        const showMonitorTab = (tabId) => {
+            monitorTabs.forEach((t) => {
+                const cur = t.getAttribute("data-monitor-tab") === tabId;
+                t.classList.toggle("is-current", cur);
+                t.setAttribute("aria-selected", cur ? "true" : "false");
+            });
+            monitorPanels.forEach((p) => {
+                const cur = p.getAttribute("data-monitor-panel") === tabId;
+                p.classList.toggle("is-hidden", !cur);
+                p.hidden = !cur;
+            });
+            if (tabId === "anomaly") anomalyController.activate();
+        };
+        monitorTabs.forEach((t) => t.addEventListener("click", () => showMonitorTab(t.getAttribute("data-monitor-tab"))));
+    }
+
+    // ── Overview: self-monitoring / anomaly explainer band ──────────────
+    const overviewAnomaly = document.querySelector("[data-overview-anomaly]");
+    if (overviewAnomaly) {
+        const checksEl = overviewAnomaly.querySelector("[data-overview-anomaly-checks]");
+        const load = async () => {
+            try {
+                const r = await fetch("/api/monitor/anomaly-config");
+                if (!r.ok) return;
+                const cfg = await r.json();
+                if (checksEl && Array.isArray(cfg.checks)) {
+                    checksEl.innerHTML = cfg.checks.map((c) =>
+                        `<div class="ov-anomaly-check">` +
+                        `<p class="ov-anomaly-check-title">${c.title}</p>` +
+                        `<p class="ov-anomaly-check-detail">${c.detail}</p>` +
+                        `</div>`
+                    ).join("");
+                }
+            } catch (err) { /* overview band is best-effort */ }
+        };
+        load();
     }
 
     const interfacesShell = document.querySelector("[data-interfaces-shell]");
