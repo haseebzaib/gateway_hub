@@ -2440,6 +2440,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const RANGES = { "1h": 3600e3, "6h": 6 * 3600e3, "24h": 24 * 3600e3, "7d": 7 * 86400e3, "30d": 30 * 86400e3 };
             const RANGE_LABELS = { "1h": "hour", "6h": "6 hours", "24h": "24 hours", "7d": "7 days", "30d": "30 days" };
             const SEV_COLOR = { Critical: "#f2545b", Warning: "#f0a64b", Info: "#60a5fa" };
+            const SEV_RANK = { Info: 1, Warning: 2, Critical: 3 };
             const STROKES = ["#39d0c8", "#62d39e", "#f0a64b", "#60a5fa", "#c084fc", "#f472b6"];
 
             let currentRange = "1h";
@@ -2476,6 +2477,29 @@ document.addEventListener("DOMContentLoaded", () => {
                 return { label: "Healthy", cls: "is-healthy" };
             };
 
+            // event.value is detector-specific: the real reading only for
+            // threshold/range detectors; a z-score, delta or slope otherwise.
+            // So the true "reading at that time" is read off the stored metric
+            // line, and the dot is placed there — always on the line.
+            const REAL_VALUE_DETECTORS = new Set(["thresholddetector", "rangecheckdetector"]);
+            const seriesValueAt = (xs, ys, tSec) => {
+                if (!xs || !xs.length) return null;
+                if (tSec <= xs[0]) return ys[0];
+                if (tSec >= xs[xs.length - 1]) return ys[ys.length - 1];
+                for (let i = 1; i < xs.length; i++) {
+                    if (xs[i] >= tSec) {
+                        const t0 = xs[i - 1], t1 = xs[i], f = (tSec - t0) / ((t1 - t0) || 1);
+                        return ys[i - 1] + f * (ys[i] - ys[i - 1]);
+                    }
+                }
+                return ys[ys.length - 1];
+            };
+            const readingFor = (ref, a) => {
+                const det = String(a.detector || "").toLowerCase();
+                if (REAL_VALUE_DETECTORS.has(det) && typeof a.value === "number") return a.value;
+                return seriesValueAt(ref.xs, ref.ys, a.ts_ms / 1000);
+            };
+
             const drawDiamond = (ctx, x, y, r, color) => {
                 ctx.beginPath();
                 ctx.moveTo(x, y - r); ctx.lineTo(x + r, y);
@@ -2488,42 +2512,101 @@ document.addEventListener("DOMContentLoaded", () => {
                 ctx.stroke();
             };
 
-            // Shared plugin: coloured safe/warning/critical zones (behind the line)
-            // + clickable anomaly markers (on top). `ref` supplies live anomalies
-            // and receives computed marker pixel positions. Higher value = worse
-            // for every charted metric, so green sits low and red sits high.
+            // Shared plugin: coloured safe/warning/critical zones + a min/max
+            // band (behind the avg line) so the chart shows the real range the
+            // 1-second data swung through inside each bucket — the anomaly dots
+            // then sit on the line at their true value, matching history.
             const zonesMarkersPlugin = (cfg, ref, big) => ({
                 hooks: {
                     drawClear: (u) => {
                         const ctx = u.ctx;
                         const { left, top, width, height } = u.bbox;
                         const bottom = top + height;
-                        const clamp = (v) => Math.max(top, Math.min(bottom, u.valToPos(v, "y", true)));
+                        const clampY = (v) => Math.max(top, Math.min(bottom, u.valToPos(v, "y", true)));
                         ctx.save();
+                        // safe / warning / critical zones
                         if (cfg.safe_limit != null) {
-                            const ySafe = clamp(cfg.safe_limit);
-                            const yCrit = cfg.crit_limit != null ? clamp(cfg.crit_limit) : top;
-                            ctx.fillStyle = "rgba(98,211,158,0.08)";   // healthy
+                            const ySafe = clampY(cfg.safe_limit);
+                            const yCrit = cfg.crit_limit != null ? clampY(cfg.crit_limit) : top;
+                            ctx.fillStyle = "rgba(98,211,158,0.08)";
                             ctx.fillRect(left, ySafe, width, bottom - ySafe);
-                            ctx.fillStyle = "rgba(240,166,75,0.10)";   // warning
+                            ctx.fillStyle = "rgba(240,166,75,0.10)";
                             ctx.fillRect(left, yCrit, width, ySafe - yCrit);
-                            ctx.fillStyle = "rgba(242,84,91,0.11)";    // critical
+                            ctx.fillStyle = "rgba(242,84,91,0.11)";
                             ctx.fillRect(left, top, width, yCrit - top);
+                        }
+                        // min/max range band
+                        const xs = ref.xs, mins = ref.mins, maxs = ref.maxs;
+                        if (xs && xs.length > 1 && mins && maxs) {
+                            ctx.beginPath();
+                            for (let i = 0; i < xs.length; i++) {
+                                const x = u.valToPos(xs[i], "x", true), y = clampY(maxs[i]);
+                                i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+                            }
+                            for (let i = xs.length - 1; i >= 0; i--) {
+                                ctx.lineTo(u.valToPos(xs[i], "x", true), clampY(mins[i]));
+                            }
+                            ctx.closePath();
+                            ctx.fillStyle = hexToRgba(cfg.stroke, 0.16);
+                            ctx.fill();
                         }
                         ctx.restore();
                     },
+                    // Anomaly dots sit ON the line at their real reading, bucketed
+                    // by time so a per-second flood shows as a few counted dots.
+                    // Buckets shrink as you zoom in. Colour = severity only.
                     draw: (u) => {
                         const ctx = u.ctx;
-                        const { left, top, width } = u.bbox;
-                        ref.markers = [];
-                        ctx.save();
+                        const { left, top, width, height } = u.bbox;
+                        const bottom = top + height;
+                        const clampY = (v) => Math.max(top + 4, Math.min(bottom - 4, u.valToPos(v, "y", true)));
+                        const xMin = u.scales.x.min, xMax = u.scales.x.max;
+                        const spanSec = Math.max(1e-6, xMax - xMin);
+                        const bucketSec = 22 / (width / spanSec);
+
+                        const buckets = new Map();
                         for (const a of ref.anomalies) {
-                            const xp = u.valToPos(a.ts_ms / 1000, "x", true);
-                            if (xp < left || xp > left + width) continue;
-                            const yp = (typeof a.value === "number" && a.value >= cfg.min && a.value <= cfg.max)
-                                ? u.valToPos(a.value, "y", true) : top + 12;
-                            drawDiamond(ctx, xp, yp, big ? 6 : 5, SEV_COLOR[a.severity] || SEV_COLOR.Info);
-                            ref.markers.push({ x: xp, y: yp, a });
+                            const tSec = a.ts_ms / 1000;
+                            if (tSec < xMin || tSec > xMax) continue;
+                            const key = Math.floor(tSec / bucketSec);
+                            let items = buckets.get(key);
+                            if (!items) { items = []; buckets.set(key, items); }
+                            items.push(a);
+                        }
+
+                        ref.markers = [];
+                        buckets.forEach((items, key) => {
+                            let rep = items[0];
+                            for (const a of items) {
+                                const r = SEV_RANK[a.severity] || 1, rr = SEV_RANK[rep.severity] || 1;
+                                if (r > rr || (r === rr && a.ts_ms > rep.ts_ms)) rep = a;
+                            }
+                            const xp = u.valToPos(rep.ts_ms / 1000, "x", true);
+                            if (xp < left || xp > left + width) return;
+                            const yp = (typeof rep.value === "number")
+                                ? clampY(rep.value) : top + 10;
+                            ref.markers.push({ x: xp, y: yp, key, rep, count: items.length });
+                        });
+
+                        ctx.save();
+                        for (const m of ref.markers) {
+                            const color = SEV_COLOR[m.rep.severity] || SEV_COLOR.Info;
+                            const hot = ref.hoverKey === m.key;
+                            const r = hot ? (big ? 9 : 7) : (big ? 6 : 5);
+                            if (hot) {
+                                ctx.beginPath();
+                                ctx.arc(m.x, m.y, r + 4, 0, Math.PI * 2);
+                                ctx.fillStyle = hexToRgba(color, 0.28);
+                                ctx.fill();
+                            }
+                            drawDiamond(ctx, m.x, m.y, r, color);
+                            if (m.count > 1) {
+                                ctx.fillStyle = "rgba(255,255,255,0.9)";
+                                ctx.font = `${big ? 11 : 9}px sans-serif`;
+                                ctx.textAlign = "center";
+                                ctx.textBaseline = "bottom";
+                                ctx.fillText(String(m.count), m.x, m.y - r - 3);
+                            }
                         }
                         ctx.restore();
                     },
@@ -2614,13 +2697,17 @@ document.addEventListener("DOMContentLoaded", () => {
                 tooltip.style.left = `${x}px`;
                 tooltip.style.top = `${y}px`;
             };
-            const showAnomalyTooltip = (ev, a) => {
+            const showAnomalyTooltip = (ev, m, cfg) => {
+                const a = m.rep;
                 const badge = `<span class="anomaly-tip-badge is-${(a.severity || "Info").toLowerCase()}">${a.severity || "Info"}</span>`;
+                const countLine = m.count > 1
+                    ? `<p class="anomaly-tip-count">${m.count} flags around this moment &middot; most severe shown</p>` : "";
                 tooltip.classList.remove("is-value");
                 tooltip.innerHTML =
                     `<div class="anomaly-tip-head">${badge}<span>${a.category || "Anomaly"}</span></div>` +
                     `<p class="anomaly-tip-headline">${a.headline || a.message || ""}</p>` +
-                    `<p class="anomaly-tip-time">${new Date(a.ts_ms).toLocaleString()}</p>`;
+                    countLine +
+                    `<p class="anomaly-tip-time">Reading ${fmtVal(a.value, cfg.unit)} at ${new Date(a.ts_ms).toLocaleTimeString()}</p>`;
                 tooltip.hidden = false;
                 positionTooltip(ev);
             };
@@ -2647,22 +2734,30 @@ document.addEventListener("DOMContentLoaded", () => {
 
             const nearestMarker = (ref, u, ev) => {
                 const rect = u.over.getBoundingClientRect();
-                const canvasX = (ev.clientX - rect.left) * dpr();
-                let nearest = null, best = 12 * dpr();
+                // marker.x is canvas-relative (includes the y-axis width), while
+                // the over element starts at the plot area — add bbox.left so the
+                // mouse position lines up with the drawn markers.
+                const canvasX = (ev.clientX - rect.left) * dpr() + u.bbox.left;
+                let nearest = null, best = 14 * dpr();
                 for (const m of ref.markers) {
                     const d = Math.abs(m.x - canvasX);
-                    if (d <= best) { best = d; nearest = m.a; }
+                    if (d <= best) { best = d; nearest = m; }
                 }
                 return nearest;
             };
             const attachHover = (ref, cfg) => {
                 const over = ref.u.over;
                 over.addEventListener("mousemove", (ev) => {
-                    const near = nearestMarker(ref, ref.u, ev);
-                    if (near) { over.style.cursor = "pointer"; showAnomalyTooltip(ev, near); }
-                    else { over.style.cursor = ref === modalState ? "crosshair" : "pointer"; showValueTooltip(ev, ref.u, cfg); }
+                    const m = nearestMarker(ref, ref.u, ev);
+                    const newKey = m ? m.key : null;
+                    if (ref.hoverKey !== newKey) { ref.hoverKey = newKey; ref.u.redraw(); }
+                    if (m) { over.style.cursor = "pointer"; showAnomalyTooltip(ev, m, cfg); }
+                    else { over.style.cursor = ref === modalState ? "grab" : "pointer"; showValueTooltip(ev, ref.u, cfg); }
                 });
-                over.addEventListener("mouseleave", hideTooltip);
+                over.addEventListener("mouseleave", () => {
+                    if (ref.hoverKey != null) { ref.hoverKey = null; ref.u.redraw(); }
+                    hideTooltip();
+                });
             };
 
             // ── cards ────────────────────────────────────────────────────
@@ -2707,6 +2802,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 const pts = data.points || [];
                 entry.xs = pts.map((p) => p.t / 1000);
                 entry.ys = pts.map((p) => p.avg);
+                entry.mins = pts.map((p) => p.min);
+                entry.maxs = pts.map((p) => p.max);
                 entry.anomalies = data.anomalies || [];
                 if (!entry.u) makeCardChart(entry);
                 entry.u.setData([entry.xs, entry.ys]);
@@ -2720,19 +2817,24 @@ document.addEventListener("DOMContentLoaded", () => {
             };
 
             // ── expand modal ─────────────────────────────────────────────
-            const renderPointDetail = (a, cfg) => {
+            const renderPointDetail = (m, cfg) => {
+                const a = m.rep;
                 const unit = cfg.unit;
                 const rows = [];
+                rows.push(["What kind", a.category || "Anomaly"]);
                 rows.push(["When", new Date(a.ts_ms).toLocaleString()]);
-                if (a.value != null) rows.push(["Reading", fmtVal(a.value, unit)]);
+                if (a.value != null) rows.push(["Reading at that time", fmtVal(a.value, unit)]);
                 if (a.warning_limit) rows.push(["Warning limit", fmtVal(a.warning_limit, unit)]);
                 if (a.critical_limit) rows.push(["Critical limit", fmtVal(a.critical_limit, unit)]);
                 const sev = (a.severity || "Info").toLowerCase();
+                const countNote = m.count > 1
+                    ? `<p class="anomaly-detail-count">${m.count} similar flags fired around this moment. Showing the most severe.</p>` : "";
                 modalDetail.innerHTML =
                     `<div class="anomaly-detail-head">` +
                     `<span class="anomaly-tip-badge is-${sev}">${a.severity || "Info"}</span>` +
                     `<span class="anomaly-detail-cat">${a.category || "Anomaly"}</span></div>` +
                     `<p class="anomaly-detail-headline">${a.headline || a.message || ""}</p>` +
+                    countNote +
                     `<dl class="anomaly-detail-grid">` +
                     rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("") +
                     `</dl>`;
@@ -2764,6 +2866,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 modalState.anomalies = entry.anomalies;
                 modalState.xs = entry.xs;
                 modalState.ys = entry.ys;
+                modalState.mins = entry.mins;
+                modalState.maxs = entry.maxs;
                 // keep the user's current zoom/pan while live data streams in
                 if (modalState.u) modalState.u.setData([entry.xs, entry.ys], false);
             };
@@ -2777,6 +2881,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 modalState.anomalies = entry.anomalies;
                 modalState.xs = entry.xs;
                 modalState.ys = entry.ys;
+                modalState.mins = entry.mins;
+                modalState.maxs = entry.maxs;
                 modalTitle.textContent = entry.cfg.label;
                 modalSub.textContent = entry.cfg.plain || "";
                 modalDetail.innerHTML = '<p class="insights-empty-note">Click a marked point on the chart to see what happened.</p>';

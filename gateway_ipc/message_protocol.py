@@ -258,26 +258,53 @@ def _anomaly_headline(event: dict[str, Any], label: str, category: str, unit: st
     value_text = _format_value(event.get("value"), unit)
 
     if detector == "thresholddetector":
-        limit = event.get("criticalLimit")
-        if not _number(limit, 0.0):
-            limit = event.get("warningLimit")
-        return f"{label} reached {value_text} (safe limit {_format_value(limit, unit)})."
+        # Reference the limit this severity actually crossed, not always critical.
+        severity = str(event.get("severity") or "").lower()
+        if severity == "critical" and _number(event.get("criticalLimit"), 0.0):
+            limit_text = f"critical limit {_format_value(event.get('criticalLimit'), unit)}"
+        elif _number(event.get("warningLimit"), 0.0):
+            limit_text = f"warning limit {_format_value(event.get('warningLimit'), unit)}"
+        else:
+            limit_text = f"limit {_format_value(event.get('criticalLimit'), unit)}"
+        return f"{label} reached {value_text}, past the {limit_text}."
     if detector == "rangecheckdetector":
         return (
             f"{label} read {value_text}, outside the expected "
             f"{_format_value(event.get('minValue'), unit)}–{_format_value(event.get('maxValue'), unit)} range."
         )
     if detector == "deltadetector":
-        return f"{label} jumped suddenly to {value_text}."
+        return f"{label} jumped sharply to {value_text}."
     if detector == "slopedetector":
-        return f"{label} is climbing quickly (now {value_text})."
+        return f"{label} was climbing quickly."
     if detector == "zscoredetector":
-        return f"{label} is behaving unusually for this device (now {value_text})."
+        return f"{label} was unusual compared with its normal pattern."
     if detector == "timeoutdetector":
         return f"{label} stopped reporting."
     if detector == "multiconditiondetector":
         return f"{label}: {event.get('message') or category}."
-    return f"{label}: {value_text}."
+    return f"{label} was flagged."
+
+
+def headline_for_stored(row: dict[str, Any], metric: str | None = None) -> str:
+    """Rebuild an anomaly's plain-English headline from a stored row.
+
+    Headlines are computed at read time (not frozen at ingest) so wording
+    tweaks apply to historical anomalies too, without rewriting the database.
+    """
+    metric_name = str(metric or row.get("metric") or "")
+    label = row.get("metric_label") or _metric_label(metric_name)
+    unit = _metric_unit(metric_name)
+    event = {
+        "detectorName": row.get("detector"),
+        "value": row.get("value"),
+        "criticalLimit": row.get("critical_limit"),
+        "warningLimit": row.get("warning_limit"),
+        "minValue": row.get("min_value"),
+        "maxValue": row.get("max_value"),
+        "severity": row.get("severity"),
+        "message": row.get("message"),
+    }
+    return _anomaly_headline(event, label, str(row.get("category") or ""), unit)
 
 
 def chart_metric_values(metrics: dict[str, Any]) -> dict[str, float]:

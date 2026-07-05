@@ -18,7 +18,7 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
-from gateway_ipc import build_config_message, encode_message
+from gateway_ipc import build_config_message, encode_message, headline_for_stored
 
 
 LOGGER = logging.getLogger("edge_server")
@@ -1409,6 +1409,9 @@ async def get_monitor_timeseries(request: Request) -> JSONResponse:
         return JSONResponse({"ok": True, "metric": metric, "points": [], "anomalies": [], "tier": "fine"})
     try:
         series = core_ipc.storage.timeseries(metric, from_ms, to_ms)
+        # Rebuild headlines at read time so wording stays current for old rows.
+        for anomaly in series.get("anomalies", []):
+            anomaly["headline"] = headline_for_stored(anomaly, metric)
     except Exception as exc:
         LOGGER.warning("timeseries_failed metric=%s error=%s", metric, exc)
         return JSONResponse({"ok": True, "metric": metric, "points": [], "anomalies": [], "tier": "fine"})

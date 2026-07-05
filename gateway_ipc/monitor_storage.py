@@ -313,7 +313,8 @@ class MonitorStorage:
             anomaly_rows = self._conn.execute(
                 """
                 SELECT ts_ms, severity, value, category, metric_label,
-                       headline, message, detector, warning_limit, critical_limit
+                       headline, message, detector, warning_limit, critical_limit,
+                       min_value, max_value
                 FROM anomaly_events
                 WHERE metric = ? AND ts_ms >= ? AND ts_ms <= ?
                 ORDER BY ts_ms ASC
