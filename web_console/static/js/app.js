@@ -2494,9 +2494,14 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
                 return ys[ys.length - 1];
             };
+            const hasDerived = (a) => a.z_score != null || a.delta_value != null || a.slope_value != null;
             const readingFor = (ref, a) => {
                 const det = String(a.detector || "").toLowerCase();
+                // threshold/range always carry the reading; the new engine puts
+                // the reading in value for every detector (signalled by a derived
+                // field being present). Old data or timeout/multi → read the line.
                 if (REAL_VALUE_DETECTORS.has(det) && typeof a.value === "number") return a.value;
+                if (hasDerived(a) && typeof a.value === "number") return a.value;
                 return seriesValueAt(ref.xs, ref.ys, a.ts_ms / 1000);
             };
 
@@ -2535,9 +2540,10 @@ document.addEventListener("DOMContentLoaded", () => {
                             ctx.fillStyle = "rgba(242,84,91,0.11)";
                             ctx.fillRect(left, top, width, yCrit - top);
                         }
-                        // min/max range band
+                        // min/max range band — only meaningful on the rolled-up
+                        // hourly tier; the raw 1 s fine tier has min == max.
                         const xs = ref.xs, mins = ref.mins, maxs = ref.maxs;
-                        if (xs && xs.length > 1 && mins && maxs) {
+                        if (ref.tier === "hourly" && xs && xs.length > 1 && mins && maxs) {
                             ctx.beginPath();
                             for (let i = 0; i < xs.length; i++) {
                                 const x = u.valToPos(xs[i], "x", true), y = clampY(maxs[i]);
@@ -2583,9 +2589,9 @@ document.addEventListener("DOMContentLoaded", () => {
                             }
                             const xp = u.valToPos(rep.ts_ms / 1000, "x", true);
                             if (xp < left || xp > left + width) return;
-                            const yp = (typeof rep.value === "number")
-                                ? clampY(rep.value) : top + 10;
-                            ref.markers.push({ x: xp, y: yp, key, rep, count: items.length });
+                            const reading = readingFor(ref, rep);
+                            const yp = (typeof reading === "number") ? clampY(reading) : top + 10;
+                            ref.markers.push({ x: xp, y: yp, key, rep, reading, count: items.length });
                         });
 
                         ctx.save();
@@ -2707,7 +2713,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     `<div class="anomaly-tip-head">${badge}<span>${a.category || "Anomaly"}</span></div>` +
                     `<p class="anomaly-tip-headline">${a.headline || a.message || ""}</p>` +
                     countLine +
-                    `<p class="anomaly-tip-time">Reading ${fmtVal(a.value, cfg.unit)} at ${new Date(a.ts_ms).toLocaleTimeString()}</p>`;
+                    `<p class="anomaly-tip-time">Reading ${fmtVal(m.reading, cfg.unit)} at ${new Date(a.ts_ms).toLocaleTimeString()}</p>`;
                 tooltip.hidden = false;
                 positionTooltip(ev);
             };
@@ -2804,6 +2810,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 entry.ys = pts.map((p) => p.avg);
                 entry.mins = pts.map((p) => p.min);
                 entry.maxs = pts.map((p) => p.max);
+                entry.tier = data.tier;
                 entry.anomalies = data.anomalies || [];
                 if (!entry.u) makeCardChart(entry);
                 entry.u.setData([entry.xs, entry.ys]);
@@ -2823,7 +2830,11 @@ document.addEventListener("DOMContentLoaded", () => {
                 const rows = [];
                 rows.push(["What kind", a.category || "Anomaly"]);
                 rows.push(["When", new Date(a.ts_ms).toLocaleString()]);
-                if (a.value != null) rows.push(["Reading at that time", fmtVal(a.value, unit)]);
+                if (m.reading != null) rows.push(["Reading at that time", fmtVal(m.reading, unit)]);
+                // "how unusual" from the engine's derived measurements
+                if (a.z_score != null) rows.push(["How unusual", `${Math.abs(a.z_score).toFixed(1)}× its normal variation`]);
+                if (a.delta_value != null) rows.push(["Sudden change", `${a.delta_value > 0 ? "+" : ""}${fmtVal(a.delta_value, unit)}`]);
+                if (a.slope_value != null) rows.push(["Rate of change", `${a.slope_value > 0 ? "+" : ""}${fmtVal(a.slope_value, unit)}/min`]);
                 if (a.warning_limit) rows.push(["Warning limit", fmtVal(a.warning_limit, unit)]);
                 if (a.critical_limit) rows.push(["Critical limit", fmtVal(a.critical_limit, unit)]);
                 const sev = (a.severity || "Info").toLowerCase();
@@ -2868,6 +2879,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 modalState.ys = entry.ys;
                 modalState.mins = entry.mins;
                 modalState.maxs = entry.maxs;
+                modalState.tier = entry.tier;
                 // keep the user's current zoom/pan while live data streams in
                 if (modalState.u) modalState.u.setData([entry.xs, entry.ys], false);
             };
@@ -2883,6 +2895,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 modalState.ys = entry.ys;
                 modalState.mins = entry.mins;
                 modalState.maxs = entry.maxs;
+                modalState.tier = entry.tier;
                 modalTitle.textContent = entry.cfg.label;
                 modalSub.textContent = entry.cfg.plain || "";
                 modalDetail.innerHTML = '<p class="insights-empty-note">Click a marked point on the chart to see what happened.</p>';

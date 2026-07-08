@@ -32,14 +32,18 @@ LOGGER = logging.getLogger("gateway_ipc")
 DEFAULT_DB_PATH = Path("/opt/metacrust/data/monitor/monitor.db")
 DEFAULT_SQLITE_PATH = Path.home() / ".metacrust" / "data" / "monitor" / "monitor.sqlite3"
 
-FINE_BUCKET_MS = 15_000            # 15 second fine buckets
+# The fine tier stores the raw ~1 Hz samples so the line tracks the exact
+# per-second values that anomalies fire on (a 15 s average would smooth away
+# a spike/dip and the dot would float off the line). Older data is rolled up
+# into hourly avg/min/max for the month-long overview.
+FINE_BUCKET_MS = 1_000             # raw 1 second samples
 HOURLY_BUCKET_MS = 3_600_000       # 1 hour coarse buckets
-FINE_RETENTION_MS = 3 * 86_400_000        # keep fine buckets 3 days
+FINE_RETENTION_MS = 1 * 86_400_000        # keep raw samples 1 day
 HOURLY_RETENTION_MS = 31 * 86_400_000     # keep hourly buckets 31 days
 ANOMALY_RETENTION_MS = 31 * 86_400_000    # keep anomaly events 31 days
 
 # Range at/under which the fine tier is used; above it we serve hourly.
-FINE_QUERY_MAX_MS = 2 * 86_400_000
+FINE_QUERY_MAX_MS = 1 * 86_400_000
 
 # The metrics that get their own chart. Keys match the C++ metricName strings
 # so anomaly events overlay straight onto the matching chart.
@@ -127,6 +131,9 @@ class MonitorStorage:
                 detector       TEXT,
                 severity       TEXT,
                 value          REAL,
+                z_score        REAL,
+                delta_value    REAL,
+                slope_value    REAL,
                 warning_limit  REAL,
                 critical_limit REAL,
                 min_value      REAL,
@@ -143,6 +150,11 @@ class MonitorStorage:
                 ON anomaly_events (metric, ts_ms);
             """
         )
+        # Add the derived-value columns to databases created before they existed.
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(anomaly_events)")}
+        for column in ("z_score", "delta_value", "slope_value"):
+            if column not in existing:
+                self._conn.execute(f"ALTER TABLE anomaly_events ADD COLUMN {column} REAL")
         self._conn.commit()
 
     # ── ingestion ────────────────────────────────────────────────────────
@@ -183,9 +195,10 @@ class MonitorStorage:
                 """
                 INSERT INTO anomaly_events (
                     ts_ms, metric, detector, severity, value,
+                    z_score, delta_value, slope_value,
                     warning_limit, critical_limit, min_value, max_value,
                     alarm_name, category, metric_label, headline, message
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -194,6 +207,9 @@ class MonitorStorage:
                         ev.get("detector"),
                         ev.get("severity"),
                         _opt_float(ev.get("value")),
+                        _opt_float(ev.get("z_score")),
+                        _opt_float(ev.get("delta_value")),
+                        _opt_float(ev.get("slope_value")),
                         _opt_float(ev.get("warning_limit")),
                         _opt_float(ev.get("critical_limit")),
                         _opt_float(ev.get("min_value")),
@@ -314,7 +330,7 @@ class MonitorStorage:
                 """
                 SELECT ts_ms, severity, value, category, metric_label,
                        headline, message, detector, warning_limit, critical_limit,
-                       min_value, max_value
+                       min_value, max_value, z_score, delta_value, slope_value
                 FROM anomaly_events
                 WHERE metric = ? AND ts_ms >= ? AND ts_ms <= ?
                 ORDER BY ts_ms ASC

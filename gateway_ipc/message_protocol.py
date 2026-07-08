@@ -238,6 +238,9 @@ def normalize_anomaly_message(message: dict[str, Any]) -> list[dict[str, Any]]:
                 "detector": detector or None,
                 "severity": severity,
                 "value": event.get("value"),
+                "z_score": event.get("zScore"),
+                "delta_value": event.get("deltaValue"),
+                "slope_value": event.get("slopeValue"),
                 "warning_limit": event.get("warningLimit"),
                 "critical_limit": event.get("criticalLimit"),
                 "min_value": event.get("minValue"),
@@ -273,7 +276,7 @@ def _anomaly_headline(event: dict[str, Any], label: str, category: str, unit: st
             f"{_format_value(event.get('minValue'), unit)}–{_format_value(event.get('maxValue'), unit)} range."
         )
     if detector == "deltadetector":
-        return f"{label} jumped sharply to {value_text}."
+        return f"{label} jumped sharply."
     if detector == "slopedetector":
         return f"{label} was climbing quickly."
     if detector == "zscoredetector":
@@ -315,12 +318,19 @@ def chart_metric_values(metrics: dict[str, Any]) -> dict[str, float]:
     filesystem = metrics.get("filesystem", {}) if isinstance(metrics.get("filesystem"), dict) else {}
     emmc = metrics.get("emmc", {}) if isinstance(metrics.get("emmc"), dict) else {}
 
+    # The engine's cpu.load_1m is normalized by core count (loadAvg1m/cores);
+    # its thresholds and the chart axis are on that per-core scale. deviceData
+    # ships the raw load, so normalize here to match the anomaly overlay.
+    raw_load_1m = _number(cpu.get("load_average", {}).get("1m"), 0.0)
+    core_count = _number(cpu.get("core_count"), 0.0)
+    normalized_load_1m = raw_load_1m / core_count if core_count > 0 else raw_load_1m
+
     values: dict[str, float] = {
         "cpu.usage": _number(cpu.get("total_percent"), 0.0),
         "memory.ram_used_pct": _number(memory.get("memory_bytes", {}).get("used_percent"), 0.0),
         "storage.disk_used_pct": _number(filesystem.get("used_percent"), 0.0),
         "storage.emmc_used_pct": _number(emmc.get("used_percent"), 0.0),
-        "cpu.load_1m": _number(cpu.get("load_average", {}).get("1m"), 0.0),
+        "cpu.load_1m": round(normalized_load_1m, 3),
     }
     # temperature is None when the sensor is unreadable; skip rather than store 0.
     temperature = metrics.get("temperature_c")
