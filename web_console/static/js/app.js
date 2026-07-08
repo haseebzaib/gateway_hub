@@ -2430,6 +2430,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const grid = root.querySelector("[data-anomaly-chart-grid]");
             const tooltip = root.querySelector("[data-anomaly-tooltip]");
             const groupsList = root.querySelector("[data-anomaly-groups]");
+            const coverageEl = root.querySelector("[data-anomaly-coverage]");
             const rangeButtons = Array.from(root.querySelectorAll("[data-anomaly-range]"));
             const modal = root.querySelector("[data-anomaly-modal]");
             const modalPlot = modal.querySelector("[data-anomaly-modal-plot]");
@@ -2445,6 +2446,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             let currentRange = "1h";
             let catalog = [];
+            let checks = [];                     // detection kinds (category + copy)
             const units = {};                    // metric -> unit string
             const charts = {};                   // metric -> { cfg, plotEl, liveEl, statusEl, footEl, u, anomalies, markers, xs, ys }
             const modalState = { metric: null, cfg: null, u: null, anomalies: [], markers: [] };
@@ -2583,15 +2585,22 @@ document.addEventListener("DOMContentLoaded", () => {
                         ref.markers = [];
                         buckets.forEach((items, key) => {
                             let rep = items[0];
+                            // distinct kinds that fired in this moment (worst severity each)
+                            const typeMap = new Map();
                             for (const a of items) {
                                 const r = SEV_RANK[a.severity] || 1, rr = SEV_RANK[rep.severity] || 1;
                                 if (r > rr || (r === rr && a.ts_ms > rep.ts_ms)) rep = a;
+                                const cat = a.category || "Anomaly";
+                                const seen = typeMap.get(cat);
+                                if (!seen || r > (SEV_RANK[seen.severity] || 1)) {
+                                    typeMap.set(cat, { category: cat, severity: a.severity });
+                                }
                             }
                             const xp = u.valToPos(rep.ts_ms / 1000, "x", true);
                             if (xp < left || xp > left + width) return;
                             const reading = readingFor(ref, rep);
                             const yp = (typeof reading === "number") ? clampY(reading) : top + 10;
-                            ref.markers.push({ x: xp, y: yp, key, rep, reading, count: items.length });
+                            ref.markers.push({ x: xp, y: yp, key, rep, reading, count: items.length, types: Array.from(typeMap.values()) });
                         });
 
                         ctx.save();
@@ -2838,14 +2847,22 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (a.warning_limit) rows.push(["Warning limit", fmtVal(a.warning_limit, unit)]);
                 if (a.critical_limit) rows.push(["Critical limit", fmtVal(a.critical_limit, unit)]);
                 const sev = (a.severity || "Info").toLowerCase();
-                const countNote = m.count > 1
-                    ? `<p class="anomaly-detail-count">${m.count} similar flags fired around this moment. Showing the most severe.</p>` : "";
+                const types = m.types || [];
+                let note = "";
+                if (types.length > 1) {
+                    note = `<p class="anomaly-detail-count">${types.length} different checks flagged this moment:</p>` +
+                        `<div class="anomaly-detail-types">` +
+                        types.map((t) => `<span class="anomaly-type-chip is-${(t.severity || "Info").toLowerCase()}">${t.category}</span>`).join("") +
+                        `</div>`;
+                } else if (m.count > 1) {
+                    note = `<p class="anomaly-detail-count">${m.count} flags fired around this moment. Showing the most severe.</p>`;
+                }
                 modalDetail.innerHTML =
                     `<div class="anomaly-detail-head">` +
                     `<span class="anomaly-tip-badge is-${sev}">${a.severity || "Info"}</span>` +
                     `<span class="anomaly-detail-cat">${a.category || "Anomaly"}</span></div>` +
                     `<p class="anomaly-detail-headline">${a.headline || a.message || ""}</p>` +
-                    countNote +
+                    note +
                     `<dl class="anomaly-detail-grid">` +
                     rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("") +
                     `</dl>`;
@@ -2950,6 +2967,29 @@ document.addEventListener("DOMContentLoaded", () => {
                 }).join("");
             };
 
+            // ── detection coverage strip ─────────────────────────────────
+            const buildCoverage = () => {
+                if (!coverageEl) return;
+                if (!checks.length) { coverageEl.innerHTML = ""; return; }
+                coverageEl.innerHTML = checks.map((c) =>
+                    `<div class="anomaly-coverage-card" data-coverage-cat="${c.category}">` +
+                    `<div class="anomaly-coverage-head">` +
+                    `<span class="anomaly-coverage-name">${c.title}</span>` +
+                    `<span class="anomaly-coverage-count" data-coverage-count>0</span></div>` +
+                    `<p class="anomaly-coverage-detail">${c.detail}</p></div>`
+                ).join("");
+            };
+            const updateCoverageCounts = (catCounts) => {
+                if (!coverageEl) return;
+                catCounts = catCounts || {};
+                coverageEl.querySelectorAll("[data-coverage-cat]").forEach((card) => {
+                    const n = catCounts[card.getAttribute("data-coverage-cat")] || 0;
+                    const el = card.querySelector("[data-coverage-count]");
+                    if (el) el.textContent = n;
+                    card.classList.toggle("is-active", n > 0);
+                });
+            };
+
             // ── refresh loop ─────────────────────────────────────────────
             const refreshAll = async () => {
                 if (root.hidden) return;
@@ -2971,6 +3011,7 @@ document.addEventListener("DOMContentLoaded", () => {
                         const data = await r.json();
                         updateCounts(data.counts);
                         renderGroups(data.groups);
+                        updateCoverageCounts(data.category_counts);
                     }
                 } catch (err) { /* ignore */ }
             };
@@ -3005,9 +3046,12 @@ document.addEventListener("DOMContentLoaded", () => {
                 try {
                     const cfg = await fetch("/api/monitor/anomaly-config").then((r) => r.json());
                     catalog = cfg.charts || [];
+                    checks = cfg.checks || [];
                 } catch (err) {
                     catalog = [];
+                    checks = [];
                 }
+                buildCoverage();
                 if (!catalog.length) {
                     grid.innerHTML = '<p class="insights-empty-note">No monitored metrics available.</p>';
                     return;

@@ -19,6 +19,12 @@ from .message_protocol import (
 )
 from .monitor_storage import MonitorStorage
 
+# Two anomalies of the same (metric, detector) within this gap are treated as
+# one ongoing episode; a longer quiet gap starts a fresh episode.
+EPISODE_GAP_MS = 20_000
+_SEVERITY_RANK = {"Info": 1, "Warning": 2, "Critical": 3}
+
+
 @dataclass
 class IpcStatus:
     enabled: bool
@@ -50,6 +56,8 @@ class GatewayCoreIpcTask:
         self._latest_device_metrics: dict[str, Any] | None = None
         self._device_metric_history: deque[dict[str, Any]] = deque(maxlen=600)
         self._anomaly_count = 0
+        # (metric, detector) -> {"last_ts": ms, "rank": severity} for episode dedup
+        self._anomaly_episodes: dict[tuple[Any, Any], dict[str, Any]] = {}
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
 
@@ -177,12 +185,39 @@ class GatewayCoreIpcTask:
 
     def _store_anomaly_events(self, message: dict[str, Any]) -> None:
         try:
-            rows = normalize_anomaly_message(message)
+            rows = self._coalesce_episodes(normalize_anomaly_message(message))
             if rows:
                 self.storage.add_anomaly_events(rows)
                 self._anomaly_count += len(rows)
         except Exception as exc:
             self.status.last_error = f"anomaly store failed: {exc}"
+
+    def _coalesce_episodes(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Collapse a still-true condition into one alert per episode.
+
+        The engine re-emits the same finding every second while a condition
+        holds (CPU stuck high, a slope window still holding an old rise). We keep
+        only the leading edge of each episode — plus one more if it escalates to
+        a higher severity — and start a fresh episode only after the condition
+        has been quiet for EPISODE_GAP_MS. This is edge-triggered alerting.
+        """
+        kept: list[dict[str, Any]] = []
+        for row in rows:
+            key = (row.get("metric"), row.get("detector"))
+            ts = int(row.get("timestamp_ms") or 0)
+            rank = _SEVERITY_RANK.get(row.get("severity"), 1)
+            episode = self._anomaly_episodes.get(key)
+
+            if episode is None or ts - episode["last_ts"] > EPISODE_GAP_MS:
+                kept.append(row)                       # new episode (leading edge)
+                self._anomaly_episodes[key] = {"last_ts": ts, "rank": rank}
+                continue
+
+            if rank > episode["rank"]:
+                kept.append(row)                       # escalation within episode
+            episode["last_ts"] = ts                    # extend the live episode
+            episode["rank"] = max(episode["rank"], rank)
+        return kept
 
 def _utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")

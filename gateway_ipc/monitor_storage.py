@@ -404,6 +404,23 @@ class MonitorStorage:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def category_counts(self, since_ms: int) -> dict[str, int]:
+        """Count anomalies per plain-English category, for the coverage strip."""
+        with self._lock:
+            if self._conn is None:
+                self.open()
+            assert self._conn is not None
+            rows = self._conn.execute(
+                """
+                SELECT category, COUNT(*) AS n
+                FROM anomaly_events
+                WHERE ts_ms >= ?
+                GROUP BY category
+                """,
+                (int(since_ms),),
+            ).fetchall()
+        return {row["category"]: row["n"] for row in rows if row["category"]}
+
     def anomaly_counts(self, since_ms: int) -> dict[str, int]:
         with self._lock:
             if self._conn is None:

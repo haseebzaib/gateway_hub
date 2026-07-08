@@ -9654,6 +9654,58 @@ a.ov-feature-card:hover .ov-feature-eyebrow { color: var(--accent-cool); }
 }
 
 /* ── Anomaly redesign: bigger cards, status, expand modal, grouped list ─ */
+/* detection coverage strip — shows every kind the engine watches for */
+.anomaly-coverage { margin-bottom: 1.3rem; }
+.anomaly-coverage-title {
+    margin: 0 0 0.7rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+}
+.anomaly-coverage-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+    gap: 0.7rem;
+}
+.anomaly-coverage-card {
+    padding: 0.8rem 0.9rem;
+    border-radius: 0.85rem;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-left: 3px solid rgba(148, 163, 184, 0.3);
+    transition: border-color 160ms ease, background 160ms ease;
+}
+.anomaly-coverage-card.is-active {
+    border-left-color: var(--accent-cool);
+    background: rgba(57, 208, 200, 0.06);
+}
+.anomaly-coverage-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.25rem;
+}
+.anomaly-coverage-name { font-size: 0.92rem; font-weight: 600; color: var(--text); }
+.anomaly-coverage-count {
+    flex-shrink: 0;
+    min-width: 1.6rem;
+    padding: 0.05rem 0.5rem;
+    border-radius: 999px;
+    text-align: center;
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--muted);
+    background: rgba(255, 255, 255, 0.06);
+}
+.anomaly-coverage-card.is-active .anomaly-coverage-count {
+    color: #08141a;
+    background: var(--accent-cool);
+}
+.anomaly-coverage-detail { margin: 0; font-size: 0.8rem; line-height: 1.45; color: var(--muted); }
+
 .anomaly-chart-grid {
     grid-template-columns: repeat(auto-fit, minmax(32rem, 1fr));
     gap: 1.1rem;
@@ -9816,10 +9868,26 @@ body.anomaly-modal-open { overflow: hidden; }
 }
 .anomaly-detail-headline { margin: 0.5rem 0 0.6rem; font-size: 1rem; color: var(--text); line-height: 1.45; }
 .anomaly-detail-count {
-    margin: 0 0 0.8rem;
+    margin: 0 0 0.6rem;
     font-size: 0.82rem;
     color: var(--accent-cool);
 }
+.anomaly-detail-types {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.8rem;
+}
+.anomaly-type-chip {
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    border: 1px solid transparent;
+}
+.anomaly-type-chip.is-critical { background: rgba(242, 84, 91, 0.16); color: #ff9ba0; border-color: rgba(242, 84, 91, 0.35); }
+.anomaly-type-chip.is-warning  { background: rgba(240, 166, 75, 0.16); color: #ffc98a; border-color: rgba(240, 166, 75, 0.35); }
+.anomaly-type-chip.is-info     { background: rgba(96, 165, 250, 0.16); color: #a9cbff; border-color: rgba(96, 165, 250, 0.35); }
 .anomaly-tip-count {
     margin: 0.3rem 0 0;
     font-size: 0.78rem;

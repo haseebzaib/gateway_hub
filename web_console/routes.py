@@ -379,13 +379,15 @@ MONITOR_CHARTS = [
 
 # Plain-English description of what the anomaly engine does, for the Overview
 # page. Deliberately avoids jargon (no "z-score", "delta", etc.).
+# `category` matches the value stored on each anomaly event (see
+# message_protocol._DETECTOR_CATEGORY) so the UI can show a live count per kind.
 ANOMALY_ENGINE_CHECKS = [
-    {"title": "Crosses a safe limit", "detail": "A value goes past a level you consider healthy, such as a temperature getting too high."},
-    {"title": "Spikes suddenly", "detail": "A value jumps sharply in a moment instead of changing gradually."},
-    {"title": "Climbs too fast", "detail": "A value keeps rising quickly, hinting at a leak or runaway trend."},
-    {"title": "Behaves unusually", "detail": "A value drifts away from its own normal pattern."},
-    {"title": "Goes quiet", "detail": "A signal stops reporting, so we flag the blind spot."},
-    {"title": "Looks invalid", "detail": "A reading is impossible or out of range, pointing to a faulty source."},
+    {"category": "Crossed a safe limit", "title": "Crosses a safe limit", "detail": "A value goes past a level you consider healthy, such as a temperature getting too high."},
+    {"category": "Sudden spike", "title": "Spikes suddenly", "detail": "A value jumps sharply in a moment instead of changing gradually."},
+    {"category": "Rising quickly", "title": "Climbs too fast", "detail": "A value keeps rising quickly, hinting at a leak or runaway trend."},
+    {"category": "Behaving unusually vs normal", "title": "Behaves unusually", "detail": "A value drifts away from its own normal pattern."},
+    {"category": "Sensor stopped reporting", "title": "Goes quiet", "detail": "A signal stops reporting, so we flag the blind spot."},
+    {"category": "Reading looks invalid", "title": "Looks invalid", "detail": "A reading is impossible or out of range, pointing to a faulty source."},
 ]
 
 # Plain-language summary of the rules currently active on the device. Rules are
@@ -1452,10 +1454,11 @@ async def get_monitor_grouped_anomalies(request: Request) -> JSONResponse:
     try:
         groups = core_ipc.storage.grouped_anomalies(since_ms)
         counts = core_ipc.storage.anomaly_counts(since_ms)
+        category_counts = core_ipc.storage.category_counts(since_ms)
     except Exception as exc:
         LOGGER.warning("grouped_anomalies_failed error=%s", exc)
-        return JSONResponse({"ok": True, "groups": [], "counts": {"Info": 0, "Warning": 0, "Critical": 0, "total": 0}})
-    return JSONResponse({"ok": True, "groups": groups, "counts": counts})
+        return JSONResponse({"ok": True, "groups": [], "counts": {"Info": 0, "Warning": 0, "Critical": 0, "total": 0}, "category_counts": {}})
+    return JSONResponse({"ok": True, "groups": groups, "counts": counts, "category_counts": category_counts})
 
 
 @router.get("/api/interfaces/rs232/config")
