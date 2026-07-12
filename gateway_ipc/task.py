@@ -60,6 +60,7 @@ class GatewayCoreIpcTask:
         self._anomaly_episodes: dict[tuple[Any, Any], dict[str, Any]] = {}
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
+        self._pending_acks: dict[str, asyncio.Future[dict[str, Any]]] = {}
 
     def start(self) -> None:
         try:
@@ -96,6 +97,40 @@ class GatewayCoreIpcTask:
         await self.client.send_text(message)
         self.status.tx_count += 1
         _console(f"TX ipc_payload={message}")
+
+    async def send_message(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        """Send one protocol message and, when requested, await its ACK/NACK."""
+        message_id = str(message.get("message_id") or "")
+        if not message.get("ack_required"):
+            await self.send_text(json.dumps(message, separators=(",", ":"), ensure_ascii=False))
+            return None
+        if not message_id:
+            raise ValueError("ACK-required IPC messages need a message_id.")
+        if message_id in self._pending_acks:
+            raise ValueError(f"IPC message is already awaiting ACK: {message_id}")
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[dict[str, Any]] = loop.create_future()
+        self._pending_acks[message_id] = future
+        encoded = json.dumps(message, separators=(",", ":"), ensure_ascii=False)
+        try:
+            attempts = max(1, self.config.ack_retries + 1)
+            for attempt in range(attempts):
+                await self.send_text(encoded)
+                try:
+                    reply = await asyncio.wait_for(asyncio.shield(future), timeout=self.config.ack_timeout_s)
+                except TimeoutError:
+                    if attempt + 1 == attempts:
+                        raise TimeoutError(f"No ACK from gateway core for {message_id} after {attempts} attempts")
+                    continue
+                if inbound_message_type(reply) == "nAck":
+                    raise RuntimeError(str(reply.get("error") or f"Gateway core rejected {message_id}"))
+                return reply
+        finally:
+            self._pending_acks.pop(message_id, None)
+            if not future.done():
+                future.cancel()
+        return None
 
     def snapshot(self) -> dict[str, object]:
         return {
@@ -171,6 +206,11 @@ class GatewayCoreIpcTask:
                 self._store_anomaly_events(message)
             elif message_type == "heartBeat":
                 self.status.heartbeat_count += 1
+            elif message_type in {"ack", "nAck"}:
+                correlation_id = str(message.get("correlation_id") or "")
+                future = self._pending_acks.get(correlation_id)
+                if future is not None and not future.done():
+                    future.set_result(message)
         except json.JSONDecodeError as exc:
             self.status.last_error = f"invalid IPC JSON: {exc}"
         except Exception as exc:

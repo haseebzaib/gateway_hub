@@ -96,7 +96,12 @@ async def _send_config_payload_to_core(ipc: object, config_name: str, payload: d
         return result
 
     try:
-        await ipc.send_text(encode_message(message))
+        send_message = getattr(ipc, "send_message", None)
+        if send_message is not None:
+            reply = await send_message(message)
+            result["acknowledged"] = reply is not None
+        else:
+            await ipc.send_text(encode_message(message))
     except Exception as exc:
         result["reason"] = str(exc)
         return result

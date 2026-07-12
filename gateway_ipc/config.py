@@ -13,6 +13,8 @@ class IpcClientConfig:
     read_limit_bytes: int = 65536
     framing: str = "newline"
     enabled: bool = True
+    ack_timeout_s: float = 2.0
+    ack_retries: int = 3
 
     @classmethod
     def from_env(cls) -> "IpcClientConfig":
@@ -24,4 +26,6 @@ class IpcClientConfig:
             read_limit_bytes=int(os.environ.get("GATEWAY_CORE_IPC_READ_LIMIT", str(cls.read_limit_bytes))),
             framing=os.environ.get("GATEWAY_CORE_IPC_FRAMING", cls.framing),
             enabled=os.environ.get("GATEWAY_CORE_IPC_ENABLED", "true").lower() not in {"0", "false", "no", "off"},
+            ack_timeout_s=float(os.environ.get("GATEWAY_CORE_IPC_ACK_TIMEOUT", str(cls.ack_timeout_s))),
+            ack_retries=int(os.environ.get("GATEWAY_CORE_IPC_ACK_RETRIES", str(cls.ack_retries))),
         )
