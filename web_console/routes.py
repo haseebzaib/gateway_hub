@@ -1498,6 +1498,71 @@ async def save_modbus_tcp_config(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "message": "Modbus TCP config saved.", "storage": storage, "core_ipc": core_ipc})
 
 
+def _interface_data_storage(request: Request) -> object | None:
+    ipc = getattr(request.app.state, "core_ipc", None)
+    return getattr(ipc, "interface_storage", None)
+
+
+@router.get("/api/interfaces/data/sources")
+async def get_interface_data_sources(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    storage = _interface_data_storage(request)
+    if storage is None:
+        return JSONResponse({"ok": False, "message": "Interface data storage is unavailable."}, status_code=503)
+    return JSONResponse({"ok": True, "sources": storage.sources()})
+
+
+@router.get("/api/interfaces/data/messages")
+async def get_interface_sensor_messages(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    storage = _interface_data_storage(request)
+    if storage is None:
+        return JSONResponse({"ok": False, "message": "Interface data storage is unavailable."}, status_code=503)
+    query = request.query_params
+    rows = storage.sensor_messages(
+        source_type=query.get("source_type"), source_id=query.get("source_id"),
+        from_ms=int(_number(query.get("from_ms"), 0)),
+        to_ms=int(_number(query.get("to_ms"), 2**63 - 1)),
+        limit=int(_number(query.get("limit"), 1000)),
+    )
+    return JSONResponse({"ok": True, "messages": rows})
+
+
+@router.get("/api/interfaces/data/readings")
+async def get_interface_sensor_readings(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    storage = _interface_data_storage(request)
+    if storage is None:
+        return JSONResponse({"ok": False, "message": "Interface data storage is unavailable."}, status_code=503)
+    query = request.query_params
+    rows = storage.readings(
+        source_type=query.get("source_type"), source_id=query.get("source_id"), name=query.get("name"),
+        from_ms=int(_number(query.get("from_ms"), 0)),
+        to_ms=int(_number(query.get("to_ms"), 2**63 - 1)),
+        limit=int(_number(query.get("limit"), 5000)),
+    )
+    return JSONResponse({"ok": True, "readings": rows})
+
+
+@router.get("/api/interfaces/data/sniffer")
+async def get_interface_sniffer_frames(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    storage = _interface_data_storage(request)
+    if storage is None:
+        return JSONResponse({"ok": False, "message": "Interface data storage is unavailable."}, status_code=503)
+    query = request.query_params
+    rows = storage.sniffer_frames(
+        port=query.get("port"), from_ms=int(_number(query.get("from_ms"), 0)),
+        to_ms=int(_number(query.get("to_ms"), 2**63 - 1)),
+        limit=int(_number(query.get("limit"), 1000)),
+    )
+    return JSONResponse({"ok": True, "frames": rows})
+
+
 @router.get("/api/forwarding/config")
 async def get_forwarding_config(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):

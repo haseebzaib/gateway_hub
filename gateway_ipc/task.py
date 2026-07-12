@@ -18,6 +18,7 @@ from .message_protocol import (
     normalize_device_data_message,
 )
 from .monitor_storage import MonitorStorage
+from gateway_interfaces import GatewayInterfacesDataStorage
 
 # Two anomalies of the same (metric, detector) within this gap are treated as
 # one ongoing episode; a longer quiet gap starts a fresh episode.
@@ -43,7 +44,12 @@ class IpcStatus:
 
 
 class GatewayCoreIpcTask:
-    def __init__(self, config: IpcClientConfig | None = None, storage: MonitorStorage | None = None) -> None:
+    def __init__(
+        self,
+        config: IpcClientConfig | None = None,
+        storage: MonitorStorage | None = None,
+        interface_storage: GatewayInterfacesDataStorage | None = None,
+    ) -> None:
         self.config = config or IpcClientConfig.from_env()
         self.client = GatewayCoreTcpClient(self.config)
         self.status = IpcStatus(
@@ -53,6 +59,7 @@ class GatewayCoreIpcTask:
             framing=self.config.framing,
         )
         self.storage = storage or MonitorStorage()
+        self.interface_storage = interface_storage or GatewayInterfacesDataStorage()
         self._latest_device_metrics: dict[str, Any] | None = None
         self._device_metric_history: deque[dict[str, Any]] = deque(maxlen=600)
         self._anomaly_count = 0
@@ -70,6 +77,10 @@ class GatewayCoreIpcTask:
             self.storage.open()
         except Exception as exc:  # storage must never take down the IPC task
             _console(f"monitor storage unavailable: {exc}")
+        try:
+            self.interface_storage.open()
+        except Exception as exc:
+            _console(f"gateway interfaces storage unavailable: {exc}")
         if not self.config.enabled:
             self.status.state = "disabled"
             _console("disabled")
@@ -95,6 +106,10 @@ class GatewayCoreIpcTask:
             self.storage.close()
         except Exception as exc:
             _console(f"monitor storage close failed: {exc}")
+        try:
+            self.interface_storage.close()
+        except Exception as exc:
+            _console(f"gateway interfaces storage close failed: {exc}")
 
     async def send_text(self, message: str) -> None:
         await self.client.send_text(message)
@@ -235,19 +250,40 @@ class GatewayCoreIpcTask:
                 data = message.get("data")
                 if isinstance(data, dict):
                     self._rs232_sniffer_frames.append(dict(data))
+                    self._store_sniffer_frame(data)
             elif message_type == "sensorData":
                 data = message.get("data")
                 if isinstance(data, dict):
                     self._sensor_samples.append(dict(data))
+                    self._store_sensor_data(data)
             elif message_type == "sensorStatus":
                 data = message.get("data")
                 if isinstance(data, dict):
                     key = (str(data.get("source_type") or ""), str(data.get("source_id") or ""))
                     self._sensor_status[key] = dict(data)
+                    self._store_sensor_status(data)
         except json.JSONDecodeError as exc:
             self.status.last_error = f"invalid IPC JSON: {exc}"
         except Exception as exc:
             self.status.last_error = f"IPC message parse failed: {exc}"
+
+    def _store_sensor_data(self, data: dict[str, Any]) -> None:
+        try:
+            self.interface_storage.add_sensor_data(data)
+        except Exception as exc:
+            self.status.last_error = f"sensor data store failed: {exc}"
+
+    def _store_sniffer_frame(self, data: dict[str, Any]) -> None:
+        try:
+            self.interface_storage.add_sniffer_frame(data)
+        except Exception as exc:
+            self.status.last_error = f"sniffer frame store failed: {exc}"
+
+    def _store_sensor_status(self, data: dict[str, Any]) -> None:
+        try:
+            self.interface_storage.add_status(data)
+        except Exception as exc:
+            self.status.last_error = f"sensor status store failed: {exc}"
 
     def _store_metric_sample(self, metrics: dict[str, Any]) -> None:
         try:
