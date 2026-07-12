@@ -19,6 +19,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from fastapi.templating import Jinja2Templates
 
 from gateway_ipc import build_config_message, encode_message, headline_for_stored
+from gateway_interfaces import GatewayInterfacesService, default_config
 
 
 LOGGER = logging.getLogger("edge_server")
@@ -36,13 +37,9 @@ templates = Jinja2Templates(directory=str(PACKAGE_DIR / "templates"))
 GATEWAY_ID = "metacrust_v2_dev"
 DEFAULT_USERNAME = "gateway"
 DEFAULT_PASSWORD = "gateway"
-SENSOR_CONFIG_STORAGE_DIR = Path(os.environ.get("GATEWAY_SENSOR_CONFIG_DIR", "/opt/metacrust/sensorconfigs"))
 EDGE_SERVER_CONFIG_PATH = Path(os.environ.get("GATEWAY_EDGE_SERVER_CONFIG_PATH", "/opt/metacrust/config/edge_server/config.json"))
-SENSOR_CONFIG_FILES = {
-    "rs232": "rs232.json",
-    "rs485": "rs485.json",
-    "modbus_tcp": "modbus_tcp.json",
-}
+INTERFACE_CONFIG_SECTIONS = ("rs232", "rs485", "modbus_tcp")
+INTERFACES_SERVICE = GatewayInterfacesService()
 
 
 def _file_hash(path: Path) -> str:
@@ -108,45 +105,16 @@ async def _send_config_payload_to_core(ipc: object, config_name: str, payload: d
     return result
 
 
-def _sensor_config_path(config_name: str) -> Path:
-    file_name = SENSOR_CONFIG_FILES.get(config_name)
-    if file_name is None:
-        raise ValueError(f"Unsupported sensor config: {config_name}")
-    return SENSOR_CONFIG_STORAGE_DIR / file_name
-
-
-def _save_sensor_config(config_name: str, payload: dict[str, Any]) -> dict[str, object]:
-    SENSOR_CONFIG_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    path = _sensor_config_path(config_name)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    tmp_path.replace(path)
-    return {"saved": True, "path": str(path)}
-
-
-def _load_sensor_config(config_name: str) -> dict[str, Any] | None:
-    path = _sensor_config_path(config_name)
-    if not path.exists():
-        return None
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError(f"Invalid sensor config in {path}")
-    return payload
-
-
 def load_saved_sensor_configs() -> list[str]:
-    loaded: list[str] = []
-    for config_name in SENSOR_CONFIG_FILES:
-        try:
-            payload = _load_sensor_config(config_name)
-        except Exception as exc:
-            print(f"[sensor-config] failed to load {config_name}: {exc}", flush=True)
-            continue
-        if payload is None:
-            continue
-        CONFIGS[config_name] = payload
-        loaded.append(config_name)
-    return loaded
+    try:
+        config = INTERFACES_SERVICE.load()
+    except Exception as exc:
+        print(f"[gateway-interfaces] failed to load config: {exc}", flush=True)
+        return []
+    CONFIGS["rs232"] = INTERFACES_SERVICE.section("rs232")
+    CONFIGS["rs485"] = INTERFACES_SERVICE.section("rs485")
+    CONFIGS["modbus_tcp"] = INTERFACES_SERVICE.section("modbus_tcp")
+    return ["rs232", "rs485", "modbus_tcp"]
 
 
 def load_saved_edge_server_config() -> dict[str, Any]:
@@ -161,7 +129,7 @@ def load_saved_edge_server_config() -> dict[str, Any]:
 
 
 async def send_saved_sensor_configs_to_core(ipc: object, config_names: list[str] | None = None) -> list[dict[str, object]]:
-    names = config_names or list(SENSOR_CONFIG_FILES)
+    names = config_names or list(INTERFACE_CONFIG_SECTIONS)
     results: list[dict[str, object]] = []
     for config_name in names:
         results.append(await _send_config_payload_to_core(ipc, config_name, CONFIGS[config_name]))
@@ -544,11 +512,12 @@ def _default_edge_server_config() -> dict[str, Any]:
     }
 
 
+_INTERFACE_DEFAULTS = default_config()
 CONFIGS: dict[str, dict[str, Any]] = {
     "network": _network_settings(),
-    "rs232": _default_rs232_config(),
-    "rs485": _default_rs485_config(),
-    "modbus_tcp": _default_modbus_tcp_config(),
+    "rs232": {"version": 1, "rs232": _INTERFACE_DEFAULTS["rs232"]},
+    "rs485": {"version": 1, "rs485": _INTERFACE_DEFAULTS["rs485"]},
+    "modbus_tcp": {"version": 1, **_INTERFACE_DEFAULTS["modbus_tcp"]},
     "forwarding": {"version": 2, "profiles": []},
     "edge_server": _default_edge_server_config(),
 }
@@ -1474,8 +1443,10 @@ async def get_rs232_config(request: Request) -> JSONResponse:
 async def save_rs232_config(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    CONFIGS["rs232"] = await request.json()
-    storage = _save_sensor_config("rs232", CONFIGS["rs232"])
+    try:
+        CONFIGS["rs232"], storage = INTERFACES_SERVICE.update_section("rs232", await request.json())
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "message": str(exc)}, status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
     core_ipc = await _send_config_to_core(request, "rs232", CONFIGS["rs232"])
     return JSONResponse({"ok": True, "message": "RS232 config saved.", "storage": storage, "core_ipc": core_ipc})
 
@@ -1493,8 +1464,10 @@ async def get_rs485_config(request: Request) -> JSONResponse:
 async def save_rs485_config(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    CONFIGS["rs485"] = await request.json()
-    storage = _save_sensor_config("rs485", CONFIGS["rs485"])
+    try:
+        CONFIGS["rs485"], storage = INTERFACES_SERVICE.update_section("rs485", await request.json())
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "message": str(exc)}, status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
     core_ipc = await _send_config_to_core(request, "rs485", CONFIGS["rs485"])
     return JSONResponse({"ok": True, "message": "RS485 config saved.", "storage": storage, "core_ipc": core_ipc})
 
@@ -1512,8 +1485,10 @@ async def get_modbus_tcp_config(request: Request) -> JSONResponse:
 async def save_modbus_tcp_config(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    CONFIGS["modbus_tcp"] = await request.json()
-    storage = _save_sensor_config("modbus_tcp", CONFIGS["modbus_tcp"])
+    try:
+        CONFIGS["modbus_tcp"], storage = INTERFACES_SERVICE.update_section("modbus_tcp", await request.json())
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "message": str(exc)}, status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
     core_ipc = await _send_config_to_core(request, "modbus_tcp", CONFIGS["modbus_tcp"])
     return JSONResponse({"ok": True, "message": "Modbus TCP config saved.", "storage": storage, "core_ipc": core_ipc})
 

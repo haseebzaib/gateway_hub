@@ -3186,6 +3186,19 @@ document.addEventListener("DOMContentLoaded", () => {
                 enableToggle.addEventListener("change", () => applyPortState(enableToggle.checked));
             }
 
+            const modeButtons = Array.from(pane.querySelectorAll("[data-rs232-mode]"));
+            const applyMode = (mode) => {
+                modeButtons.forEach((button) => {
+                    const selected = button.getAttribute("data-rs232-mode") === mode;
+                    button.classList.toggle("is-current", selected);
+                    button.setAttribute("aria-pressed", selected ? "true" : "false");
+                });
+                pane.querySelectorAll("[data-rs232-mode-content]").forEach((content) => {
+                    content.style.display = content.getAttribute("data-rs232-mode-content") === mode ? "" : "none";
+                });
+            };
+            modeButtons.forEach((button) => button.addEventListener("click", () => applyMode(button.getAttribute("data-rs232-mode"))));
+
             // ── Alarm accordion per port ───────────────────────────────────────
             pane.querySelectorAll("[data-alarm-toggle]").forEach((toggleBtn) => {
                 const row = toggleBtn.closest("[data-alarm-ch]");
@@ -3266,11 +3279,28 @@ document.addEventListener("DOMContentLoaded", () => {
                 });
                 if (analog.state === "off") analog.channel = null;
 
+                const selectedMode = pane.querySelector("[data-rs232-mode].is-current")?.getAttribute("data-rs232-mode") || "sensor";
+                const sniffer = {};
+                pane.querySelectorAll("[data-rs232-sniffer]").forEach((el) => {
+                    const key = el.getAttribute("data-rs232-sniffer");
+                    if (el.type === "checkbox") sniffer[key] = el.checked;
+                    else if (el.type === "number") sniffer[key] = parseInt(el.value, 10) || 0;
+                    else sniffer[key] = el.value;
+                });
+                const capture = { format: "jsonl" };
+                pane.querySelectorAll("[data-rs232-capture]").forEach((el) => {
+                    const key = el.getAttribute("data-rs232-capture");
+                    capture[key] = el.type === "checkbox" ? el.checked : (parseInt(el.value, 10) || 0);
+                });
+                sniffer.capture = capture;
+
                 return {
                     enabled,
+                    mode: selectedMode,
                     serial,
                     sensor: "dustrak",
                     dustrak: { polling, driver, alarms, analog_output: analog },
+                    sniffer,
                 };
             };
 

@@ -226,6 +226,7 @@
 {% set dt = port.dustrak %}
 {% set ser = port.serial %}
 {% set ao = dt.analog_output %}
+{% set sniff = port.sniffer %}
 {% set baud_rates = [50, 75, 110, 134, 150, 200, 300, 600, 1200, 1800, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400] %}
 {% set pm_channels = [('pm1','PM1'), ('pm25','PM2.5'), ('pm4','PM4'), ('pm10','PM10'), ('total','Total')] %}
 
@@ -292,6 +293,25 @@
             </div>
         </div>
 
+        <div class="iface-cfg-card">
+            <p class="iface-section-eyebrow">Operating Mode</p>
+            <div class="iface-sensor-strip">
+                <button type="button" class="iface-sensor-btn{% if port.mode == 'sensor' %} is-current{% endif %}"
+                        data-rs232-mode="sensor" aria-pressed="{{ 'true' if port.mode == 'sensor' else 'false' }}">
+                    <span class="iface-sensor-btn-dot"></span>
+                    <span class="iface-sensor-btn-label">Sensor / Driver</span>
+                    <span class="iface-sensor-btn-sub">Active device protocol</span>
+                </button>
+                <button type="button" class="iface-sensor-btn{% if port.mode == 'sniffer' %} is-current{% endif %}"
+                        data-rs232-mode="sniffer" aria-pressed="{{ 'true' if port.mode == 'sniffer' else 'false' }}">
+                    <span class="iface-sensor-btn-dot"></span>
+                    <span class="iface-sensor-btn-label">Sniffer</span>
+                    <span class="iface-sensor-btn-sub">RX only — never transmits</span>
+                </button>
+            </div>
+        </div>
+
+        <div data-rs232-mode-content="sensor"{% if port.mode != 'sensor' %} style="display:none"{% endif %}>
         {# ── Sensor selector ── #}
         <div class="iface-cfg-card">
             <p class="iface-section-eyebrow">Sensor</p>
@@ -545,6 +565,61 @@
             <div class="iface-cfg-card iface-cfg-card-locked">
                 <p class="iface-section-eyebrow">Sensor Model</p>
                 <p class="iface-locked-note">Model selection coming in a future release.</p>
+            </div>
+        </div>
+        </div>{# end sensor mode #}
+
+        <div data-rs232-mode-content="sniffer"{% if port.mode != 'sniffer' %} style="display:none"{% endif %}>
+            <div class="iface-cfg-card">
+                <p class="iface-section-eyebrow">Sniffer Display</p>
+                <p class="iface-locked-note" style="margin-bottom:1rem">Listen-only mode. The gateway will not transmit on this port.</p>
+                <div class="iface-serial-grid">
+                    <label class="iface-field-group"><span class="iface-field-label">Display Format</span>
+                        <select class="iface-select" data-rs232-sniffer="display_format">
+                            <option value="ascii"{% if sniff.display_format == 'ascii' %} selected{% endif %}>ASCII</option>
+                            <option value="hex"{% if sniff.display_format == 'hex' %} selected{% endif %}>Hex</option>
+                            <option value="ascii_hex"{% if sniff.display_format == 'ascii_hex' %} selected{% endif %}>ASCII + Hex</option>
+                        </select>
+                    </label>
+                    <label class="iface-field-group"><span class="iface-field-label">Framing</span>
+                        <select class="iface-select" data-rs232-sniffer="framing">
+                            <option value="raw"{% if sniff.framing == 'raw' %} selected{% endif %}>Raw stream</option>
+                            <option value="line"{% if sniff.framing == 'line' %} selected{% endif %}>Line based</option>
+                            <option value="fixed_length"{% if sniff.framing == 'fixed_length' %} selected{% endif %}>Fixed length</option>
+                            <option value="idle_gap"{% if sniff.framing == 'idle_gap' %} selected{% endif %}>Idle gap</option>
+                        </select>
+                    </label>
+                    <label class="iface-field-group"><span class="iface-field-label">Line Delimiter</span>
+                        <select class="iface-select" data-rs232-sniffer="line_delimiter">
+                            <option value="cr"{% if sniff.line_delimiter == 'cr' %} selected{% endif %}>CR</option>
+                            <option value="lf"{% if sniff.line_delimiter == 'lf' %} selected{% endif %}>LF</option>
+                            <option value="crlf"{% if sniff.line_delimiter == 'crlf' %} selected{% endif %}>CRLF</option>
+                        </select>
+                    </label>
+                    <label class="iface-field-group"><span class="iface-field-label">Idle Gap (ms)</span>
+                        <input type="number" class="iface-number" min="1" max="60000" data-rs232-sniffer="idle_gap_ms" value="{{ sniff.idle_gap_ms }}">
+                    </label>
+                    <label class="iface-field-group"><span class="iface-field-label">Fixed Frame Length (bytes)</span>
+                        <input type="number" class="iface-number" min="1" max="65536" data-rs232-sniffer="fixed_frame_bytes" value="{{ sniff.fixed_frame_bytes }}">
+                    </label>
+                    <label class="iface-field-group"><span class="iface-field-label">Live Buffer (bytes)</span>
+                        <input type="number" class="iface-number" min="4096" max="16777216" data-rs232-sniffer="max_live_buffer_bytes" value="{{ sniff.max_live_buffer_bytes }}">
+                    </label>
+                    <label class="iface-poll-item"><div class="iface-poll-text"><span class="iface-poll-label">Timestamp frames</span><span class="iface-poll-desc">Attach gateway receive time</span></div>
+                        <input type="checkbox" class="iface-poll-check" data-rs232-sniffer="timestamp"{% if sniff.timestamp %} checked{% endif %}>
+                    </label>
+                </div>
+            </div>
+            <div class="iface-cfg-card">
+                <p class="iface-section-eyebrow">Capture to Disk</p>
+                <p class="iface-locked-note">Frames will be stored in <code>/opt/metacrust/data/gateway_interfaces/rs232/port_{{ port_id }}/</code></p>
+                <div class="iface-serial-grid">
+                    <label class="iface-poll-item"><div class="iface-poll-text"><span class="iface-poll-label">Enable capture</span><span class="iface-poll-desc">Store received frames as JSON Lines</span></div>
+                        <input type="checkbox" class="iface-poll-check" data-rs232-capture="enabled"{% if sniff.capture.enabled %} checked{% endif %}>
+                    </label>
+                    <label class="iface-field-group"><span class="iface-field-label">Retention (days)</span><input type="number" class="iface-number" min="1" max="365" data-rs232-capture="retention_days" value="{{ sniff.capture.retention_days }}"></label>
+                    <label class="iface-field-group"><span class="iface-field-label">Maximum Size (MB)</span><input type="number" class="iface-number" min="1" max="10240" data-rs232-capture="max_size_mb" value="{{ sniff.capture.max_size_mb }}"></label>
+                </div>
             </div>
         </div>
 

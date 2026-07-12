@@ -5028,6 +5028,12 @@ a.ov-feature-card:hover .ov-feature-eyebrow { color: var(--accent-cool); }
     gap: 1rem;
 }
 
+/* Mode panels wrap several cards, so they need the same spacing as the port body. */
+[data-rs232-mode-content] {
+    display: grid;
+    gap: 1rem;
+}
+
 .iface-port-disabled-note {
     padding: 2rem 1.4rem;
     display: flex;
