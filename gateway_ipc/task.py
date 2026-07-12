@@ -56,6 +56,9 @@ class GatewayCoreIpcTask:
         self._latest_device_metrics: dict[str, Any] | None = None
         self._device_metric_history: deque[dict[str, Any]] = deque(maxlen=600)
         self._anomaly_count = 0
+        self._rs232_sniffer_frames: deque[dict[str, Any]] = deque(maxlen=1000)
+        self._sensor_samples: deque[dict[str, Any]] = deque(maxlen=5000)
+        self._sensor_status: dict[tuple[str, str], dict[str, Any]] = {}
         # (metric, detector) -> {"last_ts": ms, "rank": severity} for episode dedup
         self._anomaly_episodes: dict[tuple[Any, Any], dict[str, Any]] = {}
         self._task: asyncio.Task[None] | None = None
@@ -149,6 +152,8 @@ class GatewayCoreIpcTask:
             "heartbeat_count": self.status.heartbeat_count,
             "latest_device_metrics_at": self._latest_device_metrics.get("received_at") if self._latest_device_metrics else None,
             "anomaly_count": self._anomaly_count,
+            "rs232_sniffer_frame_count": len(self._rs232_sniffer_frames),
+            "sensor_sample_count": len(self._sensor_samples),
         }
 
     def latest_device_metrics(self) -> dict[str, Any] | None:
@@ -156,6 +161,21 @@ class GatewayCoreIpcTask:
 
     def device_metric_history(self) -> list[dict[str, Any]]:
         return list(self._device_metric_history)
+
+    def rs232_sniffer_frames(self, port: str | None = None) -> list[dict[str, Any]]:
+        frames = list(self._rs232_sniffer_frames)
+        return [frame for frame in frames if frame.get("port") == port] if port else frames
+
+    def sensor_samples(self, source_type: str | None = None, source_id: str | None = None) -> list[dict[str, Any]]:
+        rows = list(self._sensor_samples)
+        if source_type is not None:
+            rows = [row for row in rows if row.get("source_type") == source_type]
+        if source_id is not None:
+            rows = [row for row in rows if row.get("source_id") == source_id]
+        return rows
+
+    def sensor_status(self) -> list[dict[str, Any]]:
+        return list(self._sensor_status.values())
 
     async def _run(self) -> None:
         while not self._stop_event.is_set():
@@ -211,6 +231,19 @@ class GatewayCoreIpcTask:
                 future = self._pending_acks.get(correlation_id)
                 if future is not None and not future.done():
                     future.set_result(message)
+            elif message_type == "rs232SnifferFrame":
+                data = message.get("data")
+                if isinstance(data, dict):
+                    self._rs232_sniffer_frames.append(dict(data))
+            elif message_type == "sensorData":
+                data = message.get("data")
+                if isinstance(data, dict):
+                    self._sensor_samples.append(dict(data))
+            elif message_type == "sensorStatus":
+                data = message.get("data")
+                if isinstance(data, dict):
+                    key = (str(data.get("source_type") or ""), str(data.get("source_id") or ""))
+                    self._sensor_status[key] = dict(data)
         except json.JSONDecodeError as exc:
             self.status.last_error = f"invalid IPC JSON: {exc}"
         except Exception as exc:
