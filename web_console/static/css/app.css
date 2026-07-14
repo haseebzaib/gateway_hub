@@ -9907,3 +9907,44 @@ body.anomaly-modal-open { overflow: hidden; }
 }
 .anomaly-detail-grid dt { font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
 .anomaly-detail-grid dd { margin: 0.15rem 0 0; font-size: 0.95rem; font-weight: 600; color: var(--text); }
+
+/* ── Flagged issues: clickable rows with expandable advice ───────────── */
+.anomaly-group {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.anomaly-group:last-child { border-bottom: none; }
+.anomaly-group .anomaly-group-row {
+    cursor: pointer;
+    border-bottom: none;
+    transition: background 140ms ease;
+    border-radius: 0.5rem;
+}
+.anomaly-group .anomaly-group-row:hover { background: rgba(255, 255, 255, 0.04); }
+.anomaly-group-chevron {
+    flex-shrink: 0;
+    margin-left: 0.4rem;
+    color: var(--muted);
+    font-size: 0.9rem;
+    transition: transform 160ms ease;
+}
+.anomaly-group.is-open .anomaly-group-chevron { transform: rotate(180deg); }
+.anomaly-group-detail {
+    margin: 0 0.4rem 0.7rem 1.7rem;
+    padding: 0.7rem 0.9rem;
+    border-radius: 0.7rem;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-left: 3px solid var(--accent-cool);
+}
+.anomaly-group-detail-headline {
+    margin: 0 0 0.35rem;
+    font-size: 0.9rem;
+    color: var(--text);
+}
+.anomaly-group-advice {
+    margin: 0;
+    font-size: 0.86rem;
+    line-height: 1.55;
+    color: var(--muted);
+}
+.anomaly-group-advice strong { color: var(--accent-cool); font-weight: 600; }

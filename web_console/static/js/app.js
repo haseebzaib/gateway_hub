@@ -2485,16 +2485,15 @@ document.addEventListener("DOMContentLoaded", () => {
             // line, and the dot is placed there — always on the line.
             const REAL_VALUE_DETECTORS = new Set(["thresholddetector", "rangecheckdetector"]);
             const seriesValueAt = (xs, ys, tSec) => {
+                // nearest non-null point (series contains null gap-breaks)
                 if (!xs || !xs.length) return null;
-                if (tSec <= xs[0]) return ys[0];
-                if (tSec >= xs[xs.length - 1]) return ys[ys.length - 1];
-                for (let i = 1; i < xs.length; i++) {
-                    if (xs[i] >= tSec) {
-                        const t0 = xs[i - 1], t1 = xs[i], f = (tSec - t0) / ((t1 - t0) || 1);
-                        return ys[i - 1] + f * (ys[i] - ys[i - 1]);
-                    }
+                let best = null, bestD = Infinity;
+                for (let i = 0; i < xs.length; i++) {
+                    if (ys[i] == null) continue;
+                    const d = Math.abs(xs[i] - tSec);
+                    if (d < bestD) { bestD = d; best = ys[i]; }
                 }
-                return ys[ys.length - 1];
+                return best;
             };
             const hasDerived = (a) => a.z_score != null || a.delta_value != null || a.slope_value != null;
             const readingFor = (ref, a) => {
@@ -2544,19 +2543,33 @@ document.addEventListener("DOMContentLoaded", () => {
                         }
                         // min/max range band — only meaningful on the rolled-up
                         // hourly tier; the raw 1 s fine tier has min == max.
+                        // Drawn per contiguous run so it never bridges the null
+                        // gap-breaks inserted where the device was offline.
                         const xs = ref.xs, mins = ref.mins, maxs = ref.maxs;
                         if (ref.tier === "hourly" && xs && xs.length > 1 && mins && maxs) {
-                            ctx.beginPath();
-                            for (let i = 0; i < xs.length; i++) {
-                                const x = u.valToPos(xs[i], "x", true), y = clampY(maxs[i]);
-                                i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-                            }
-                            for (let i = xs.length - 1; i >= 0; i--) {
-                                ctx.lineTo(u.valToPos(xs[i], "x", true), clampY(mins[i]));
-                            }
-                            ctx.closePath();
                             ctx.fillStyle = hexToRgba(cfg.stroke, 0.16);
-                            ctx.fill();
+                            let seg = [];
+                            const flushSeg = () => {
+                                if (seg.length > 1) {
+                                    ctx.beginPath();
+                                    seg.forEach((i, k) => {
+                                        const x = u.valToPos(xs[i], "x", true), y = clampY(maxs[i]);
+                                        k === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+                                    });
+                                    for (let k = seg.length - 1; k >= 0; k--) {
+                                        const i = seg[k];
+                                        ctx.lineTo(u.valToPos(xs[i], "x", true), clampY(mins[i]));
+                                    }
+                                    ctx.closePath();
+                                    ctx.fill();
+                                }
+                                seg = [];
+                            };
+                            for (let i = 0; i < xs.length; i++) {
+                                if (mins[i] == null || maxs[i] == null) { flushSeg(); continue; }
+                                seg.push(i);
+                            }
+                            flushSeg();
                         }
                         ctx.restore();
                     },
@@ -2607,20 +2620,19 @@ document.addEventListener("DOMContentLoaded", () => {
                         for (const m of ref.markers) {
                             const color = SEV_COLOR[m.rep.severity] || SEV_COLOR.Info;
                             const hot = ref.hoverKey === m.key;
-                            const r = hot ? (big ? 9 : 7) : (big ? 6 : 5);
-                            if (hot) {
-                                ctx.beginPath();
-                                ctx.arc(m.x, m.y, r + 4, 0, Math.PI * 2);
-                                ctx.fillStyle = hexToRgba(color, 0.28);
-                                ctx.fill();
-                            }
+                            const r = hot ? (big ? 12 : 10) : (big ? 9 : 8);
+                            // soft halo so markers pop without close inspection
+                            ctx.beginPath();
+                            ctx.arc(m.x, m.y, r + (hot ? 5 : 4), 0, Math.PI * 2);
+                            ctx.fillStyle = hexToRgba(color, hot ? 0.30 : 0.16);
+                            ctx.fill();
                             drawDiamond(ctx, m.x, m.y, r, color);
                             if (m.count > 1) {
-                                ctx.fillStyle = "rgba(255,255,255,0.9)";
-                                ctx.font = `${big ? 11 : 9}px sans-serif`;
+                                ctx.fillStyle = "rgba(255,255,255,0.95)";
+                                ctx.font = `bold ${big ? 12 : 11}px sans-serif`;
                                 ctx.textAlign = "center";
                                 ctx.textBaseline = "bottom";
-                                ctx.fillText(String(m.count), m.x, m.y - r - 3);
+                                ctx.fillText(String(m.count), m.x, m.y - r - 4);
                             }
                         }
                         ctx.restore();
@@ -2731,12 +2743,13 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (!xs || !xs.length) { hideTooltip(); return; }
                 const rect = u.over.getBoundingClientRect();
                 const t = u.posToVal(ev.clientX - rect.left, "x");
-                let idx = 0, bestD = Infinity;
+                let idx = -1, bestD = Infinity;
                 for (let i = 0; i < xs.length; i++) {
+                    if (ys[i] == null) continue;   // skip gap-breaks
                     const d = Math.abs(xs[i] - t);
                     if (d < bestD) { bestD = d; idx = i; }
                 }
-                if (ys[idx] == null) { hideTooltip(); return; }
+                if (idx < 0) { hideTooltip(); return; }
                 tooltip.classList.add("is-value");
                 tooltip.innerHTML =
                     `<p class="anomaly-tip-metric">${cfg.label}</p>` +
@@ -2815,10 +2828,24 @@ document.addEventListener("DOMContentLoaded", () => {
 
             const applySeries = (entry, data) => {
                 const pts = data.points || [];
-                entry.xs = pts.map((p) => p.t / 1000);
-                entry.ys = pts.map((p) => p.avg);
-                entry.mins = pts.map((p) => p.min);
-                entry.maxs = pts.map((p) => p.max);
+                // Insert a null break wherever the device was off/not reporting,
+                // so the line (and band) show a real hole instead of a long
+                // misleading straight bridge across days of missing data.
+                const stepSec = data.tier === "hourly" ? 3600 : 1;
+                const gapSec = stepSec * 3;
+                const xs = [], ys = [], mins = [], maxs = [];
+                for (const p of pts) {
+                    const t = p.t / 1000;
+                    if (xs.length && t - xs[xs.length - 1] > gapSec) {
+                        xs.push(xs[xs.length - 1] + stepSec);
+                        ys.push(null); mins.push(null); maxs.push(null);
+                    }
+                    xs.push(t); ys.push(p.avg); mins.push(p.min); maxs.push(p.max);
+                }
+                entry.xs = xs;
+                entry.ys = ys;
+                entry.mins = mins;
+                entry.maxs = maxs;
                 entry.tier = data.tier;
                 entry.anomalies = data.anomalies || [];
                 if (!entry.u) makeCardChart(entry);
@@ -2942,6 +2969,10 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (totalLabel) totalLabel.textContent = `Flagged in last ${RANGE_LABELS[currentRange]}`;
             };
 
+            // Which issue rows the user has expanded; keyed so the state
+            // survives the 5s re-render.
+            const expandedGroups = new Set();
+            const groupKey = (g) => `${g.metric}|${g.category}|${g.severity}`;
             const renderGroups = (groups) => {
                 if (!groups || !groups.length) {
                     groupsList.innerHTML = '<p class="insights-empty-note">No anomalies in this window. That is a good sign.</p>';
@@ -2949,6 +2980,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
                 groupsList.innerHTML = groups.map((g) => {
                     const sev = (g.severity || "Info").toLowerCase();
+                    const key = groupKey(g);
+                    const open = expandedGroups.has(key);
                     const unit = units[g.metric] || "";
                     let valueText = "";
                     if (g.latest_value != null) {
@@ -2957,15 +2990,34 @@ document.addEventListener("DOMContentLoaded", () => {
                             : fmtVal(g.latest_value, unit);
                         valueText = ` &middot; ${valueText}`;
                     }
-                    return `<div class="anomaly-group-row">` +
+                    const advice = g.latest_message || g.latest_headline || "";
+                    return `<div class="anomaly-group${open ? " is-open" : ""}" data-group-key="${key}">` +
+                        `<div class="anomaly-group-row" role="button" tabindex="0">` +
                         `<span class="anomaly-dot is-${sev}"></span>` +
                         `<div class="anomaly-group-body">` +
                         `<p class="anomaly-group-headline">${g.metric_label || "Device"}: ${g.category || "Anomaly"}</p>` +
                         `<p class="anomaly-group-meta">latest ${fmtAgo(g.latest_ts)}${valueText}</p></div>` +
                         `<span class="anomaly-group-count">${g.count}&times;</span>` +
+                        `<span class="anomaly-group-chevron" aria-hidden="true">&#9662;</span>` +
+                        `</div>` +
+                        `<div class="anomaly-group-detail" data-group-detail ${open ? "" : "hidden"}>` +
+                        (g.latest_headline ? `<p class="anomaly-group-detail-headline">${g.latest_headline}</p>` : "") +
+                        (advice ? `<p class="anomaly-group-advice"><strong>What could be wrong:</strong> ${advice}</p>` : "") +
+                        `</div>` +
                         `</div>`;
                 }).join("");
             };
+            // One delegated listener; survives every re-render.
+            groupsList.addEventListener("click", (ev) => {
+                const group = ev.target.closest("[data-group-key]");
+                if (!group) return;
+                const key = group.getAttribute("data-group-key");
+                const detail = group.querySelector("[data-group-detail]");
+                const nowOpen = !group.classList.contains("is-open");
+                group.classList.toggle("is-open", nowOpen);
+                if (detail) detail.hidden = !nowOpen;
+                if (nowOpen) expandedGroups.add(key); else expandedGroups.delete(key);
+            });
 
             // ── detection coverage strip ─────────────────────────────────
             const buildCoverage = () => {

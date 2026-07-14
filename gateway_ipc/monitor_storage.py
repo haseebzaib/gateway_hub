@@ -394,13 +394,19 @@ class MonitorStorage:
                             AND e3.category IS e1.category
                             AND e3.severity IS e1.severity
                             AND e3.ts_ms >= ?
-                          ORDER BY e3.ts_ms DESC LIMIT 1) AS latest_headline
+                          ORDER BY e3.ts_ms DESC LIMIT 1) AS latest_headline,
+                       (SELECT message FROM anomaly_events e4
+                          WHERE e4.metric IS e1.metric
+                            AND e4.category IS e1.category
+                            AND e4.severity IS e1.severity
+                            AND e4.ts_ms >= ?
+                          ORDER BY e4.ts_ms DESC LIMIT 1) AS latest_message
                 FROM anomaly_events e1
                 WHERE ts_ms >= ?
                 GROUP BY metric, category, severity
                 ORDER BY latest_ts DESC
                 """,
-                (int(since_ms), int(since_ms), int(since_ms)),
+                (int(since_ms), int(since_ms), int(since_ms), int(since_ms)),
             ).fetchall()
         return [dict(row) for row in rows]
 
