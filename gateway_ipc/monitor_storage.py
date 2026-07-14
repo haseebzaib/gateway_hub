@@ -9,10 +9,13 @@ To keep the eMMC happy we never store raw 1 Hz samples: metric values are
 aggregated into fixed time buckets (avg/min/max) before they hit disk.
 
 Two resolution tiers share one table:
-  * 'fine'   - 15 s buckets, kept 3 days   -> smooth zoom around an anomaly
-  * 'hourly' - 1 h buckets, kept 31 days   -> the month-long overview
+  * 'fine'   - raw 1 s samples, kept 1 day  -> exact zoom around an anomaly
+  * 'coarse' - 5 min buckets, kept 31 days  -> week/month overview
 
-min/max are preserved per bucket so a short spike is never averaged away.
+The coarse tier is 5 minutes (not 1 hour) because the device often runs in
+short sessions; an hour bucket collapsed a whole session into one point and
+long ranges rendered as unreadable specks. min/max are preserved per bucket
+so a short spike is never averaged away.
 """
 
 from __future__ import annotations
@@ -37,13 +40,15 @@ DEFAULT_SQLITE_PATH = Path.home() / ".metacrust" / "data" / "monitor" / "monitor
 # a spike/dip and the dot would float off the line). Older data is rolled up
 # into hourly avg/min/max for the month-long overview.
 FINE_BUCKET_MS = 1_000             # raw 1 second samples
-HOURLY_BUCKET_MS = 3_600_000       # 1 hour coarse buckets
+COARSE_BUCKET_MS = 300_000         # 5 minute buckets for long ranges
 FINE_RETENTION_MS = 1 * 86_400_000        # keep raw samples 1 day
-HOURLY_RETENTION_MS = 31 * 86_400_000     # keep hourly buckets 31 days
+COARSE_RETENTION_MS = 31 * 86_400_000     # keep coarse buckets 31 days
 ANOMALY_RETENTION_MS = 31 * 86_400_000    # keep anomaly events 31 days
 
-# Range at/under which the fine tier is used; above it we serve hourly.
-FINE_QUERY_MAX_MS = 1 * 86_400_000
+# Range at/under which the fine tier is served; above it we serve coarse
+# (6 h of raw 1 s data is ~21.6k points — still smooth in uPlot; 24 h+ would
+# be 86k+, so those ranges get the 5-minute tier instead).
+FINE_QUERY_MAX_MS = 6 * 3_600_000
 
 # The metrics that get their own chart. Keys match the C++ metricName strings
 # so anomaly events overlay straight onto the matching chart.
@@ -155,6 +160,10 @@ class MonitorStorage:
         for column in ("z_score", "delta_value", "slope_value"):
             if column not in existing:
                 self._conn.execute(f"ALTER TABLE anomaly_events ADD COLUMN {column} REAL")
+        # The long-range tier used to be 1 h buckets labelled 'hourly'; keep the
+        # old rows visible by folding them into the 'coarse' tier (their hour
+        # spacing just renders as sparser points).
+        self._conn.execute("UPDATE metric_rollup SET tier = 'coarse' WHERE tier = 'hourly'")
         self._conn.commit()
 
     # ── ingestion ────────────────────────────────────────────────────────
@@ -264,29 +273,29 @@ class MonitorStorage:
 
     def _downsample_locked(self, now_ms: int) -> None:
         assert self._conn is not None
-        # Rebuild hourly buckets from the last 3 days of fine data (cheap, and
-        # covers hours that are about to lose their fine rows to pruning).
+        # Rebuild coarse buckets from the still-retained fine data (cheap, and
+        # covers buckets about to lose their fine rows to pruning).
         since = now_ms - FINE_RETENTION_MS
         self._conn.execute(
             """
             INSERT INTO metric_rollup (metric, tier, bucket_ms, avg, min, max, samples)
             SELECT metric,
-                   'hourly',
-                   (bucket_ms / ?) * ? AS hb,
+                   'coarse',
+                   (bucket_ms / ?) * ? AS cb,
                    SUM(avg * samples) / SUM(samples),
                    MIN(min),
                    MAX(max),
                    SUM(samples)
             FROM metric_rollup
             WHERE tier = 'fine' AND bucket_ms >= ?
-            GROUP BY metric, hb
+            GROUP BY metric, cb
             ON CONFLICT(metric, tier, bucket_ms) DO UPDATE SET
                 avg     = excluded.avg,
                 min     = excluded.min,
                 max     = excluded.max,
                 samples = excluded.samples
             """,
-            (HOURLY_BUCKET_MS, HOURLY_BUCKET_MS, since),
+            (COARSE_BUCKET_MS, COARSE_BUCKET_MS, since),
         )
         self._conn.commit()
 
@@ -297,8 +306,8 @@ class MonitorStorage:
             (now_ms - FINE_RETENTION_MS,),
         )
         self._conn.execute(
-            "DELETE FROM metric_rollup WHERE tier = 'hourly' AND bucket_ms < ?",
-            (now_ms - HOURLY_RETENTION_MS,),
+            "DELETE FROM metric_rollup WHERE tier = 'coarse' AND bucket_ms < ?",
+            (now_ms - COARSE_RETENTION_MS,),
         )
         self._conn.execute(
             "DELETE FROM anomaly_events WHERE ts_ms < ?",
@@ -316,7 +325,7 @@ class MonitorStorage:
             # Make sure the newest completed bucket is visible before querying.
             self._flush_ready_buckets_locked(flush_all=False)
             span = max(0, int(to_ms) - int(from_ms))
-            tier = "fine" if span <= FINE_QUERY_MAX_MS else "hourly"
+            tier = "fine" if span <= FINE_QUERY_MAX_MS else "coarse"
             point_rows = self._conn.execute(
                 """
                 SELECT bucket_ms, avg, min, max
@@ -340,6 +349,7 @@ class MonitorStorage:
         return {
             "metric": metric,
             "tier": tier,
+            "step_ms": FINE_BUCKET_MS if tier == "fine" else COARSE_BUCKET_MS,
             "points": [
                 {"t": row["bucket_ms"], "avg": row["avg"], "min": row["min"], "max": row["max"]}
                 for row in point_rows
@@ -380,6 +390,7 @@ class MonitorStorage:
                 """
                 SELECT metric, metric_label, category, severity,
                        COUNT(*)     AS count,
+                       MIN(ts_ms)   AS first_ts,
                        MAX(ts_ms)   AS latest_ts,
                        MIN(value)   AS min_value,
                        MAX(value)   AS max_value,

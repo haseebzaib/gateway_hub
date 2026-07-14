@@ -2541,12 +2541,12 @@ document.addEventListener("DOMContentLoaded", () => {
                             ctx.fillStyle = "rgba(242,84,91,0.11)";
                             ctx.fillRect(left, top, width, yCrit - top);
                         }
-                        // min/max range band — only meaningful on the rolled-up
-                        // hourly tier; the raw 1 s fine tier has min == max.
+                        // min/max range band — only meaningful on rolled-up
+                        // tiers; the raw 1 s fine tier has min == max.
                         // Drawn per contiguous run so it never bridges the null
                         // gap-breaks inserted where the device was offline.
                         const xs = ref.xs, mins = ref.mins, maxs = ref.maxs;
-                        if (ref.tier === "hourly" && xs && xs.length > 1 && mins && maxs) {
+                        if (ref.tier && ref.tier !== "fine" && xs && xs.length > 1 && mins && maxs) {
                             ctx.fillStyle = hexToRgba(cfg.stroke, 0.16);
                             let seg = [];
                             const flushSeg = () => {
@@ -2570,6 +2570,18 @@ document.addEventListener("DOMContentLoaded", () => {
                                 seg.push(i);
                             }
                             flushSeg();
+                            // single-bucket sessions: draw a min/max tick so a
+                            // short run between gaps is still visible
+                            for (let i = 0; i < xs.length; i++) {
+                                if (mins[i] == null || maxs[i] == null) continue;
+                                const prevNull = i === 0 || mins[i - 1] == null;
+                                const nextNull = i === xs.length - 1 || mins[i + 1] == null;
+                                if (prevNull && nextNull) {
+                                    const x = u.valToPos(xs[i], "x", true);
+                                    const y0 = clampY(maxs[i]), y1 = clampY(mins[i]);
+                                    ctx.fillRect(x - 2, y0, 4, Math.max(2, y1 - y0));
+                                }
+                            }
                         }
                         ctx.restore();
                     },
@@ -2581,6 +2593,24 @@ document.addEventListener("DOMContentLoaded", () => {
                         const { left, top, width, height } = u.bbox;
                         const bottom = top + height;
                         const clampY = (v) => Math.max(top + 4, Math.min(bottom - 4, u.valToPos(v, "y", true)));
+                        // a lone point between gap-breaks has no line segment to
+                        // ride on, so draw it as a small circle or it vanishes
+                        const lxs = ref.xs || [], lys = ref.ys || [];
+                        ctx.save();
+                        ctx.fillStyle = cfg.stroke;
+                        for (let i = 0; i < lys.length; i++) {
+                            if (lys[i] == null) continue;
+                            const prevNull = i === 0 || lys[i - 1] == null;
+                            const nextNull = i === lys.length - 1 || lys[i + 1] == null;
+                            if (prevNull && nextNull) {
+                                const x = u.valToPos(lxs[i], "x", true);
+                                if (x < left || x > left + width) continue;
+                                ctx.beginPath();
+                                ctx.arc(x, clampY(lys[i]), 3.5, 0, Math.PI * 2);
+                                ctx.fill();
+                            }
+                        }
+                        ctx.restore();
                         const xMin = u.scales.x.min, xMax = u.scales.x.max;
                         const spanSec = Math.max(1e-6, xMax - xMin);
                         const bucketSec = 22 / (width / spanSec);
@@ -2613,7 +2643,12 @@ document.addEventListener("DOMContentLoaded", () => {
                             if (xp < left || xp > left + width) return;
                             const reading = readingFor(ref, rep);
                             const yp = (typeof reading === "number") ? clampY(reading) : top + 10;
-                            ref.markers.push({ x: xp, y: yp, key, rep, reading, count: items.length, types: Array.from(typeMap.values()) });
+                            ref.markers.push({
+                                x: xp, y: yp, key, rep, reading,
+                                count: items.length,
+                                types: Array.from(typeMap.values()),
+                                items: items.slice().sort((a, b) => a.ts_ms - b.ts_ms),
+                            });
                         });
 
                         ctx.save();
@@ -2831,7 +2866,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 // Insert a null break wherever the device was off/not reporting,
                 // so the line (and band) show a real hole instead of a long
                 // misleading straight bridge across days of missing data.
-                const stepSec = data.tier === "hourly" ? 3600 : 1;
+                const stepSec = (data.step_ms ? data.step_ms : (data.tier === "fine" ? 1000 : 300000)) / 1000;
                 const gapSec = stepSec * 3;
                 const xs = [], ys = [], mins = [], maxs = [];
                 for (const p of pts) {
@@ -2863,36 +2898,59 @@ document.addEventListener("DOMContentLoaded", () => {
             const renderPointDetail = (m, cfg) => {
                 const a = m.rep;
                 const unit = cfg.unit;
-                const rows = [];
-                rows.push(["What kind", a.category || "Anomaly"]);
-                rows.push(["When", new Date(a.ts_ms).toLocaleString()]);
-                if (m.reading != null) rows.push(["Reading at that time", fmtVal(m.reading, unit)]);
-                // "how unusual" from the engine's derived measurements
-                if (a.z_score != null) rows.push(["How unusual", `${Math.abs(a.z_score).toFixed(1)}× its normal variation`]);
-                if (a.delta_value != null) rows.push(["Sudden change", `${a.delta_value > 0 ? "+" : ""}${fmtVal(a.delta_value, unit)}`]);
-                if (a.slope_value != null) rows.push(["Rate of change", `${a.slope_value > 0 ? "+" : ""}${fmtVal(a.slope_value, unit)}/min`]);
-                if (a.warning_limit) rows.push(["Warning limit", fmtVal(a.warning_limit, unit)]);
-                if (a.critical_limit) rows.push(["Critical limit", fmtVal(a.critical_limit, unit)]);
                 const sev = (a.severity || "Info").toLowerCase();
-                const types = m.types || [];
-                let note = "";
-                if (types.length > 1) {
-                    note = `<p class="anomaly-detail-count">${types.length} different checks flagged this moment:</p>` +
-                        `<div class="anomaly-detail-types">` +
-                        types.map((t) => `<span class="anomaly-type-chip is-${(t.severity || "Info").toLowerCase()}">${t.category}</span>`).join("") +
-                        `</div>`;
-                } else if (m.count > 1) {
-                    note = `<p class="anomaly-detail-count">${m.count} flags fired around this moment. Showing the most severe.</p>`;
+                const items = (m.items && m.items.length) ? m.items : [a];
+
+                // unique advisory texts from the engine (one per distinct message)
+                const seenMsg = new Set();
+                const advice = [];
+                for (const e of items) {
+                    const msg = e.message || "";
+                    if (msg && !seenMsg.has(msg)) { seenMsg.add(msg); advice.push(msg); }
                 }
+                const adviceHtml = advice.map((msg) =>
+                    `<p class="anomaly-group-advice"><strong>What could be wrong:</strong> ${msg}</p>`).join("");
+
+                if (items.length === 1) {
+                    const rows = [];
+                    rows.push(["What kind", a.category || "Anomaly"]);
+                    rows.push(["When", new Date(a.ts_ms).toLocaleString()]);
+                    if (m.reading != null) rows.push(["Reading at that time", fmtVal(m.reading, unit)]);
+                    if (a.z_score != null) rows.push(["How unusual", `${Math.abs(a.z_score).toFixed(1)}× its normal variation`]);
+                    if (a.delta_value != null) rows.push(["Sudden change", `${a.delta_value > 0 ? "+" : ""}${fmtVal(a.delta_value, unit)}`]);
+                    if (a.slope_value != null) rows.push(["Rate of change", `${a.slope_value > 0 ? "+" : ""}${fmtVal(a.slope_value, unit)}/min`]);
+                    if (a.warning_limit) rows.push(["Warning limit", fmtVal(a.warning_limit, unit)]);
+                    if (a.critical_limit) rows.push(["Critical limit", fmtVal(a.critical_limit, unit)]);
+                    modalDetail.innerHTML =
+                        `<div class="anomaly-detail-head">` +
+                        `<span class="anomaly-tip-badge is-${sev}">${a.severity || "Info"}</span>` +
+                        `<span class="anomaly-detail-cat">${a.category || "Anomaly"}</span></div>` +
+                        `<p class="anomaly-detail-headline">${a.headline || a.message || ""}</p>` +
+                        `<dl class="anomaly-detail-grid">` +
+                        rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("") +
+                        `</dl>` + adviceHtml;
+                    return;
+                }
+
+                // several flags at (nearly) the same moment: compile them —
+                // each with its own time, kind, severity and reading
+                const rowsHtml = items.map((e) => {
+                    const es = (e.severity || "Info").toLowerCase();
+                    const val = (typeof e.value === "number") ? fmtVal(e.value, unit) : "--";
+                    return `<div class="anomaly-moment-row">` +
+                        `<span class="anomaly-dot is-${es}"></span>` +
+                        `<span class="anomaly-moment-time">${new Date(e.ts_ms).toLocaleString()}</span>` +
+                        `<span class="anomaly-moment-cat">${e.category || "Anomaly"}</span>` +
+                        `<span class="anomaly-moment-val">${val}</span>` +
+                        `</div>`;
+                }).join("");
                 modalDetail.innerHTML =
                     `<div class="anomaly-detail-head">` +
                     `<span class="anomaly-tip-badge is-${sev}">${a.severity || "Info"}</span>` +
-                    `<span class="anomaly-detail-cat">${a.category || "Anomaly"}</span></div>` +
+                    `<span class="anomaly-detail-cat">${items.length} flags at this moment</span></div>` +
                     `<p class="anomaly-detail-headline">${a.headline || a.message || ""}</p>` +
-                    note +
-                    `<dl class="anomaly-detail-grid">` +
-                    rows.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("") +
-                    `</dl>`;
+                    `<div class="anomaly-moment-list">${rowsHtml}</div>` +
+                    adviceHtml;
             };
 
             const modalFull = () => {
@@ -2957,6 +3015,40 @@ document.addEventListener("DOMContentLoaded", () => {
             modal.querySelectorAll("[data-anomaly-modal-close]").forEach((el) => el.addEventListener("click", closeModal));
             document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && !modal.hidden) closeModal(); });
 
+            // Jump from a flagged issue straight to that moment on the graph:
+            // widen the time range if the moment is outside it, open the big
+            // chart zoomed around the moment, and preselect the nearest marker.
+            const focusMoment = async (metric, tsMs) => {
+                if (!charts[metric]) return;
+                const age = Date.now() - tsMs;
+                if (age + 60_000 > RANGES[currentRange]) {
+                    const needed = ["1h", "6h", "24h", "7d", "30d"].find((k) => RANGES[k] > age + 60_000) || "30d";
+                    currentRange = needed;
+                    rangeButtons.forEach((b) => b.classList.toggle("is-current", b.getAttribute("data-anomaly-range") === needed));
+                    await refreshAll();
+                }
+                openModal(metric);
+                if (!modalState.u) return;
+                const tSec = tsMs / 1000;
+                const half = Math.max(150, (RANGES[currentRange] / 1000) * 0.02);
+                const full = modalFull();
+                let min = tSec - half, max = tSec + half;
+                if (full) {
+                    min = Math.max(min, full[0]);
+                    max = Math.min(max, full[1]);
+                    if (max <= min) { min = full[0]; max = full[1]; }
+                }
+                modalState.u.setScale("x", { min, max });
+                window.requestAnimationFrame(() => {
+                    let best = null, bestD = Infinity;
+                    for (const mk of modalState.markers) {
+                        const d = Math.abs(mk.rep.ts_ms - tsMs);
+                        if (d < bestD) { bestD = d; best = mk; }
+                    }
+                    if (best) renderPointDetail(best, modalState.cfg);
+                });
+            };
+
             // ── summary + grouped issues ─────────────────────────────────
             const updateCounts = (counts) => {
                 counts = counts || {};
@@ -2973,12 +3065,27 @@ document.addEventListener("DOMContentLoaded", () => {
             // survives the 5s re-render.
             const expandedGroups = new Set();
             const groupKey = (g) => `${g.metric}|${g.category}|${g.severity}`;
+            // paged so a busy device doesn't become an endless scroll
+            const GROUPS_PER_PAGE = 8;
+            let groupsPage = 0;
+            let lastGroups = [];
             const renderGroups = (groups) => {
-                if (!groups || !groups.length) {
+                lastGroups = groups || [];
+                if (!lastGroups.length) {
                     groupsList.innerHTML = '<p class="insights-empty-note">No anomalies in this window. That is a good sign.</p>';
                     return;
                 }
-                groupsList.innerHTML = groups.map((g) => {
+                const pages = Math.max(1, Math.ceil(lastGroups.length / GROUPS_PER_PAGE));
+                groupsPage = Math.min(groupsPage, pages - 1);
+                const pageGroups = lastGroups.slice(groupsPage * GROUPS_PER_PAGE, (groupsPage + 1) * GROUPS_PER_PAGE);
+                const pager = pages > 1
+                    ? `<div class="anomaly-pager">` +
+                      `<button type="button" class="anomaly-pager-btn" data-groups-prev ${groupsPage === 0 ? "disabled" : ""}>&larr; Newer</button>` +
+                      `<span class="anomaly-pager-label">Page ${groupsPage + 1} of ${pages} &middot; ${lastGroups.length} issues</span>` +
+                      `<button type="button" class="anomaly-pager-btn" data-groups-next ${groupsPage >= pages - 1 ? "disabled" : ""}>Older &rarr;</button>` +
+                      `</div>`
+                    : "";
+                groupsList.innerHTML = pageGroups.map((g) => {
                     const sev = (g.severity || "Info").toLowerCase();
                     const key = groupKey(g);
                     const open = expandedGroups.has(key);
@@ -2991,6 +3098,21 @@ document.addEventListener("DOMContentLoaded", () => {
                         valueText = ` &middot; ${valueText}`;
                     }
                     const advice = g.latest_message || g.latest_headline || "";
+                    const rangeText = (g.min_value != null && g.max_value != null && g.min_value !== g.max_value)
+                        ? `${fmtVal(g.min_value, unit)} &ndash; ${fmtVal(g.max_value, unit)}`
+                        : (g.latest_value != null ? fmtVal(g.latest_value, unit) : "--");
+                    const happened = g.count === 1 ? "once" : `${g.count} separate times`;
+                    const facts =
+                        `<dl class="anomaly-detail-grid anomaly-group-facts">` +
+                        `<div><dt>Severity</dt><dd>${g.severity || "Info"}</dd></div>` +
+                        (g.first_ts ? `<div><dt>First seen</dt><dd>${new Date(g.first_ts).toLocaleString()}</dd></div>` : "") +
+                        `<div><dt>Most recent</dt><dd>${new Date(g.latest_ts).toLocaleString()}</dd></div>` +
+                        `<div><dt>Happened</dt><dd>${happened}</dd></div>` +
+                        `<div><dt>Reading${g.count > 1 ? "s" : ""}</dt><dd>${rangeText}</dd></div>` +
+                        `</dl>`;
+                    const gotoBtn = charts[g.metric]
+                        ? `<button type="button" class="anomaly-group-goto" data-group-goto data-goto-metric="${g.metric}" data-goto-ts="${g.latest_ts}">View on graph &#8599;</button>`
+                        : `<p class="anomaly-group-nochart">This signal is monitored in the background and does not have its own chart.</p>`;
                     return `<div class="anomaly-group${open ? " is-open" : ""}" data-group-key="${key}">` +
                         `<div class="anomaly-group-row" role="button" tabindex="0">` +
                         `<span class="anomaly-dot is-${sev}"></span>` +
@@ -3002,13 +3124,22 @@ document.addEventListener("DOMContentLoaded", () => {
                         `</div>` +
                         `<div class="anomaly-group-detail" data-group-detail ${open ? "" : "hidden"}>` +
                         (g.latest_headline ? `<p class="anomaly-group-detail-headline">${g.latest_headline}</p>` : "") +
+                        facts +
                         (advice ? `<p class="anomaly-group-advice"><strong>What could be wrong:</strong> ${advice}</p>` : "") +
+                        gotoBtn +
                         `</div>` +
                         `</div>`;
-                }).join("");
+                }).join("") + pager;
             };
             // One delegated listener; survives every re-render.
             groupsList.addEventListener("click", (ev) => {
+                if (ev.target.closest("[data-groups-prev]")) { groupsPage = Math.max(0, groupsPage - 1); renderGroups(lastGroups); return; }
+                if (ev.target.closest("[data-groups-next]")) { groupsPage += 1; renderGroups(lastGroups); return; }
+                const goto_ = ev.target.closest("[data-group-goto]");
+                if (goto_) {
+                    focusMoment(goto_.getAttribute("data-goto-metric"), Number(goto_.getAttribute("data-goto-ts")));
+                    return;
+                }
                 const group = ev.target.closest("[data-group-key]");
                 if (!group) return;
                 const key = group.getAttribute("data-group-key");
@@ -3140,6 +3271,16 @@ document.addEventListener("DOMContentLoaded", () => {
     const overviewAnomaly = document.querySelector("[data-overview-anomaly]");
     if (overviewAnomaly) {
         const checksEl = overviewAnomaly.querySelector("[data-overview-anomaly-checks]");
+        const flagsEl = overviewAnomaly.querySelector("[data-overview-anomaly-flags]");
+        const healthDot = document.querySelector("[data-ov-health-dot]");
+        const healthText = document.querySelector("[data-ov-health-text]");
+        const agoText = (ms) => {
+            const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+            if (s < 60) return `${s}s ago`;
+            if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+            if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+            return `${Math.floor(s / 86400)}d ago`;
+        };
         const load = async () => {
             try {
                 const r = await fetch("/api/monitor/anomaly-config");
@@ -3155,7 +3296,46 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
             } catch (err) { /* overview band is best-effort */ }
         };
+        const refreshFlags = async () => {
+            try {
+                const since = Date.now() - 24 * 3600 * 1000;
+                const r = await fetch(`/api/monitor/anomalies/grouped?since=${since}`);
+                if (!r.ok) return;
+                const data = await r.json();
+                const counts = data.counts || {};
+                const critical = counts.Critical || 0;
+                const warning = counts.Warning || 0;
+                // health line on the System card: explicit at a glance
+                if (healthDot && healthText) {
+                    if (critical > 0) {
+                        healthDot.className = "ov-health-dot is-crit";
+                        healthText.textContent = `${critical} critical issue${critical === 1 ? "" : "s"} flagged in the last 24 h`;
+                    } else if (warning > 0) {
+                        healthDot.className = "ov-health-dot is-warn";
+                        healthText.textContent = `${warning} warning${warning === 1 ? "" : "s"} flagged in the last 24 h`;
+                    } else {
+                        healthDot.className = "ov-health-dot is-good";
+                        healthText.textContent = "No issues flagged in the last 24 h";
+                    }
+                }
+                if (flagsEl) {
+                    const groups = (data.groups || []).slice(0, 3);
+                    flagsEl.innerHTML = groups.length
+                        ? groups.map((g) => {
+                            const sev = (g.severity || "Info").toLowerCase();
+                            return `<a href="/monitor" class="ov-flag-row">` +
+                                `<span class="anomaly-dot is-${sev}"></span>` +
+                                `<span class="ov-flag-text">${g.metric_label || "Device"}: ${g.category || "Anomaly"}</span>` +
+                                `<span class="ov-flag-time">${agoText(g.latest_ts)}</span>` +
+                                `</a>`;
+                        }).join("")
+                        : `<div class="ov-flag-allclear"><span class="ov-health-dot is-good"></span>Nothing flagged in the last 24 hours.</div>`;
+                }
+            } catch (err) { /* best-effort */ }
+        };
         load();
+        refreshFlags();
+        window.setInterval(refreshFlags, 30000);
     }
 
     const interfacesShell = document.querySelector("[data-interfaces-shell]");

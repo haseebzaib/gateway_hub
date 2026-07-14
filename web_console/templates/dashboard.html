@@ -132,6 +132,10 @@
                     <span>Disk</span>
                 </div>
             </div>
+            <div class="ov-dsc-health" data-ov-health>
+                <span class="ov-health-dot" data-ov-health-dot></span>
+                <span class="ov-health-text" data-ov-health-text>Checking recent flags&hellip;</span>
+            </div>
             <p class="ov-dsc-footer">Uptime: {{ system_uptime }} · {{ disk.used_gb }} GB / {{ disk.total_gb }} GB used</p>
         </a>
 
@@ -183,39 +187,29 @@
         </a>
     </section>
 
-    {# ── Anomaly detection engine explainer ───────────────────────────── #}
+    {# ── Anomaly detection engine: explainer + live flags ─────────────── #}
     <section class="ov-anomaly-band" data-overview-anomaly>
-        <div class="ov-anomaly-head">
-            <div>
+        <div class="ov-anomaly-cols">
+            <div class="ov-anomaly-main">
                 <p class="ov-section-eyebrow">Built in</p>
                 <h2 class="ov-anomaly-title">Anomaly detection engine</h2>
                 <p class="ov-anomaly-lede">The gateway watches your data in real time and automatically flags
                     anything abnormal, with no thresholds to babysit. It runs on the device's own health today,
                     and the same engine can be pointed at your sensor and field data with rules you configure.
                     Here are the kinds of problems it catches.</p>
+                <div class="ov-anomaly-checks" data-overview-anomaly-checks>
+                    <p class="insights-empty-note">Loading detection summary…</p>
+                </div>
             </div>
+            <aside class="ov-anomaly-live">
+                <div class="ov-anomaly-live-head">
+                    <h3>Latest flags</h3>
+                    <a href="/monitor">Open Monitor &rarr;</a>
+                </div>
+                <div class="ov-anomaly-live-list" data-overview-anomaly-flags>
+                    <p class="insights-empty-note">Checking&hellip;</p>
+                </div>
+            </aside>
         </div>
-        <div class="ov-anomaly-checks" data-overview-anomaly-checks>
-            <p class="insights-empty-note">Loading detection summary…</p>
-        </div>
-    </section>
-
-    {# ── Quick navigation ─────────────────────────────────────────────── #}
-    <section class="domain-grid ov-feature-grid">
-        <a href="/interfaces" class="domain-card ov-feature-card">
-            <p class="ov-feature-eyebrow">Open →</p>
-            <h3>Field Interfaces</h3>
-            <p>RS232, RS485, Modbus RTU and TCP — field device configuration and port mapping.</p>
-        </a>
-        <article class="domain-card ov-feature-card is-disabled">
-            <p class="ov-feature-eyebrow">Coming soon</p>
-            <h3>Network Probe</h3>
-            <p>Ping, SNMP, discovery, interface statistics, and flow visibility.</p>
-        </article>
-        <article class="domain-card ov-feature-card is-disabled">
-            <p class="ov-feature-eyebrow">Coming soon</p>
-            <h3>Security</h3>
-            <p>Gateway access, certificates, keys, firewall policy, and trust controls.</p>
-        </article>
     </section>
 {% endblock %}
