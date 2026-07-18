@@ -44,12 +44,12 @@
             </div>
             <div class="network-runtime-item">
                 <span>Wi-Fi Client</span>
-                <strong data-runtime-wifi-status>{{ 'Connected' if network_state.wifi_client.connected_ssid else 'Disconnected' }}</strong>
+                <strong data-runtime-wifi-status>{{ 'Connected' if network_state.get('wifi_client', {}).get('connected_ssid') else 'Disconnected' }}</strong>
                 <p data-runtime-wifi-detail>{{ network_state.wifi_client.connected_ssid or network_state.wifi_client.address or 'No active SSID' }}</p>
             </div>
             <div class="network-runtime-item">
                 <span>Wi-Fi AP</span>
-                <strong data-runtime-ap-status>{{ 'Enabled' if network_state.wifi_ap.enabled else 'Disabled' }}</strong>
+                <strong data-runtime-ap-status>{{ 'Enabled' if network_state.get('wifi_ap', {}).get('enabled') else 'Disabled' }}</strong>
                 <p data-runtime-ap-detail>{{ network_state.wifi_ap.clients }} client(s)</p>
             </div>
             <div class="network-runtime-item">
@@ -121,14 +121,38 @@
                 <div class="eth-detail-row"><span class="eth-detail-label">MAC Address</span><code class="eth-detail-val" id="wlan0-mac">—</code></div>
                 <div class="eth-detail-row" id="wlan0-ssid-row"><span class="eth-detail-label">SSID</span><code class="eth-detail-val" id="wlan0-ssid">—</code></div>
                 <div class="eth-detail-row" id="wlan0-bssid-row"><span class="eth-detail-label">AP (BSSID)</span><code class="eth-detail-val" id="wlan0-bssid">—</code></div>
+                <div class="eth-detail-row" id="wlan0-configured-row"><span class="eth-detail-label">Configured SSID</span><code class="eth-detail-val" id="wlan0-configured">—</code></div>
                 <div class="eth-detail-row"><span class="eth-detail-label">IPv4 Address</span><code class="eth-detail-val" id="wlan0-ipv4">—</code></div>
                 <div class="eth-detail-row" id="wlan0-ipv6-row"><span class="eth-detail-label">IPv6 Addresses</span><div class="eth-ipv6-list" id="wlan0-ipv6">—</div></div>
+                <div class="eth-detail-row"><span class="eth-detail-label">Internet</span><code class="eth-detail-val" id="wlan0-internet">—</code></div>
                 <div class="eth-detail-row eth-detail-row-meta">
                     <span class="eth-meta-chip"><span>Channel</span><code id="wlan0-channel">—</code></span>
                     <span class="eth-meta-chip"><span>Frequency</span><code id="wlan0-freq">—</code></span>
                     <span class="eth-meta-chip"><span>Signal</span><code id="wlan0-signal">—</code></span>
                     <span class="eth-meta-chip"><span>RX rate</span><code id="wlan0-rxrate">—</code></span>
                     <span class="eth-meta-chip"><span>TX rate</span><code id="wlan0-txrate">—</code></span>
+                </div>
+            </div>
+        </div>
+
+        {# cellular detailed live card #}
+        <div class="eth-iface-card" id="eth-card-cel0" style="max-width:100%">
+            <div class="eth-iface-head">
+                <span class="eth-link-dot" id="cel0-dot"></span>
+                <span class="eth-iface-name">Cellular — Modem</span>
+                <span class="eth-iface-state" id="cel0-state">Loading…</span>
+            </div>
+            <div class="eth-detail-table">
+                <div class="eth-detail-row"><span class="eth-detail-label">Operator</span><code class="eth-detail-val" id="cel0-operator">—</code></div>
+                <div class="eth-detail-row"><span class="eth-detail-label">SIM</span><code class="eth-detail-val" id="cel0-sim">—</code></div>
+                <div class="eth-detail-row"><span class="eth-detail-label">Registration</span><code class="eth-detail-val" id="cel0-registration">—</code></div>
+                <div class="eth-detail-row"><span class="eth-detail-label">IPv4 Address</span><code class="eth-detail-val" id="cel0-ipv4">—</code></div>
+                <div class="eth-detail-row"><span class="eth-detail-label">Internet</span><code class="eth-detail-val" id="cel0-internet">—</code></div>
+                <div class="eth-detail-row eth-detail-row-meta">
+                    <span class="eth-meta-chip"><span>Technology</span><code id="cel0-tech">—</code></span>
+                    <span class="eth-meta-chip"><span>Signal</span><code id="cel0-signal">—</code></span>
+                    <span class="eth-meta-chip"><span>Session ↓</span><code id="cel0-rx">—</code></span>
+                    <span class="eth-meta-chip"><span>Session ↑</span><code id="cel0-tx">—</code></span>
                 </div>
             </div>
         </div>
@@ -314,11 +338,6 @@
                         </label>
 
                         <label class="field">
-                            <span>Country code</span>
-                            <input type="text" name="wifi_client_country_code" value="{{ net.wifi_client.country_code }}" maxlength="2">
-                        </label>
-
-                        <label class="field">
                             <span>Band</span>
                             <select name="wifi_client_band">
                                 <option value="auto" {% if net.wifi_client.band == 'auto' %}selected{% endif %}>Auto</option>
@@ -425,11 +444,6 @@
                         <label class="field settings-grid-span-2">
                             <span>Passphrase</span>
                             <input type="password" name="wifi_ap_passphrase" value="{{ net.wifi_ap.passphrase }}">
-                        </label>
-
-                        <label class="field">
-                            <span>Country code</span>
-                            <input type="text" name="wifi_ap_country_code" value="{{ net.wifi_ap.country_code }}" maxlength="2">
                         </label>
 
                         <label class="field">

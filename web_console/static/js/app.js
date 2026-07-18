@@ -959,6 +959,7 @@ document.addEventListener("DOMContentLoaded", () => {
         };
 
         const renderNetworkAudit = (payload) => {
+            netAuditPayload = payload;
             const summaryEl = connectivityShell.querySelector("[data-net-audit-summary]");
             const listEl = connectivityShell.querySelector("[data-net-audit-list]");
             if (!summaryEl && !listEl) return;
@@ -995,7 +996,17 @@ document.addEventListener("DOMContentLoaded", () => {
                 interface_recovered: "Interface recovered",
             }[type] || String(type || "Event").replace(/_/g, " "));
 
-            listEl.innerHTML = events.map((event) => {
+            const pages = Math.max(1, Math.ceil(events.length / 8));
+            netAuditPage = Math.min(netAuditPage, pages - 1);
+            const pageEvents = events.slice(netAuditPage * 8, netAuditPage * 8 + 8);
+            const pager = pages > 1
+                ? `<div class="anomaly-pager">` +
+                  `<button type="button" class="anomaly-pager-btn" data-net-audit-prev ${netAuditPage === 0 ? "disabled" : ""}>&larr; Newer</button>` +
+                  `<span class="anomaly-pager-label">Page ${netAuditPage + 1} of ${pages} &middot; ${events.length} events</span>` +
+                  `<button type="button" class="anomaly-pager-btn" data-net-audit-next ${netAuditPage >= pages - 1 ? "disabled" : ""}>Older &rarr;</button>` +
+                  `</div>`
+                : "";
+            listEl.innerHTML = pageEvents.map((event) => {
                 const sev = String(event.severity || "info").toLowerCase();
                 const rowCls = sev === "error" || sev === "critical" ? "is-err" : sev === "warning" ? "is-warn" : "";
                 const when = event.timestamp_utc || _stDateTime(event.timestamp_ms);
@@ -1021,7 +1032,7 @@ document.addEventListener("DOMContentLoaded", () => {
                         ${event.message ? `<span class="fw-audit-meta">${_stEsc(event.message)}</span>` : ""}
                     </div>
                 </article>`;
-            }).join("");
+            }).join("") + pager;
         };
 
         const refreshNetworkAudit = async () => {
@@ -1029,7 +1040,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const exportLink = connectivityShell.querySelector("[data-net-audit-export]");
             if (exportLink) exportLink.href = `/api/network/events/export/csv?window=${encodeURIComponent(win)}`;
             try {
-                const r = await fetch(`/api/network/events?window=${encodeURIComponent(win)}&limit=100`);
+                const r = await fetch(`/api/network/events?window=${encodeURIComponent(win)}&limit=500`);
                 if (!r.ok) return;
                 renderNetworkAudit(await r.json());
             } catch (e) {
@@ -1063,6 +1074,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
         let cellularRefreshTimer = null;
         let statusRefreshTimer   = null;
+        let netAuditPage         = 0;
+        let netAuditPayload      = null;
+
 
         const networkActionRow = connectivityShell.querySelector(".network-action-row");
 
@@ -1108,7 +1122,19 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             tab.addEventListener("click", () => syncNetworkPanels(tab.getAttribute("data-network-tab")));
         });
-        connectivityShell.querySelector("[data-net-audit-window]")?.addEventListener("change", refreshNetworkAudit);
+        connectivityShell.querySelector("[data-net-audit-window]")?.addEventListener("change", () => {
+            netAuditPage = 0;
+            refreshNetworkAudit();
+        });
+        connectivityShell.querySelector("[data-net-audit-list]")?.addEventListener("click", (ev) => {
+            if (ev.target.closest("[data-net-audit-prev]")) {
+                netAuditPage = Math.max(0, netAuditPage - 1);
+                if (netAuditPayload) renderNetworkAudit(netAuditPayload);
+            } else if (ev.target.closest("[data-net-audit-next]")) {
+                netAuditPage += 1;
+                if (netAuditPayload) renderNetworkAudit(netAuditPayload);
+            }
+        });
 
         const initialTab = tabs.find((tab) => tab.classList.contains("is-current") && !tab.hasAttribute("disabled"))
             || tabs.find((tab) => !tab.hasAttribute("disabled"));
@@ -1808,6 +1834,12 @@ document.addEventListener("DOMContentLoaded", () => {
                 setEl("wlan0-signal", sigText);
                 setEl("wlan0-rxrate", w.rx_bitrate || "—");
                 setEl("wlan0-txrate", w.tx_bitrate || "—");
+                setEl("wlan0-configured", w.configured_ssid || (w.enabled === false ? "Wi-Fi client disabled" : "—"));
+                const wInet = document.getElementById("wlan0-internet");
+                if (wInet) {
+                    wInet.textContent = w.internet_ok ? "Reachable" : (connected ? "Not reachable" : "—");
+                    wInet.style.color = w.internet_ok ? "var(--success)" : (connected ? "#ff9ba0" : "");
+                }
 
                 // Mode pill
                 const modePill = document.getElementById("wlan0-mode-pill");
@@ -1839,6 +1871,44 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (bssidRow) bssidRow.style.display = connected ? "" : "none";
             };
 
+            const fmtBytes = (n) => {
+                n = Number(n) || 0;
+                if (n >= 1073741824) return `${(n / 1073741824).toFixed(2)} GB`;
+                if (n >= 1048576) return `${(n / 1048576).toFixed(1)} MB`;
+                if (n >= 1024) return `${(n / 1024).toFixed(0)} KB`;
+                return `${n} B`;
+            };
+
+            const renderCellCard = (cel) => {
+                const card = document.getElementById("eth-card-cel0");
+                if (!card) return;
+                if (!cel || (!cel.enabled && !cel.present)) {
+                    card.style.display = "none";
+                    return;
+                }
+                card.style.display = "";
+                const dot = document.getElementById("cel0-dot");
+                if (dot) dot.className = `eth-link-dot ${cel.connected ? "is-up" : "is-down"}`;
+                const stateText = !cel.present ? "No modem detected"
+                    : cel.connected ? "Connected"
+                    : cel.registered ? "Registered, not connected"
+                    : "Searching";
+                setEl("cel0-state", stateText);
+                setEl("cel0-operator", cel.operator || "—");
+                setEl("cel0-sim", cel.sim_status || "—");
+                setEl("cel0-registration", (cel.registration_state || "—") + (cel.roaming ? " · roaming" : ""));
+                setEl("cel0-ipv4", cel.address || "—");
+                const cInet = document.getElementById("cel0-internet");
+                if (cInet) {
+                    cInet.textContent = cel.internet_ok ? "Reachable" : (cel.connected ? "Not reachable" : "—");
+                    cInet.style.color = cel.internet_ok ? "var(--success)" : (cel.connected ? "#ff9ba0" : "");
+                }
+                setEl("cel0-tech", cel.access_technology || "—");
+                setEl("cel0-signal", cel.signal_dbm ? `${cel.signal_dbm} dBm (${cel.signal_percent ?? 0}%)` : "—");
+                setEl("cel0-rx", fmtBytes(cel.session_rx_bytes));
+                setEl("cel0-tx", fmtBytes(cel.session_tx_bytes));
+            };
+
             const loadIfaceDetails = async () => {
                 try {
                     const r = await fetch("/api/network/iface-details");
@@ -1849,6 +1919,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     renderIface("eth0", ifaces.eth0 || {}, d.active_uplink);
                     renderIface("eth1", ifaces.eth1 || {}, d.active_uplink);
                     renderWifi(d.wifi || null);
+                    renderCellCard(d.cellular || null);
                     if (ethNote) {
                         const t = new Date().toLocaleTimeString();
                         ethNote.textContent = `Last refreshed: ${t}`;
@@ -3271,16 +3342,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const overviewAnomaly = document.querySelector("[data-overview-anomaly]");
     if (overviewAnomaly) {
         const checksEl = overviewAnomaly.querySelector("[data-overview-anomaly-checks]");
-        const flagsEl = overviewAnomaly.querySelector("[data-overview-anomaly-flags]");
         const healthDot = document.querySelector("[data-ov-health-dot]");
         const healthText = document.querySelector("[data-ov-health-text]");
-        const agoText = (ms) => {
-            const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
-            if (s < 60) return `${s}s ago`;
-            if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-            if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-            return `${Math.floor(s / 86400)}d ago`;
-        };
         const load = async () => {
             try {
                 const r = await fetch("/api/monitor/anomaly-config");
@@ -3317,19 +3380,6 @@ document.addEventListener("DOMContentLoaded", () => {
                         healthDot.className = "ov-health-dot is-good";
                         healthText.textContent = "No issues flagged in the last 24 h";
                     }
-                }
-                if (flagsEl) {
-                    const groups = (data.groups || []).slice(0, 3);
-                    flagsEl.innerHTML = groups.length
-                        ? groups.map((g) => {
-                            const sev = (g.severity || "Info").toLowerCase();
-                            return `<a href="/monitor" class="ov-flag-row">` +
-                                `<span class="anomaly-dot is-${sev}"></span>` +
-                                `<span class="ov-flag-text">${g.metric_label || "Device"}: ${g.category || "Anomaly"}</span>` +
-                                `<span class="ov-flag-time">${agoText(g.latest_ts)}</span>` +
-                                `</a>`;
-                        }).join("")
-                        : `<div class="ov-flag-allclear"><span class="ov-health-dot is-good"></span>Nothing flagged in the last 24 hours.</div>`;
                 }
             } catch (err) { /* best-effort */ }
         };

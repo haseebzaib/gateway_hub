@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import secrets
+import shutil
 import subprocess
 import time
 from copy import deepcopy
@@ -46,7 +47,9 @@ router = APIRouter()
 PACKAGE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(PACKAGE_DIR / "templates"))
 
-GATEWAY_ID = "metacrust_v2_dev"
+# The same MAC-derived unit identity data forwarding publishes under, so the
+# ID a customer sees on the Overview matches the one in their MQTT topics.
+GATEWAY_ID = forwarding_gateway_id()
 DEFAULT_USERNAME = "gateway"
 DEFAULT_PASSWORD = "gateway"
 EDGE_SERVER_CONFIG_PATH = Path(os.environ.get("GATEWAY_EDGE_SERVER_CONFIG_PATH", "/opt/metacrust/config/edge_server/config.json"))
@@ -177,11 +180,31 @@ def _primary_sections(active_label: str) -> list[dict[str, object]]:
 
 
 def _system_uptime() -> str:
-    return "v2 shell"
+    try:
+        seconds = int(float(Path("/proc/uptime").read_text().split()[0]))
+    except (OSError, ValueError, IndexError):
+        return "unknown"
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        return f"{days}d {hours}h {minutes}m"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
 
 
 def _disk_usage() -> dict[str, object]:
-    return {"pct": 0, "used_gb": 0, "total_gb": 0}
+    try:
+        usage = shutil.disk_usage("/")
+    except OSError:
+        return {"pct": 0, "used_gb": 0, "total_gb": 0}
+    used = usage.total - usage.free
+    return {
+        "pct": round(100 * used / usage.total) if usage.total else 0,
+        "used_gb": round(used / 1024**3, 1),
+        "total_gb": round(usage.total / 1024**3, 1),
+    }
 
 
 def _network_settings() -> dict[str, Any]:
@@ -201,7 +224,7 @@ def _network_settings() -> dict[str, Any]:
                 "hidden_ssid": False,
                 "security": "wpa2-psk",
                 "passphrase": "",
-                "country_code": "PK",
+                "country_code": "",
                 "band": "auto",
                 "dhcp": True,
                 "static_address": "",
@@ -215,7 +238,7 @@ def _network_settings() -> dict[str, Any]:
                 "ssid": "Gateway-Setup",
                 "security": "wpa2-psk",
                 "passphrase": "",
-                "country_code": "PK",
+                "country_code": "",
                 "band": "2.4ghz",
                 "channel": "auto",
                 "channel_width": "20",

@@ -10151,3 +10151,63 @@ body.anomaly-modal-open { overflow: hidden; }
     font-size: 0.82rem;
     resize: vertical;
 }
+
+/* ── Wi-Fi tab live status ───────────────────────────────────────────── */
+.wifi-live-cols {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+    gap: 1.2rem;
+    align-items: start;
+}
+@media (max-width: 860px) { .wifi-live-cols { grid-template-columns: 1fr; } }
+.wifi-live-title {
+    margin: 0 0 0.5rem;
+    font-size: 0.8rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+}
+.cellular-stat-val.is-good { color: #8ff0c0; }
+.cellular-stat-val.is-bad  { color: #ff9ba0; }
+
+/* ── Overview: slim identity bar replaces the gateway stage visual ───── */
+.overview-grid { grid-template-columns: 1fr; }
+.ov-identity-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 1.4rem;
+    padding: 0.85rem 1.2rem;
+    border-radius: 1rem;
+    background: var(--surface);
+    border: 1px solid var(--line);
+}
+.ov-identity-bar .gateway-led { position: static; flex-shrink: 0; }
+.ov-id-item { display: flex; align-items: baseline; gap: 0.5rem; }
+.ov-id-item span {
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+}
+.ov-id-item code { font-size: 0.9rem; color: var(--text); }
+.ov-id-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-left: auto; }
+.ov-id-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.3rem 0.7rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    font-size: 0.78rem;
+    color: var(--muted);
+}
+.ov-id-chip .gateway-iface-led { position: static; }
+.ov-id-chip strong { color: var(--text); font-weight: 600; }
+.ov-id-chip small { color: var(--muted); }
+.ov-id-chip small:empty { display: none; }
+.ov-id-chip.is-active { border-color: rgba(98, 211, 158, 0.4); background: rgba(98, 211, 158, 0.08); }
+.ov-id-chip.is-standby { border-color: rgba(240, 166, 75, 0.35); }

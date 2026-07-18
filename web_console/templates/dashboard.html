@@ -7,54 +7,44 @@
     {# ── Gateway visual + Connectivity summary ─────────────────────────── #}
     <section class="overview-grid" data-overview-shell>
 
-        {# Left: Gateway stage card (visual identity) #}
-        <article class="gateway-stage-card">
-            <div class="hero-band-copy">
-                <p class="hero-band-eyebrow">Gateway</p>
+        {# Slim gateway identity bar: ID, uptime, live interface chips #}
+        <div class="ov-identity-bar">
+            <span class="gateway-led{% if not overview_visual.gateway_online %} is-offline{% endif %}" data-overview-led></span>
+            <div class="ov-id-item">
+                <span>Gateway ID</span>
+                <code>{{ gateway_id }}</code>
             </div>
-
-            <div class="gateway-stage-visual">
-                <div class="gateway-halo"></div>
-                <div class="gateway-unit">
-                    <span class="gateway-led{% if not overview_visual.gateway_online %} is-offline{% endif %}" data-overview-led></span>
-                    <div class="gateway-iface-box" data-gateway-iface="eth0">
-                        <span class="gateway-iface-led" data-gateway-iface-led></span>
-                        <span class="gateway-iface-name">ETH0</span>
-                        <strong data-gateway-iface-state>—</strong>
-                        <small data-gateway-iface-detail>Waiting</small>
-                    </div>
-                    <div class="gateway-iface-box" data-gateway-iface="eth1">
-                        <span class="gateway-iface-led" data-gateway-iface-led></span>
-                        <span class="gateway-iface-name">ETH1</span>
-                        <strong data-gateway-iface-state>—</strong>
-                        <small data-gateway-iface-detail>Waiting</small>
-                    </div>
-                    <div class="gateway-iface-box" data-gateway-iface="wifi">
-                        <span class="gateway-iface-led" data-gateway-iface-led></span>
-                        <span class="gateway-iface-name">WIFI</span>
-                        <strong data-gateway-iface-state>—</strong>
-                        <small data-gateway-iface-detail>Waiting</small>
-                    </div>
-                    <div class="gateway-iface-box" data-gateway-iface="cellular">
-                        <span class="gateway-iface-led" data-gateway-iface-led></span>
-                        <span class="gateway-iface-name">CELL</span>
-                        <strong data-gateway-iface-state>—</strong>
-                        <small data-gateway-iface-detail>Waiting</small>
-                    </div>
-                </div>
+            <div class="ov-id-item">
+                <span>Uptime</span>
+                <code>{{ system_uptime }}</code>
             </div>
-
-            <div class="gw-identity-strip">
-                <div class="gw-identity-row">
-                    <span class="gw-identity-label">Gateway ID</span>
-                    <code class="gw-identity-val">{{ gateway_id }}</code>
-                </div>
-                <div class="gw-identity-row">
-                    <span class="gw-identity-label">Uptime</span>
-                    <code class="gw-identity-val">{{ system_uptime }}</code>
-                </div>
+            <div class="ov-id-chips">
+                <span class="ov-id-chip" data-gateway-iface="eth0">
+                    <span class="gateway-iface-led" data-gateway-iface-led></span>
+                    <span class="ov-id-chip-name">ETH0</span>
+                    <strong data-gateway-iface-state>—</strong>
+                    <small data-gateway-iface-detail></small>
+                </span>
+                <span class="ov-id-chip" data-gateway-iface="eth1">
+                    <span class="gateway-iface-led" data-gateway-iface-led></span>
+                    <span class="ov-id-chip-name">ETH1</span>
+                    <strong data-gateway-iface-state>—</strong>
+                    <small data-gateway-iface-detail></small>
+                </span>
+                <span class="ov-id-chip" data-gateway-iface="wifi">
+                    <span class="gateway-iface-led" data-gateway-iface-led></span>
+                    <span class="ov-id-chip-name">WIFI</span>
+                    <strong data-gateway-iface-state>—</strong>
+                    <small data-gateway-iface-detail></small>
+                </span>
+                <span class="ov-id-chip" data-gateway-iface="cellular">
+                    <span class="gateway-iface-led" data-gateway-iface-led></span>
+                    <span class="ov-id-chip-name">CELL</span>
+                    <strong data-gateway-iface-state>—</strong>
+                    <small data-gateway-iface-detail></small>
+                </span>
             </div>
-        </article>
+        </div>
 
         {# Right: Connectivity summary (clickable → /connectivity) #}
         <a href="/connectivity" class="ov-connect-card">
@@ -189,27 +179,14 @@
 
     {# ── Anomaly detection engine: explainer + live flags ─────────────── #}
     <section class="ov-anomaly-band" data-overview-anomaly>
-        <div class="ov-anomaly-cols">
-            <div class="ov-anomaly-main">
-                <p class="ov-section-eyebrow">Built in</p>
-                <h2 class="ov-anomaly-title">Anomaly detection engine</h2>
-                <p class="ov-anomaly-lede">The gateway watches your data in real time and automatically flags
-                    anything abnormal, with no thresholds to babysit. It runs on the device's own health today,
-                    and the same engine can be pointed at your sensor and field data with rules you configure.
-                    Here are the kinds of problems it catches.</p>
-                <div class="ov-anomaly-checks" data-overview-anomaly-checks>
-                    <p class="insights-empty-note">Loading detection summary…</p>
-                </div>
-            </div>
-            <aside class="ov-anomaly-live">
-                <div class="ov-anomaly-live-head">
-                    <h3>Latest flags</h3>
-                    <a href="/monitor">Open Monitor &rarr;</a>
-                </div>
-                <div class="ov-anomaly-live-list" data-overview-anomaly-flags>
-                    <p class="insights-empty-note">Checking&hellip;</p>
-                </div>
-            </aside>
+        <p class="ov-section-eyebrow">Built in</p>
+        <h2 class="ov-anomaly-title">Anomaly detection engine</h2>
+        <p class="ov-anomaly-lede">The gateway watches your data in real time and automatically flags
+            anything abnormal, with no thresholds to babysit. It runs on the device's own health today,
+            and the same engine can be pointed at your sensor and field data with rules you configure.
+            Here are the kinds of problems it catches.</p>
+        <div class="ov-anomaly-checks" data-overview-anomaly-checks>
+            <p class="insights-empty-note">Loading detection summary…</p>
         </div>
     </section>
 {% endblock %}

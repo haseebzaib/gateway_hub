@@ -181,7 +181,14 @@ class NetworkRuntime:
             stats_key = uplink_ifaces.get(name) or {}
             info["internet_ok"] = bool(stats_key.get("internet_ok"))
             result["interfaces"][name] = info
-        result["wifi"] = _wifi_details("wlan0")
+        wifi = _wifi_details("wlan0")
+        if wifi is not None:
+            client = state.get("wifi_client") if isinstance(state.get("wifi_client"), dict) else {}
+            wifi["enabled"] = bool(client.get("enabled"))
+            wifi["configured_ssid"] = str(client.get("configured_ssid") or "")
+            wifi["internet_ok"] = bool(client.get("internet_ok"))
+        result["wifi"] = wifi
+        result["cellular"] = state.get("cellular") if isinstance(state.get("cellular"), dict) else None
         return result
 
     # ── event recorder ───────────────────────────────────────────────────
@@ -326,11 +333,6 @@ class NetworkRuntime:
         rows.sort(key=lambda e: e.get("timestamp_ms") or 0, reverse=True)
         rows = rows[: max(1, int(limit))]
 
-        summary = {
-            "outages": sum(1 for e in rows if e.get("event_type") == "outage_started"),
-            "recovered": sum(1 for e in rows if e.get("event_type") == "outage_recovered"),
-            "switches": sum(1 for e in rows if e.get("event_type") == "uplink_switch"),
-        }
         open_outage = None
         state = self.state() or {}
         network = (state.get("uplink_stats") or {}).get("network") or {}
@@ -338,7 +340,19 @@ class NetworkRuntime:
             open_outage = {
                 "started_at": network.get("down_since_timestamp") or "",
                 "duration_seconds": int(network.get("current_down_seconds") or 0),
+                "duration_ms": int(network.get("current_down_seconds") or 0) * 1000,
             }
+        # shape matches the audit JS: summary.counts.* + total_downtime_ms
+        summary = {
+            "counts": {
+                "outage_starts": sum(1 for e in rows if e.get("event_type") == "outage_started"),
+                "interface_issues": sum(1 for e in rows if e.get("event_type") == "interface_issue_started"),
+                "uplink_switches": sum(1 for e in rows if e.get("event_type") == "uplink_switch"),
+                "recovered": sum(1 for e in rows if e.get("event_type") == "outage_recovered"),
+            },
+            "total_downtime_ms": sum(int(e.get("duration_ms") or 0) for e in rows if e.get("event_type") == "outage_recovered"),
+            "open_outage": open_outage,
+        }
         return {"ok": True, "events": rows, "open_outage": open_outage, "summary": summary}
 
 
