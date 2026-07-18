@@ -343,8 +343,7 @@ class ForwardingService:
         if profile["protocol"] == "mqtt":
             m = profile.get("mqtt") or {}
             return f"{m.get('host') or 'not-configured'}:{m.get('port') or 1883}"
-        h = profile.get("https") or {}
-        return h.get("url") or "not-configured"
+        return https_url(profile.get("https") or {}) or "not-configured"
 
     def status(self) -> dict[str, Any]:
         mqtt: list[dict[str, Any]] = []

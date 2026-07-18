@@ -5661,7 +5661,6 @@ document.addEventListener("DOMContentLoaded", () => {
         const fwFName         = fwShell.querySelector("[data-fw-f-name]");
         const fwFProtocol     = fwShell.querySelector("[data-fw-f-protocol]");
         const fwFEnabled      = fwShell.querySelector("[data-fw-f-enabled]");
-        const fwFScope        = fwShell.querySelector("[data-fw-f-scope]");
         // MQTT
         const fwFMqttHost     = fwShell.querySelector("[data-fw-f-mqtt-host]");
         const fwFMqttPort     = fwShell.querySelector("[data-fw-f-mqtt-port]");
@@ -5670,36 +5669,38 @@ document.addEventListener("DOMContentLoaded", () => {
         const fwFMqttUser     = fwShell.querySelector("[data-fw-f-mqtt-user]");
         const fwFMqttPass     = fwShell.querySelector("[data-fw-f-mqtt-pass]");
         const fwFMqttQos      = fwShell.querySelector("[data-fw-f-mqtt-qos]");
-        const fwFMqttRetain   = fwShell.querySelector("[data-fw-f-mqtt-retain]");
-        const fwFMqttInterval = fwShell.querySelector("[data-fw-f-mqtt-interval]");
         const fwMqttTlsBlock  = fwShell.querySelector("[data-fw-mqtt-tls-block]");
         // HTTPS
         const fwFHttpsHost       = fwShell.querySelector("[data-fw-f-https-host]");
         const fwFHttpsPort       = fwShell.querySelector("[data-fw-f-https-port]");
         const fwFHttpsTlsBtn     = fwShell.querySelector("[data-fw-f-https-tls]");
         const fwFHttpsSensorPath    = fwShell.querySelector("[data-fw-f-https-sensor-path]");
-        const fwFHttpsAnalyticsPath = fwShell.querySelector("[data-fw-f-https-analytics-path]");
-        const fwFHttpsEventsPath    = fwShell.querySelector("[data-fw-f-https-events-path]");
+        const fwFHttpsMode          = fwShell.querySelector("[data-fw-f-https-mode]");
+        const fwFHttpsGql           = fwShell.querySelector("[data-fw-f-https-gql]");
+        const fwGqlWrap             = fwShell.querySelector("[data-fw-graphql-wrap]");
         const fwFHttpsAuth       = fwShell.querySelector("[data-fw-f-https-auth-type]");
         const fwFHttpsAVal       = fwShell.querySelector("[data-fw-f-https-auth-val]");
         const fwFHttpsMtls       = fwShell.querySelector("[data-fw-f-https-mtls]");
-        const fwFHttpsInt        = fwShell.querySelector("[data-fw-f-https-interval]");
-        const fwFHttpsTout       = fwShell.querySelector("[data-fw-f-https-timeout]");
         const fwAuthValWrap      = fwShell.querySelector("[data-fw-auth-val-wrap]");
         const fwAuthValLbl       = fwShell.querySelector("[data-fw-auth-val-label]");
         const fwHttpsMtlsBlock   = fwShell.querySelector("[data-fw-https-mtls-block]");
         const fwHttpsTlsSection  = fwShell.querySelector("[data-fw-https-tls-section]");
         const fwHttpsSensorPrev    = fwShell.querySelector("[data-fw-https-sensor-preview]");
-        const fwHttpsAnalyticsPrev = fwShell.querySelector("[data-fw-https-analytics-preview]");
-        const fwHttpsEventsPrev    = fwShell.querySelector("[data-fw-https-events-preview]");
+        // What to send
+        const fwFSrcMetrics    = fwShell.querySelector("[data-fw-f-src-metrics]");
+        const fwFSrcMetricsInt = fwShell.querySelector("[data-fw-f-src-metrics-int]");
+        const fwFSrcAnoms      = fwShell.querySelector("[data-fw-f-src-anomalies]");
+        const fwFSrcAllSensors = fwShell.querySelector("[data-fw-f-src-all-sensors]");
+        const fwFSrcSensorList = fwShell.querySelector("[data-fw-f-src-sensors]");
 
         // ── State ────────────────────────────────────────────────────────────
         let fwProfiles   = [];
+        let fwAvailableSources = [];
+        let fwDefaultGql = "mutation Ingest($events: [JSON!]!) { ingestGatewayData(events: $events) }";
         let fwEditId     = null;
         let fwEnabledVal = false;
         let fwTlsVal      = false;   // MQTT TLS
         let fwHttpsTlsVal = true;    // HTTPS TLS (default on)
-        let fwRetainVal   = false;
         let fwMtlsVal     = false;
 
         // ── Cert widget factory ──────────────────────────────────────────────
@@ -5800,7 +5801,6 @@ document.addEventListener("DOMContentLoaded", () => {
             fwFMqttPort.addEventListener("input", () => { fwFMqttPort._userEdited = true; });
         }
 
-        fwToggle(fwFMqttRetain, () => fwRetainVal, (v) => { fwRetainVal = v; });
 
         fwToggle(fwFHttpsTlsBtn, () => fwHttpsTlsVal, (v) => {
             fwHttpsTlsVal = v;
@@ -5843,16 +5843,38 @@ document.addEventListener("DOMContentLoaded", () => {
             const scheme  = fwHttpsTlsVal ? "https" : "http";
             const defPort = fwHttpsTlsVal ? 443 : 80;
             const ps      = port === defPort ? "" : `:${port}`;
-            const base    = `${scheme}://${host}${ps}`;
-            const sp    = fwFHttpsSensorPath?.value.trim();
-            const ap    = fwFHttpsAnalyticsPath?.value.trim();
-            const ep    = fwFHttpsEventsPath?.value.trim();
-            if (fwHttpsSensorPrev)    fwHttpsSensorPrev.textContent    = sp ? `${base}${sp}` : "—";
-            if (fwHttpsAnalyticsPrev) fwHttpsAnalyticsPrev.textContent = ap ? `${base}${ap}` : "(not configured)";
-            if (fwHttpsEventsPrev)    fwHttpsEventsPrev.textContent    = ep ? `${base}${ep}` : "(not configured)";
+            const sp      = fwFHttpsSensorPath?.value.trim() || "/ingest";
+            if (fwHttpsSensorPrev) fwHttpsSensorPrev.textContent = `${scheme}://${host}${ps}${sp.startsWith("/") ? sp : "/" + sp}`;
         };
-        [fwFHttpsHost, fwFHttpsPort, fwFHttpsSensorPath, fwFHttpsAnalyticsPath, fwFHttpsEventsPath].forEach((el) => {
+        [fwFHttpsHost, fwFHttpsPort, fwFHttpsSensorPath].forEach((el) => {
             el?.addEventListener("input", fwUpdateHttpsPreview);
+        });
+
+        // ── GraphQL mode visibility ──────────────────────────────────────────
+        const fwUpdateGqlVisibility = () => {
+            fwGqlWrap?.classList.toggle("fw-hidden", fwFHttpsMode?.value !== "graphql");
+        };
+        fwFHttpsMode?.addEventListener("change", fwUpdateGqlVisibility);
+
+        // ── What-to-send: sensor checklist ───────────────────────────────────
+        const fwRenderSensorList = (selected) => {
+            if (!fwFSrcSensorList) return;
+            if (!fwAvailableSources.length) {
+                fwFSrcSensorList.innerHTML =
+                    '<p class="fw-hint">No sensors have reported yet — configure them on the Interfaces page and they appear here automatically.</p>';
+                return;
+            }
+            const chosen = new Set(Array.isArray(selected) ? selected : []);
+            fwFSrcSensorList.innerHTML = fwAvailableSources.map((s) =>
+                `<label class="fw-send-row fw-send-sensor">` +
+                `<input type="checkbox" data-fw-sensor-key="${s.key}"${chosen.has(s.key) ? " checked" : ""}>` +
+                `<span class="fw-send-text"><code>${s.key}</code></span>` +
+                `<span class="fw-send-live${s.status === "online" ? " is-live" : ""}">${s.status || "seen"}</span>` +
+                `</label>`
+            ).join("");
+        };
+        fwFSrcAllSensors?.addEventListener("change", () => {
+            fwFSrcSensorList?.classList.toggle("fw-send-dim", !!fwFSrcAllSensors.checked);
         });
 
         // ── Panel toggles (MQTT topics + HTTPS endpoint reference) ──────────
@@ -5881,7 +5903,7 @@ document.addEventListener("DOMContentLoaded", () => {
             // Topic example rows
             fwShell.querySelectorAll("[data-fw-topic-eg]").forEach((el) => {
                 const suffix = el.getAttribute("data-fw-topic-eg");
-                el.textContent = `${gwId}/${suffix}`;
+                el.textContent = `metacrust/${gwId}/${suffix}`;
             });
         };
 
@@ -5892,6 +5914,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (!r.ok) return;
                 const d = await r.json();
                 fwProfiles = d.profiles || [];
+                fwAvailableSources = d.available_sources || [];
+                if (d.default_graphql_query) fwDefaultGql = d.default_graphql_query;
                 fwApplyGatewayId(d.gateway_id || "");
             } catch (e) {
                 console.warn("[Forwarding] load failed:", e);
@@ -5904,46 +5928,53 @@ document.addEventListener("DOMContentLoaded", () => {
             if (fwSaveMsg) { fwSaveMsg.textContent = ""; fwSaveMsg.className = "fw-save-msg"; }
 
             const proto = fwFProtocol?.value || "mqtt";
+            const sensorsSel = fwFSrcAllSensors?.checked
+                ? "all"
+                : Array.from(fwFSrcSensorList?.querySelectorAll("[data-fw-sensor-key]:checked") || [])
+                    .map((el) => el.getAttribute("data-fw-sensor-key"));
             const profile = {
                 id:       fwEditId || "",
                 name:     fwFName?.value.trim() || "Unnamed Profile",
                 enabled:  fwEnabledVal,
                 protocol: proto,
-                scope:    fwFScope?.value || "all",
+                sources: {
+                    device_metrics:     !!fwFSrcMetrics?.checked,
+                    metrics_interval_s: Number(fwFSrcMetricsInt?.value) || 5,
+                    device_anomalies:   !!fwFSrcAnoms?.checked,
+                    sensors:            sensorsSel,
+                },
             };
 
             if (proto === "mqtt") {
                 profile.mqtt = {
-                    host:             fwFMqttHost?.value.trim() || "",
-                    port:             Number(fwFMqttPort?.value) || 1883,
-                    tls:              fwTlsVal,
-                    tls_ca:           fwCerts["mqtt-ca"]?.getValue(),
-                    tls_cert:         fwCerts["mqtt-cert"]?.getValue(),
-                    tls_key:          fwCerts["mqtt-key"]?.getValue(),
-                    client_id:        fwFMqttCid?.value.trim()  || "",
-                    username:         fwFMqttUser?.value.trim() || "",
-                    password:         fwFMqttPass?.value        || "",
-                    qos:              Number(fwFMqttQos?.value) || 1,
-                    retain:           fwRetainVal,
-                    interval_seconds: Number(fwFMqttInterval?.value) || 5,
+                    host:      fwFMqttHost?.value.trim() || "",
+                    port:      Number(fwFMqttPort?.value) || 1883,
+                    tls:       fwTlsVal,
+                    mtls:      fwTlsVal,
+                    tls_ca:    fwCerts["mqtt-ca"]?.getValue(),
+                    tls_cert:  fwCerts["mqtt-cert"]?.getValue(),
+                    tls_key:   fwCerts["mqtt-key"]?.getValue(),
+                    client_id: fwFMqttCid?.value.trim()  || "",
+                    username:  fwFMqttUser?.value.trim() || "",
+                    password:  fwFMqttPass?.value        || "",
+                    qos:       Number(fwFMqttQos?.value) || 1,
                 };
             } else {
                 const hasMtls = fwMtlsVal;
                 profile.https = {
-                    host:             fwFHttpsHost?.value.trim() || "",
-                    port:             Number(fwFHttpsPort?.value) || 443,
-                    tls:              fwHttpsTlsVal,
-                    sensor_path:      fwFHttpsSensorPath?.value.trim()    || "/ingest",
-                    analytics_path:   fwFHttpsAnalyticsPath?.value.trim() || "",
-                    events_path:      fwFHttpsEventsPath?.value.trim()    || "",
-                    auth_type:        fwFHttpsAuth?.value || "none",
-                    auth_value:       fwFHttpsAVal?.value || "",
+                    host:          fwFHttpsHost?.value.trim() || "",
+                    port:          Number(fwFHttpsPort?.value) || 443,
+                    tls:           fwHttpsTlsVal,
+                    path:          fwFHttpsSensorPath?.value.trim() || "/ingest",
+                    mode:          fwFHttpsMode?.value || "rest",
+                    graphql_query: fwFHttpsGql?.value.trim() || "",
+                    auth_type:     fwFHttpsAuth?.value || "none",
+                    auth_value:    fwFHttpsAVal?.value || "",
+                    mtls:          hasMtls,
                     // null=keep, ""=clear, "<pem>"=new. When mTLS toggled OFF, send "" to clear all.
-                    tls_ca:           hasMtls ? fwCerts["https-ca"]?.getValue()   : "",
-                    tls_cert:         hasMtls ? fwCerts["https-cert"]?.getValue() : "",
-                    tls_key:          hasMtls ? fwCerts["https-key"]?.getValue()  : "",
-                    interval_seconds: Number(fwFHttpsInt?.value)  || 30,
-                    timeout_seconds:  Number(fwFHttpsTout?.value) || 10,
+                    tls_ca:        hasMtls ? fwCerts["https-ca"]?.getValue()   : "",
+                    tls_cert:      hasMtls ? fwCerts["https-cert"]?.getValue() : "",
+                    tls_key:       hasMtls ? fwCerts["https-key"]?.getValue()  : "",
                 };
             }
 
@@ -6032,7 +6063,16 @@ document.addEventListener("DOMContentLoaded", () => {
             fwSyncToggleBtn(fwFEnabled, fwEnabledVal);
 
             if (fwFName)  fwFName.value  = profile?.name  || "";
-            if (fwFScope) fwFScope.value = profile?.scope || "all";
+
+            // What to send
+            const src = profile?.sources || {};
+            if (fwFSrcMetrics)    fwFSrcMetrics.checked  = !!src.device_metrics;
+            if (fwFSrcMetricsInt) fwFSrcMetricsInt.value = String(src.metrics_interval_s || 5);
+            if (fwFSrcAnoms)      fwFSrcAnoms.checked    = !!src.device_anomalies;
+            const allSensors = src.sensors === "all";
+            if (fwFSrcAllSensors) fwFSrcAllSensors.checked = allSensors;
+            fwRenderSensorList(allSensors ? [] : src.sensors);
+            fwFSrcSensorList?.classList.toggle("fw-send-dim", allSensors);
 
             if (proto === "mqtt") {
                 const m = profile?.mqtt || {};
@@ -6042,14 +6082,10 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (fwFMqttUser)     fwFMqttUser.value   = m.username  || "";
                 if (fwFMqttPass)     fwFMqttPass.value   = m.password  || "";
                 if (fwFMqttQos)      fwFMqttQos.value    = String(m.qos ?? 1);
-                if (fwFMqttInterval) fwFMqttInterval.value = String(m.interval_seconds || 5);
 
                 fwTlsVal = !!m.tls;
                 fwSyncToggleBtn(fwFMqttTls, fwTlsVal);
                 fwMqttTlsBlock?.classList.toggle("fw-hidden", !fwTlsVal);
-
-                fwRetainVal = !!m.retain;
-                fwSyncToggleBtn(fwFMqttRetain, fwRetainVal);
 
                 // API returns _loaded flags, not PEM content
                 fwCerts["mqtt-ca"]?.setLoaded(!!m.tls_ca_loaded);
@@ -6061,15 +6097,14 @@ document.addEventListener("DOMContentLoaded", () => {
                 fwHttpsTlsVal = h.tls !== undefined ? !!h.tls : true;
                 fwSyncToggleBtn(fwFHttpsTlsBtn, fwHttpsTlsVal);
                 fwHttpsTlsSection?.classList.toggle("fw-hidden", !fwHttpsTlsVal);
-                if (fwFHttpsHost)           fwFHttpsHost.value           = h.host            || "";
-                if (fwFHttpsPort)           fwFHttpsPort.value           = String(h.port     || 443);
-                if (fwFHttpsSensorPath)     fwFHttpsSensorPath.value     = h.sensor_path     || "/ingest";
-                if (fwFHttpsAnalyticsPath)  fwFHttpsAnalyticsPath.value  = h.analytics_path  || "";
-                if (fwFHttpsEventsPath)     fwFHttpsEventsPath.value     = h.events_path     || "";
+                if (fwFHttpsHost)       fwFHttpsHost.value       = h.host || "";
+                if (fwFHttpsPort)       fwFHttpsPort.value       = String(h.port || 443);
+                if (fwFHttpsSensorPath) fwFHttpsSensorPath.value = h.path || h.sensor_path || "/ingest";
+                if (fwFHttpsMode)       fwFHttpsMode.value       = h.mode || "rest";
+                if (fwFHttpsGql)        fwFHttpsGql.value        = h.graphql_query || fwDefaultGql;
+                fwUpdateGqlVisibility();
                 if (fwFHttpsAuth)       fwFHttpsAuth.value       = h.auth_type    || "none";
                 if (fwFHttpsAVal)       fwFHttpsAVal.value       = h.auth_value   || "";
-                if (fwFHttpsInt)        fwFHttpsInt.value        = String(h.interval_seconds || 30);
-                if (fwFHttpsTout)       fwFHttpsTout.value       = String(h.timeout_seconds  || 10);
 
                 const hasCerts = !!(h.tls_ca_loaded || h.tls_cert_loaded || h.tls_key_loaded);
                 fwMtlsVal = hasCerts;
@@ -6113,7 +6148,6 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (proto === "mqtt") {
                     const m    = p.mqtt || {};
                     const sec  = m.tls ? (m.tls_cert_loaded ? " · mTLS" : " · TLS") : "";
-                    const intvl = `every ${m.interval_seconds || 5} s`;
                     details = `
                         <div class="fw-profile-detail">
                             <span class="fw-detail-label">Broker</span>
@@ -6121,15 +6155,11 @@ document.addEventListener("DOMContentLoaded", () => {
                         </div>
                         <div class="fw-profile-detail">
                             <span class="fw-detail-label">Topics</span>
-                            <span class="fw-detail-val">metacrust/{source}/{device_id}/{metric}</span>
+                            <span class="fw-detail-val">metacrust/{gateway_id}/…</span>
                         </div>
                         <div class="fw-profile-detail">
                             <span class="fw-detail-label">QoS</span>
-                            <span class="fw-detail-val">${m.qos ?? 1} · retain ${m.retain ? "on" : "off"}</span>
-                        </div>
-                        <div class="fw-profile-detail">
-                            <span class="fw-detail-label">Publish</span>
-                            <span class="fw-detail-val">${intvl}</span>
+                            <span class="fw-detail-val">${m.qos ?? 1}</span>
                         </div>`;
                 } else {
                     const h       = p.https || {};
@@ -6141,28 +6171,25 @@ document.addEventListener("DOMContentLoaded", () => {
                     const sec   = h.tls_cert_loaded ? " · mTLS" : h.tls_ca_loaded ? " · custom CA" : "";
                     details = `
                         <div class="fw-profile-detail">
-                            <span class="fw-detail-label">Sensor URL</span>
-                            <span class="fw-detail-val">${base}${h.sensor_path || "/ingest"}${sec}</span>
+                            <span class="fw-detail-label">Endpoint</span>
+                            <span class="fw-detail-val">${base}${h.path || h.sensor_path || "/ingest"}${sec}</span>
                         </div>
-                        ${h.analytics_path ? `
                         <div class="fw-profile-detail">
-                            <span class="fw-detail-label">Analytics URL</span>
-                            <span class="fw-detail-val">${base}${h.analytics_path}</span>
-                        </div>` : ""}
-                        ${h.events_path ? `
-                        <div class="fw-profile-detail">
-                            <span class="fw-detail-label">Events URL</span>
-                            <span class="fw-detail-val">${base}${h.events_path}</span>
-                        </div>` : ""}
+                            <span class="fw-detail-label">Format</span>
+                            <span class="fw-detail-val">${h.mode === "graphql" ? "GraphQL mutation" : "REST — JSON array"}</span>
+                        </div>
                         <div class="fw-profile-detail">
                             <span class="fw-detail-label">Auth</span>
                             <span class="fw-detail-val">${h.auth_type || "none"}</span>
-                        </div>
-                        <div class="fw-profile-detail">
-                            <span class="fw-detail-label">POST</span>
-                            <span class="fw-detail-val">every ${h.interval_seconds || 30} s</span>
                         </div>`;
                 }
+
+                const src = p.sources || {};
+                const sending = [];
+                if (src.device_metrics) sending.push(`device health every ${src.metrics_interval_s || 5} s`);
+                if (src.device_anomalies) sending.push("anomaly events");
+                if (src.sensors === "all") sending.push("all sensors");
+                else if (Array.isArray(src.sensors) && src.sensors.length) sending.push(`${src.sensors.length} sensor${src.sensors.length === 1 ? "" : "s"}`);
 
                 return `
                     <div class="fw-profile-card ${enabled ? "is-enabled" : "is-disabled"}" data-fw-card="${p.id}">
@@ -6177,8 +6204,8 @@ document.addEventListener("DOMContentLoaded", () => {
                         </div>
                         <div class="fw-profile-body">${details}
                             <div class="fw-profile-detail">
-                                <span class="fw-detail-label">Scope</span>
-                                <span class="fw-detail-val">${p.scope === "all" ? "All devices" : p.scope}</span>
+                                <span class="fw-detail-label">Sending</span>
+                                <span class="fw-detail-val">${sending.length ? sending.join(" · ") : "nothing selected yet"}</span>
                             </div>
                         </div>
                     </div>`;

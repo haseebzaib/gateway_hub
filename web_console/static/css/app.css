@@ -10115,3 +10115,39 @@ body.anomaly-modal-open { overflow: hidden; }
 .monitor-panel .anomaly-coverage,
 .monitor-panel .anomaly-chart-grid,
 .monitor-panel .anomaly-groups-card { margin-bottom: 0; }
+
+/* ── Forwarding: what-to-send + GraphQL editor ───────────────────────── */
+.fw-send-grid { display: flex; flex-direction: column; gap: 0.45rem; }
+.fw-send-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.55rem 0.7rem;
+    border-radius: 0.6rem;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    cursor: pointer;
+}
+.fw-send-row:hover { border-color: rgba(57, 208, 200, 0.3); }
+.fw-send-row input[type="checkbox"] { accent-color: #39d0c8; width: 1rem; height: 1rem; flex-shrink: 0; }
+.fw-send-text { flex: 1; font-size: 0.88rem; color: var(--text); }
+.fw-send-text strong { font-weight: 600; }
+.fw-send-interval { max-width: 9rem; flex-shrink: 0; }
+.fw-send-sensors { margin-top: 0.3rem; }
+.fw-send-sensor-list { display: flex; flex-direction: column; gap: 0.35rem; margin-top: 0.35rem; }
+.fw-send-sensor-list.fw-send-dim { opacity: 0.4; pointer-events: none; }
+.fw-send-live {
+    flex-shrink: 0;
+    font-size: 0.72rem;
+    color: var(--muted);
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.05);
+}
+.fw-send-live.is-live { color: #8ff0c0; background: rgba(98, 211, 158, 0.14); }
+.fw-gql-input {
+    width: 100%;
+    font-family: ui-monospace, monospace;
+    font-size: 0.82rem;
+    resize: vertical;
+}

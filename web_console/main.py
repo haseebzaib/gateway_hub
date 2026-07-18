@@ -15,6 +15,7 @@ from gateway_forwarding import ForwardingService
 from gateway_ipc import GatewayCoreIpcTask
 
 from .engine_client import EngineClient
+from .network_runtime import RUNTIME as network_runtime
 from .routes import load_saved_edge_server_config, load_saved_sensor_configs, router, send_saved_sensor_configs_to_core
 
 
@@ -37,6 +38,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     edge_server_task.start(edge_config)
     forwarding_service.start()
     LOGGER.info("hub_lifespan forwarding_started gateway_id=%s", forwarding_service.gateway_id)
+    await network_runtime.start()
+    app.state.network_runtime = network_runtime
     startup_send_task = asyncio.create_task(
         _send_loaded_configs_when_connected(ipc_task, loaded_configs),
         name="gateway-core-ipc-startup-config-send",
@@ -49,6 +52,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await startup_send_task
         except asyncio.CancelledError:
             pass
+        await network_runtime.stop()
         await forwarding_service.stop()
         LOGGER.info("hub_lifespan forwarding_stopped")
         await edge_server_task.stop()

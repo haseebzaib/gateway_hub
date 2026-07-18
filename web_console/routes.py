@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import csv
 import io
@@ -28,6 +29,8 @@ from gateway_forwarding import (
     topics_for as forwarding_topics_for,
 )
 from gateway_ipc import build_config_message, encode_message, headline_for_stored
+
+from .network_runtime import RUNTIME as NETWORK_RUNTIME
 from gateway_interfaces import GatewayInterfacesService, default_config
 
 
@@ -528,7 +531,7 @@ def _default_edge_server_config() -> dict[str, Any]:
 
 _INTERFACE_DEFAULTS = default_config()
 CONFIGS: dict[str, dict[str, Any]] = {
-    "network": _network_settings(),
+    "network": NETWORK_RUNTIME.load_settings() or _network_settings(),
     "rs232": {"version": 1, "rs232": _INTERFACE_DEFAULTS["rs232"]},
     "rs485": {"version": 1, "rs485": _INTERFACE_DEFAULTS["rs485"]},
     "modbus_tcp": {"version": 1, **_INTERFACE_DEFAULTS["modbus_tcp"]},
@@ -1137,7 +1140,7 @@ async def logout_action(request: Request) -> RedirectResponse:
 async def dashboard_page(request: Request) -> HTMLResponse:
     if not _is_authenticated(request):
         return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
-    network_state = _network_state()
+    network_state = NETWORK_RUNTIME.state() or _network_state()
     overview = _overview_status_payload(network_state)
     ctx = _template_context("Overview", "Control Plane")
     ctx.update({
@@ -1174,7 +1177,7 @@ async def connectivity_page(request: Request) -> HTMLResponse:
             {"id": "policy", "label": "Uplink Policy", "active": False, "disabled": False},
         ],
         "network_settings": CONFIGS["network"],
-        "network_state": _network_state(),
+        "network_state": NETWORK_RUNTIME.state() or _network_state(),
         "apply_result": _apply_result(),
     })
     return templates.TemplateResponse(request, "connectivity.html", ctx)
@@ -1242,6 +1245,9 @@ async def update_access(request: Request) -> JSONResponse:
 async def get_network_settings(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
+    settings = NETWORK_RUNTIME.load_settings()
+    if settings is not None:
+        CONFIGS["network"] = settings
     payload = dict(CONFIGS["network"])
     payload["ok"] = True
     return JSONResponse(payload)
@@ -1251,73 +1257,101 @@ async def get_network_settings(request: Request) -> JSONResponse:
 async def save_network_settings(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    CONFIGS["network"] = await request.json()
-    return JSONResponse({"ok": True, "message": "Network settings saved in hub mock state."})
+    payload = await request.json()
+    try:
+        NETWORK_RUNTIME.save_settings(payload)
+    except (ValueError, OSError) as exc:
+        return JSONResponse({"ok": False, "message": f"Save failed: {exc}"}, status_code=status.HTTP_400_BAD_REQUEST)
+    CONFIGS["network"] = {k: v for k, v in payload.items() if k != "ok"}
+    return JSONResponse({"ok": True, "message": "Network settings saved."})
 
 
 @router.post("/api/network/apply")
 async def apply_network_settings(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    return JSONResponse({"ok": True, "apply_requested": True, "apply_result": _apply_result()})
+    if not NETWORK_RUNTIME.available:
+        return JSONResponse({"ok": True, "apply_requested": True, "apply_result": _apply_result()})
+    return JSONResponse(await asyncio.to_thread(NETWORK_RUNTIME.apply))
 
 
 @router.post("/api/network/save-and-apply")
 async def save_and_apply_network_settings(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    CONFIGS["network"] = await request.json()
-    return JSONResponse({"ok": True, "apply_requested": True, "apply_result": _apply_result()})
+    payload = await request.json()
+    try:
+        NETWORK_RUNTIME.save_settings(payload)
+    except (ValueError, OSError) as exc:
+        return JSONResponse({"ok": False, "message": f"Save failed: {exc}"}, status_code=status.HTTP_400_BAD_REQUEST)
+    CONFIGS["network"] = {k: v for k, v in payload.items() if k != "ok"}
+    if not NETWORK_RUNTIME.available:
+        return JSONResponse({"ok": True, "apply_requested": True, "apply_result": _apply_result()})
+    return JSONResponse(await asyncio.to_thread(NETWORK_RUNTIME.apply))
 
 
 @router.get("/api/network/state")
 async def get_network_state(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    return JSONResponse(_network_state())
+    return JSONResponse(NETWORK_RUNTIME.state() or _network_state())
 
 
 @router.get("/api/network/apply-result")
 async def get_network_apply_result(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    return JSONResponse(_apply_result())
+    return JSONResponse(NETWORK_RUNTIME.apply_result() or _apply_result())
 
 
 @router.get("/api/network/events")
 async def get_network_events(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    return JSONResponse({"ok": True, "events": [], "open_outage": None, "summary": {}})
+    window = request.query_params.get("window", "7d")
+    limit = int(_number(request.query_params.get("limit"), 100))
+    return JSONResponse(NETWORK_RUNTIME.events(window, limit))
 
 
 @router.get("/api/network/events/export/csv")
 async def export_network_events_csv(request: Request) -> PlainTextResponse:
     if not _is_authenticated(request):
         return PlainTextResponse("Authentication required.", status_code=status.HTTP_401_UNAUTHORIZED)
-    return PlainTextResponse("timestamp,event_type,severity,message\n", media_type="text/csv")
+    window = request.query_params.get("window", "30d")
+    lines = ["timestamp,event_type,severity,iface,previous_uplink,active_uplink,duration_ms,message"]
+    for event in NETWORK_RUNTIME.events(window, limit=2000).get("events", []):
+        message = str(event.get("message") or event.get("reason") or "").replace('"', "'")
+        lines.append(
+            f'{event.get("timestamp_utc", "")},{event.get("event_type", "")},{event.get("severity", "")},'
+            f'{event.get("iface", "")},{event.get("previous_uplink", "")},{event.get("active_uplink", "")},'
+            f'{event.get("duration_ms", "")},"{message}"'
+        )
+    return PlainTextResponse("\n".join(lines) + "\n", media_type="text/csv")
 
 
 @router.get("/api/network/iface-details")
 async def get_iface_details(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    iface = request.query_params.get("iface", "eth0")
-    return JSONResponse({"ok": True, "iface": iface, "mac": "—", "operstate": "down", "mtu": "—", "speed": "—", "ipv4": "—", "ipv6": [], "gateway": "—", "dns": []})
+    return JSONResponse(await asyncio.to_thread(NETWORK_RUNTIME.iface_details))
 
 
 @router.post("/api/network/wifi/scan")
 async def scan_wifi_networks(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    return JSONResponse({"ok": True, "networks": []})
+    if not NETWORK_RUNTIME.available:
+        return JSONResponse({"ok": True, "networks": []})
+    return JSONResponse(await asyncio.to_thread(NETWORK_RUNTIME.scan_wifi, "wlan0"))
 
 
 @router.post("/api/cellular/refresh-state")
 async def cellular_refresh_state(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    return JSONResponse({"ok": True, "cellular": _network_state()["cellular"]})
+    if not NETWORK_RUNTIME.available:
+        return JSONResponse({"ok": True, "cellular": _network_state()["cellular"]})
+    return JSONResponse(await asyncio.to_thread(NETWORK_RUNTIME.cellular_refresh))
 
 
 @router.get("/api/system/metrics")
