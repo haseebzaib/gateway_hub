@@ -18,6 +18,15 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
+from gateway_forwarding import (
+    DEFAULT_GRAPHQL_QUERY,
+    METRIC_INTERVAL_CHOICES,
+    gateway_id as forwarding_gateway_id,
+    load_config as load_forwarding_config,
+    normalize_config as normalize_forwarding_config,
+    save_config as persist_forwarding_config,
+    topics_for as forwarding_topics_for,
+)
 from gateway_ipc import build_config_message, encode_message, headline_for_stored
 from gateway_interfaces import GatewayInterfacesService, default_config
 
@@ -523,7 +532,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "rs232": {"version": 1, "rs232": _INTERFACE_DEFAULTS["rs232"]},
     "rs485": {"version": 1, "rs485": _INTERFACE_DEFAULTS["rs485"]},
     "modbus_tcp": {"version": 1, **_INTERFACE_DEFAULTS["modbus_tcp"]},
-    "forwarding": {"version": 2, "profiles": []},
+    "forwarding": load_forwarding_config(),
     "edge_server": _default_edge_server_config(),
 }
 
@@ -531,35 +540,17 @@ ALERT_RULES: list[dict[str, Any]] = []
 NEXT_RULE_ID = 1
 
 
-def _normalise_forwarding_config(payload: dict[str, Any]) -> dict[str, Any]:
-    profiles = []
-    for raw in payload.get("profiles") or []:
-        if not isinstance(raw, dict):
-            continue
-        profile = dict(raw)
-        profile["id"] = str(profile.get("id") or secrets.token_hex(8))[:32]
-        profile["name"] = str(profile.get("name") or "Unnamed Profile")[:64]
-        profile["protocol"] = str(profile.get("protocol") or "mqtt").lower()
-        if profile["protocol"] not in ("mqtt", "https"):
-            profile["protocol"] = "mqtt"
-        profile["enabled"] = bool(profile.get("enabled", False))
-        profile["scope"] = str(profile.get("scope") or "all")
-        if profile["protocol"] == "mqtt":
-            mqtt = dict(profile.get("mqtt") or {})
-            mqtt["tls_ca_loaded"] = bool(mqtt.pop("tls_ca", None)) or bool(mqtt.get("tls_ca_loaded"))
-            mqtt["tls_cert_loaded"] = bool(mqtt.pop("tls_cert", None)) or bool(mqtt.get("tls_cert_loaded"))
-            mqtt["tls_key_loaded"] = bool(mqtt.pop("tls_key", None)) or bool(mqtt.get("tls_key_loaded"))
-            profile["mqtt"] = mqtt
-            profile.pop("https", None)
-        else:
-            https = dict(profile.get("https") or {})
-            https["tls_ca_loaded"] = bool(https.pop("tls_ca", None)) or bool(https.get("tls_ca_loaded"))
-            https["tls_cert_loaded"] = bool(https.pop("tls_cert", None)) or bool(https.get("tls_cert_loaded"))
-            https["tls_key_loaded"] = bool(https.pop("tls_key", None)) or bool(https.get("tls_key_loaded"))
-            profile["https"] = https
-            profile.pop("mqtt", None)
-        profiles.append(profile)
-    return {"version": 2, "profiles": profiles[:6]}
+def _forwarding_available_sources(request: Request) -> list[dict[str, Any]]:
+    """Sensor sources the user can pick in 'What to send' — the live list the
+    C++ runtimes have actually reported (authoritative source_type/source_id)."""
+    service = getattr(request.app.state, "forwarding", None)
+    if service is None:
+        return []
+    try:
+        return service.seen_sensor_sources()
+    except Exception as exc:
+        LOGGER.warning("forwarding_sources_failed error=%s", exc)
+        return []
 
 
 def _normalise_edge_server_config(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1567,9 +1558,16 @@ async def get_interface_sniffer_frames(request: Request) -> JSONResponse:
 async def get_forwarding_config(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
+    gid = forwarding_gateway_id()
     payload = dict(CONFIGS["forwarding"])
-    payload["ok"] = True
-    payload["gateway_id"] = GATEWAY_ID
+    payload.update({
+        "ok": True,
+        "gateway_id": gid,
+        "topics": forwarding_topics_for(gid),
+        "available_sources": _forwarding_available_sources(request),
+        "metric_interval_choices": list(METRIC_INTERVAL_CHOICES),
+        "default_graphql_query": DEFAULT_GRAPHQL_QUERY,
+    })
     return JSONResponse(payload)
 
 
@@ -1577,14 +1575,23 @@ async def get_forwarding_config(request: Request) -> JSONResponse:
 async def save_forwarding_config(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    CONFIGS["forwarding"] = _normalise_forwarding_config(await request.json())
-    return JSONResponse({"ok": True, "message": "Forwarding config saved in hub mock state."})
+    config, pending_certs = normalize_forwarding_config(await request.json())
+    CONFIGS["forwarding"] = config
+    service = getattr(request.app.state, "forwarding", None)
+    if service is not None:
+        await service.apply_config(config, pending_certs)
+    else:
+        persist_forwarding_config(config, pending_certs)
+    return JSONResponse({"ok": True, "message": "Forwarding configuration saved and applied."})
 
 
 @router.get("/api/forwarding/status")
 async def get_forwarding_status(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
+    service = getattr(request.app.state, "forwarding", None)
+    if service is not None:
+        return JSONResponse(service.status())
     return JSONResponse(_forwarding_status())
 
 
@@ -1592,23 +1599,12 @@ async def get_forwarding_status(request: Request) -> JSONResponse:
 async def get_forwarding_buffer_stats(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    profiles = [
-        {
-            "profile_id": p.get("id"),
-            "pending": 0,
-            "replayed": 0,
-            "dropped": 0,
-            "history": [0, 0, 0, 0, 0],
-        }
-        for p in CONFIGS["forwarding"].get("profiles", [])
-    ]
+    service = getattr(request.app.state, "forwarding", None)
+    if service is not None:
+        return JSONResponse(service.buffer_stats())
     return JSONResponse({
-        "ok": True,
-        "total_pending": 0,
-        "total_replayed": 0,
-        "total_dropped": 0,
-        "success_rate": 100,
-        "profiles": profiles,
+        "ok": True, "total_pending": 0, "total_replayed": 0, "total_dropped": 0,
+        "success_rate": 100, "profiles": [],
         "storage": {"db_size_mb": 0, "estimated_capacity_mb": 0, "max_per_profile": 0},
     })
 
@@ -1617,6 +1613,9 @@ async def get_forwarding_buffer_stats(request: Request) -> JSONResponse:
 async def get_forwarding_events(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
+    service = getattr(request.app.state, "forwarding", None)
+    if service is not None:
+        return JSONResponse(service.events())
     return JSONResponse({"ok": True, "events": [], "summary": {"outages": 0, "recovered": 0, "errors": 0}})
 
 
@@ -1624,7 +1623,17 @@ async def get_forwarding_events(request: Request) -> JSONResponse:
 async def export_forwarding_events_csv(request: Request) -> PlainTextResponse:
     if not _is_authenticated(request):
         return PlainTextResponse("Authentication required.", status_code=status.HTTP_401_UNAUTHORIZED)
-    return PlainTextResponse("timestamp,profile,protocol,event,severity,message\n", media_type="text/csv")
+    lines = ["timestamp,profile,protocol,event,severity,message"]
+    service = getattr(request.app.state, "forwarding", None)
+    if service is not None:
+        for event in service.events(limit=1000).get("events", []):
+            stamp = datetime.fromtimestamp(event["timestamp"] / 1000, UTC).isoformat()
+            message = str(event.get("message", "")).replace('"', "'")
+            lines.append(
+                f'{stamp},{event.get("profile", "")},{event.get("protocol", "")},'
+                f'{event.get("event", "")},{event.get("severity", "")},"{message}"'
+            )
+    return PlainTextResponse("\n".join(lines) + "\n", media_type="text/csv")
 
 
 @router.get("/api/edge-server/config")

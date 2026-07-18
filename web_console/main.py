@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from gateway_edge_server import EdgeServerTask
+from gateway_forwarding import ForwardingService
 from gateway_ipc import GatewayCoreIpcTask
 
 from .engine_client import EngineClient
@@ -25,13 +26,17 @@ LOGGER = logging.getLogger("edge_server")
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     ipc_task = GatewayCoreIpcTask()
     edge_server_task = EdgeServerTask()
+    forwarding_service = ForwardingService(core_ipc=ipc_task)
     app.state.core_ipc = ipc_task
     app.state.edge_server = edge_server_task
+    app.state.forwarding = forwarding_service
     loaded_configs = load_saved_sensor_configs()
     edge_config = load_saved_edge_server_config()
     ipc_task.start()
     LOGGER.info("hub_lifespan edge_server_starting")
     edge_server_task.start(edge_config)
+    forwarding_service.start()
+    LOGGER.info("hub_lifespan forwarding_started gateway_id=%s", forwarding_service.gateway_id)
     startup_send_task = asyncio.create_task(
         _send_loaded_configs_when_connected(ipc_task, loaded_configs),
         name="gateway-core-ipc-startup-config-send",
@@ -44,6 +49,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await startup_send_task
         except asyncio.CancelledError:
             pass
+        await forwarding_service.stop()
+        LOGGER.info("hub_lifespan forwarding_stopped")
         await edge_server_task.stop()
         LOGGER.info("hub_lifespan edge_server_stopped")
         await ipc_task.stop()

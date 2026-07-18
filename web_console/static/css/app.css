@@ -10097,3 +10097,21 @@ body.anomaly-modal-open { overflow: hidden; }
 .ov-health-dot.is-warn { background: #f0a64b; box-shadow: 0 0 8px rgba(240, 166, 75, 0.6); }
 .ov-health-dot.is-crit { background: #f2545b; box-shadow: 0 0 8px rgba(242, 84, 91, 0.7); }
 .ov-health-text { font-size: 0.84rem; color: var(--text); }
+
+/* ── Monitor page: one consistent spacing rhythm ─────────────────────── */
+/* The tab refactor wrapped sections in .monitor-panel (a plain div), which
+   dropped them out of .monitor-shell's grid gap — sections were stacking with
+   no spacing while inner grids used 1rem. Normalise everything to 1.25rem. */
+.monitor-shell { gap: 1.25rem; }
+.monitor-tabs { margin-bottom: 0; }
+.monitor-panel { display: grid; gap: 1.25rem; align-items: start; }
+.insights-kpi-strip,
+.insights-chart-grid,
+.insights-detail-row { gap: 1.25rem; }
+/* panel gap now provides the rhythm — strip the per-section bottom margins
+   so the anomaly tab doesn't get double spacing */
+.monitor-panel .anomaly-toolbar,
+.monitor-panel .anomaly-summary,
+.monitor-panel .anomaly-coverage,
+.monitor-panel .anomaly-chart-grid,
+.monitor-panel .anomaly-groups-card { margin-bottom: 0; }
