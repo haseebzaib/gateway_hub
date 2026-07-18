@@ -1214,9 +1214,6 @@ async def system_page(request: Request) -> HTMLResponse:
     ctx.update({
         "system_tabs": [
             {"id": "access", "label": "Access", "active": True, "disabled": False},
-            {"id": "identity", "label": "Identity", "active": False, "disabled": True},
-            {"id": "services", "label": "Services", "active": False, "disabled": True},
-            {"id": "updates", "label": "Updates", "active": False, "disabled": True},
         ],
         "current_username": request.session.get("username", DEFAULT_USERNAME),
     })

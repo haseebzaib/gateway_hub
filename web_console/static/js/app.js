@@ -258,7 +258,7 @@ document.addEventListener("DOMContentLoaded", () => {
             if (uplinkSinceEl) {
                 uplinkSinceEl.textContent = audit.active_duration_ms !== undefined && activeUplink !== "none"
                     ? `Active since ${_fmtDateTime(audit.active_uplink_since_ms)} (${_fmtDurMs(audit.active_duration_ms)})`
-                    : activeUplink === "none" ? "No active uplink" : "Waiting for AES audit sample";
+                    : activeUplink === "none" ? "No active uplink" : "Monitoring uplink…";
             }
             const outageAlert = document.querySelector("[data-ov-outage-alert]");
             const outageTitle = document.querySelector("[data-ov-outage-title]");
@@ -291,7 +291,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 } else {
                     failoverSumEl.textContent = openOutage
                         ? `Open outage started ${_fmtDateTime(openOutage.started_at_ms)}`
-                        : "No failover/outage recorded by AES";
+                        : "No failover/outage recorded";
                 }
             }
         };
@@ -716,7 +716,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     nsActiveSince.style.color = "";
                     nsActiveSince.textContent = hasAudit && audit.active_duration_ms !== undefined && activeUplink !== "none"
                         ? `Active since ${_stDateTime(audit.active_uplink_since_ms)} (${_stFmtMs(audit.active_duration_ms)})`
-                        : !hasAudit ? "Waiting for AES audit sample"
+                        : !hasAudit ? "Monitoring uplink…"
                         : activeUplink === "none" ? "No active uplink detected" : "";
                 }
             }
