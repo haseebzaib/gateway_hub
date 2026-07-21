@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -71,6 +72,10 @@ class GatewayCoreIpcTask:
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
         self._pending_acks: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        # Fired every time the IPC connection is (re)established — not just once at hub
+        # startup — so gateway_core always gets resynced with the last-saved sensor
+        # config, whether it connects immediately, late, or after a restart/crash.
+        self.on_connected: Callable[[], Awaitable[Any]] | None = None
 
     def start(self) -> None:
         try:
@@ -202,6 +207,8 @@ class GatewayCoreIpcTask:
                 self.status.last_error = None
                 self.status.last_connected_at = _utc_now()
                 _console(f"connected {self.config.host}:{self.config.port}")
+                if self.on_connected is not None:
+                    asyncio.create_task(self.on_connected(), name="gateway-core-ipc-on-connected")
 
                 async for payload in self.client.read_messages():
                     self.status.rx_count += 1

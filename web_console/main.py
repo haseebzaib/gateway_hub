@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -31,8 +30,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.core_ipc = ipc_task
     app.state.edge_server = edge_server_task
     app.state.forwarding = forwarding_service
-    loaded_configs = load_saved_sensor_configs()
+    load_saved_sensor_configs()
     edge_config = load_saved_edge_server_config()
+    # Resync the saved rs232/rs485/modbus_tcp config to gateway_core every time the
+    # IPC connection is (re)established — not just once at hub startup. gateway_core
+    # keeps no local copy of sensor config (see sensorprocess.cpp: it starts with
+    # empty runtimes and waits for this over IPC), so without this hook it would
+    # silently never get configured whenever it connects after a short startup
+    # window, or reconnects after a restart/crash.
+    ipc_task.on_connected = lambda: send_saved_sensor_configs_to_core(ipc_task)
     ipc_task.start()
     LOGGER.info("hub_lifespan edge_server_starting")
     edge_server_task.start(edge_config)
@@ -40,18 +46,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     LOGGER.info("hub_lifespan forwarding_started gateway_id=%s", forwarding_service.gateway_id)
     await network_runtime.start()
     app.state.network_runtime = network_runtime
-    startup_send_task = asyncio.create_task(
-        _send_loaded_configs_when_connected(ipc_task, loaded_configs),
-        name="gateway-core-ipc-startup-config-send",
-    )
     try:
         yield
     finally:
-        startup_send_task.cancel()
-        try:
-            await startup_send_task
-        except asyncio.CancelledError:
-            pass
         await network_runtime.stop()
         await forwarding_service.stop()
         LOGGER.info("hub_lifespan forwarding_stopped")
@@ -65,20 +62,3 @@ app.add_middleware(SessionMiddleware, secret_key="change-this-for-production")
 app.state.engine_client = EngineClient()
 app.mount("/static", StaticFiles(directory=PACKAGE_DIR / "static"), name="static")
 app.include_router(router)
-
-
-async def _send_loaded_configs_when_connected(ipc_task: GatewayCoreIpcTask, loaded_configs: list[str]) -> None:
-    if not loaded_configs:
-        return
-
-    for _ in range(200):
-        if ipc_task.status.connected:
-            break
-        await asyncio.sleep(0.1)
-
-    if not ipc_task.status.connected:
-        print(f"[gateway-ipc] startup config send skipped, core not connected: {loaded_configs}", flush=True)
-        return
-
-    results = await send_saved_sensor_configs_to_core(ipc_task, loaded_configs)
-    print(f"[gateway-ipc] startup config send results: {results}", flush=True)
