@@ -31,6 +31,7 @@ from gateway_forwarding import (
 )
 from gateway_ipc import build_config_message, encode_message, headline_for_stored
 
+from . import insights_data
 from .network_runtime import RUNTIME as NETWORK_RUNTIME
 from gateway_interfaces import GatewayInterfacesService, default_config
 
@@ -562,8 +563,8 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "edge_server": _default_edge_server_config(),
 }
 
-ALERT_RULES: list[dict[str, Any]] = []
-NEXT_RULE_ID = 1
+ALERT_RULES, NEXT_RULE_ID = insights_data.load_alert_rules()
+INSIGHTS_EVENTS = insights_data.AlertEventStore()
 
 
 def _forwarding_available_sources(request: Request) -> list[dict[str, Any]]:
@@ -1945,32 +1946,73 @@ async def export_edge_server_messages_jsonl(request: Request) -> Response:
     return _jsonl_download("edge-server-messages.jsonl", rows)
 
 
+def _insights_configured(request: Request) -> list[dict[str, Any]]:
+    storage = _interface_data_storage(request)
+    if storage is None:
+        return []
+    return insights_data.configured_devices(INTERFACES_SERVICE.snapshot(), storage)
+
+
+def _insights_device(configured: list[dict[str, Any]], source: str, device_id: str) -> dict[str, Any] | None:
+    for device in configured:
+        if device["source"] == source and device["device_id"] == device_id:
+            return device
+    return None
+
+
 @router.get("/api/insights/configured")
 async def insights_configured(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    return JSONResponse({"ok": True, "configured_devices": [], "devices": [], "metrics": []})
+    return JSONResponse({"ok": True, "devices": _insights_configured(request)})
 
 
 @router.get("/api/insights/live")
 async def insights_live(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    return JSONResponse({"ok": True, "devices": [], "summary": {"active_devices": 0, "configured_devices": 0, "good_readings": 0, "total_readings": 0, "anomalies": 0}})
+    storage = _interface_data_storage(request)
+    if storage is None:
+        return JSONResponse({"ok": True, "devices": []})
+    configured = _insights_configured(request)
+    live = insights_data.build_live_devices(configured, storage)
+    return JSONResponse({"ok": True, "devices": live})
 
 
 @router.get("/api/insights/history")
 async def insights_history(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    return JSONResponse({"ok": True, "timestamps": [], "series": {}, "avg": [], "min": [], "max": [], "count": []})
+    storage = _interface_data_storage(request)
+    if storage is None:
+        return JSONResponse({"ok": True, "metrics": {}})
+    params = request.query_params
+    metric_names = [m for m in str(params.get("metrics", "")).split(",") if m]
+    series = insights_data.history_series(
+        storage, params.get("source", ""), params.get("device_id", ""), metric_names, params.get("window", "1h"),
+    )
+    return JSONResponse({"ok": True, "metrics": series})
 
 
 @router.get("/api/insights/events")
 async def insights_events(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    return JSONResponse({"ok": True, "events": []})
+    storage = _interface_data_storage(request)
+    if storage is None:
+        return JSONResponse({"ok": True, "events": []})
+    configured = _insights_configured(request)
+    INSIGHTS_EVENTS.evaluate(ALERT_RULES, configured, storage)
+    params = request.query_params
+    events = INSIGHTS_EVENTS.query(
+        storage,
+        window_ms=insights_data.WINDOW_MS.get(params.get("window", "24h"), insights_data.WINDOW_MS["24h"]),
+        severity=params.get("severity", ""),
+        source=params.get("source", ""),
+        device_id=params.get("device_id", ""),
+        device_lookup={(d["source"], d["device_id"]): d for d in configured},
+    )
+    return JSONResponse({"ok": True, "events": events})
 
 
 @router.get("/api/insights/alert-rules")
@@ -1998,6 +2040,7 @@ async def create_alert_rule(request: Request) -> JSONResponse:
     }
     NEXT_RULE_ID += 1
     ALERT_RULES.append(rule)
+    insights_data.save_alert_rules(ALERT_RULES)
     return JSONResponse({"ok": True, "rule": rule})
 
 
@@ -2006,6 +2049,7 @@ async def delete_alert_rule(request: Request, rule_id: int) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     ALERT_RULES[:] = [rule for rule in ALERT_RULES if rule["id"] != rule_id]
+    insights_data.save_alert_rules(ALERT_RULES)
     return JSONResponse({"ok": True})
 
 
@@ -2013,9 +2057,11 @@ async def delete_alert_rule(request: Request, rule_id: int) -> JSONResponse:
 async def toggle_alert_rule(request: Request, rule_id: int) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
+    payload = await request.json()
     for rule in ALERT_RULES:
         if rule["id"] == rule_id:
-            rule["enabled"] = not bool(rule.get("enabled"))
+            rule["enabled"] = bool(payload["enabled"]) if "enabled" in payload else not bool(rule.get("enabled"))
+            insights_data.save_alert_rules(ALERT_RULES)
             return JSONResponse({"ok": True, "rule": rule})
     return JSONResponse({"ok": False, "message": "Rule not found."}, status_code=status.HTTP_404_NOT_FOUND)
 
@@ -2024,37 +2070,62 @@ async def toggle_alert_rule(request: Request, rule_id: int) -> JSONResponse:
 async def insights_summary(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    return JSONResponse({
-        "ok": True,
-        "total_devices": 0,
-        "live_devices": 0,
-        "anomaly_count": 0,
-        "active_devices": 0,
-        "configured_devices": 0,
-        "data_quality": 0,
-        "health": 0,
-    })
+    storage = _interface_data_storage(request)
+    configured = _insights_configured(request)
+    live = insights_data.build_live_devices(configured, storage) if storage else []
+    return JSONResponse(insights_data.summary(configured, live))
 
 
 @router.get("/api/insights/stats")
 async def insights_stats(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    return JSONResponse({"ok": True, "stats": [], "windows": {}})
+    storage = _interface_data_storage(request)
+    if storage is None:
+        return JSONResponse({"ok": True, "stats": {}})
+    params = request.query_params
+    source, device_id = params.get("source", ""), params.get("device_id", "")
+    device = _insights_device(_insights_configured(request), source, device_id)
+    if device is None:
+        return JSONResponse({"ok": True, "stats": {}})
+    metric_names = [m["name"] for m in device["expected_metrics"]]
+    stats = insights_data.rolling_stats(storage, source, device_id, metric_names, device.get("poll_interval_ms", 1000))
+    return JSONResponse({"ok": True, "stats": stats})
 
 
 @router.get("/api/insights/trends")
 async def insights_trends(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    return JSONResponse({"ok": True, "trends": []})
+    storage = _interface_data_storage(request)
+    if storage is None:
+        return JSONResponse({"ok": True, "trends": []})
+    params = request.query_params
+    source, device_id = params.get("source", ""), params.get("device_id", "")
+    device = _insights_device(_insights_configured(request), source, device_id)
+    if device is None:
+        return JSONResponse({"ok": True, "trends": []})
+    metric_names = [m["name"] for m in device["expected_metrics"]]
+    trends = insights_data.compute_trends(storage, source, device_id, metric_names, ALERT_RULES)
+    return JSONResponse({"ok": True, "trends": trends})
 
 
 @router.get("/api/insights/export/csv")
-async def export_insights_csv(request: Request) -> PlainTextResponse:
+async def export_insights_csv(request: Request) -> Response:
     if not _is_authenticated(request):
         return PlainTextResponse("Authentication required.", status_code=status.HTTP_401_UNAUTHORIZED)
-    return PlainTextResponse("timestamp,source,device_id,metric,value,unit,quality\n", media_type="text/csv")
+    storage = _interface_data_storage(request)
+    params = request.query_params
+    source, device_id = params.get("source", ""), params.get("device_id", "")
+    requested = [m for m in str(params.get("metrics", "")).split(",") if m]
+    if storage is None:
+        rows: list[dict[str, Any]] = []
+    else:
+        if requested == ["all"]:
+            requested = [m["name"] for m in storage.distinct_reading_names(source, device_id)]
+        rows = insights_data.export_csv_rows(storage, source, device_id, requested, params.get("window", "1h"))
+    filename = f"{params.get('name') or device_id or 'sensor'}-readings.csv".replace(" ", "_")
+    return _csv_download(filename, rows, ["timestamp", "source", "device_id", "metric", "value", "unit", "quality"])
 
 
 @router.get("/api/engine/health")

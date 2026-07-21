@@ -211,6 +211,111 @@ class GatewayInterfacesDataStorage:
             ).fetchall()
             return [dict(row) for row in reversed(rows)]
 
+    def latest_readings(self, source_type: str, source_id: str) -> dict[str, dict[str, Any]]:
+        """Most recent row per distinct metric name for one source."""
+        with self._lock:
+            self.open()
+            assert self._conn is not None
+            rows = self._conn.execute(
+                """SELECT sr.name, sr.ts_ms, sr.value, sr.unit, sr.address
+                   FROM sensor_readings sr
+                   JOIN (
+                       SELECT name, MAX(ts_ms) AS max_ts
+                       FROM sensor_readings
+                       WHERE source_type = ? AND source_id = ?
+                       GROUP BY name
+                   ) latest ON latest.name = sr.name AND latest.max_ts = sr.ts_ms
+                   WHERE sr.source_type = ? AND sr.source_id = ?""",
+                (source_type, source_id, source_type, source_id),
+            ).fetchall()
+            return {row["name"]: dict(row) for row in rows}
+
+    def distinct_reading_names(self, source_type: str, source_id: str) -> list[dict[str, str]]:
+        """Metric names actually seen for a source, with their last-known unit —
+        fallback for sources whose config doesn't declare registers up front (e.g. RS232)."""
+        with self._lock:
+            self.open()
+            assert self._conn is not None
+            rows = self._conn.execute(
+                """SELECT name, unit, MAX(ts_ms) AS ts_ms FROM sensor_readings
+                   WHERE source_type = ? AND source_id = ? GROUP BY name ORDER BY name""",
+                (source_type, source_id),
+            ).fetchall()
+            return [{"name": row["name"], "unit": row["unit"] or ""} for row in rows]
+
+    def recent_values(self, source_type: str, source_id: str, name: str, limit: int = 20) -> list[float]:
+        with self._lock:
+            self.open()
+            assert self._conn is not None
+            rows = self._conn.execute(
+                """SELECT value FROM sensor_readings
+                   WHERE source_type = ? AND source_id = ? AND name = ? AND value IS NOT NULL
+                   ORDER BY ts_ms DESC LIMIT ?""",
+                (source_type, source_id, name, max(1, min(int(limit), 500))),
+            ).fetchall()
+            return [row["value"] for row in reversed(rows)]
+
+    def bucketed_readings(
+        self, source_type: str, source_id: str, name: str, from_ms: int, to_ms: int, bucket_ms: int,
+    ) -> list[dict[str, Any]]:
+        """SQL-side time-bucketed aggregation — scales to long windows without
+        pulling raw rows into Python."""
+        bucket_ms = max(1000, int(bucket_ms))
+        with self._lock:
+            self.open()
+            assert self._conn is not None
+            rows = self._conn.execute(
+                """SELECT (ts_ms / ?) * ? AS bucket_ts, AVG(value) AS avg_v, MIN(value) AS min_v,
+                          MAX(value) AS max_v, COUNT(*) AS n
+                   FROM sensor_readings
+                   WHERE source_type = ? AND source_id = ? AND name = ? AND ts_ms >= ? AND ts_ms <= ? AND value IS NOT NULL
+                   GROUP BY bucket_ts ORDER BY bucket_ts""",
+                (bucket_ms, bucket_ms, source_type, source_id, name, int(from_ms), int(to_ms)),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def metric_stats(self, source_type: str, source_id: str, name: str, from_ms: int, to_ms: int) -> dict[str, Any]:
+        with self._lock:
+            self.open()
+            assert self._conn is not None
+            row = self._conn.execute(
+                """SELECT COUNT(*) AS n, AVG(value) AS avg_v, MIN(value) AS min_v, MAX(value) AS max_v,
+                          AVG(value * value) AS avg_sq
+                   FROM sensor_readings
+                   WHERE source_type = ? AND source_id = ? AND name = ? AND ts_ms >= ? AND ts_ms <= ? AND value IS NOT NULL""",
+                (source_type, source_id, name, int(from_ms), int(to_ms)),
+            ).fetchone()
+            n = int(row["n"] or 0)
+            if n == 0:
+                return {"avg": None, "min": None, "max": None, "stddev": None, "sample_count": 0}
+            avg_v = float(row["avg_v"])
+            variance = max(0.0, float(row["avg_sq"]) - avg_v * avg_v)
+            return {
+                "avg": avg_v, "min": float(row["min_v"]), "max": float(row["max_v"]),
+                "stddev": variance ** 0.5, "sample_count": n,
+            }
+
+    def status_events(
+        self, *, source_type: str | None = None, source_id: str | None = None,
+        from_ms: int = 0, to_ms: int = 2**63 - 1, limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        clauses = ["ts_ms >= ?", "ts_ms <= ?"]
+        values: list[Any] = [int(from_ms), int(to_ms)]
+        for column, value in (("source_type", source_type), ("source_id", source_id)):
+            if value is not None:
+                clauses.append(f"{column} = ?")
+                values.append(value)
+        values.append(max(1, min(int(limit), 10000)))
+        with self._lock:
+            self.open()
+            assert self._conn is not None
+            rows = self._conn.execute(
+                f"""SELECT ts_ms, source_type, source_id, status, error FROM sensor_status_events
+                    WHERE {' AND '.join(clauses)} ORDER BY ts_ms DESC LIMIT ?""",
+                values,
+            ).fetchall()
+            return [dict(row) for row in rows]
+
     def sensor_messages(
         self, *, source_type: str | None = None, source_id: str | None = None,
         from_ms: int = 0, to_ms: int = 2**63 - 1, limit: int = 1000,
