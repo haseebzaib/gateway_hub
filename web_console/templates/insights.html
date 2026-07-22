@@ -10,6 +10,7 @@
     <nav class="ov-tabs" data-ov-tabs>
         <button class="ov-tab is-current" data-ov-tab="overview">Overview</button>
         <button class="ov-tab" data-ov-tab="sensors">Sensors</button>
+        <button class="ov-tab" data-ov-tab="detection">Anomaly Detection</button>
         <button class="ov-tab" data-ov-tab="events">Events</button>
     </nav>
 
@@ -146,17 +147,44 @@
         </div>
     </div>
 
-    {# ── Events panel ─────────────────────────────────────────────── #}
-    <div class="ov-panel ov-hidden" data-ov-panel="events">
+    {# ── Anomaly Detection panel ──────────────────────────────────── #}
+    <div class="ov-panel ov-hidden" data-ov-panel="detection">
 
-        {# Combined alarms card — multi-condition rules (e.g. "pump running AND
-           vibration high"), scoped to metrics on the same device #}
-        <div class="ev-rules-card" data-cb-rules-card>
+        {# Friendly intro — this page is aimed at non-technical operators #}
+        <div class="ad-intro">
+            <h3 class="ad-intro-title">Automatic anomaly detection</h3>
+            <p class="ad-intro-lede">
+                Teach the gateway what <strong>normal</strong> looks like for each reading.
+                The built-in detection engine then checks every new reading, right on the device,
+                and flags anything wrong in the <strong>Events</strong> tab within seconds.
+                Pick a device below, open a reading, and switch on the checks you want.
+            </p>
+        </div>
+
+        {# Device selector tabs — populated by JS #}
+        <div class="sv-device-tabs" data-ad-device-tabs></div>
+
+        {# No-device state #}
+        <div class="sv-no-device ov-hidden" data-ad-no-device>
+            No sensors configured. <a href="/interfaces" style="color:var(--accent-cool);margin-left:.4rem">Go to Interfaces →</a>
+        </div>
+
+        {# Per-reading rows with expandable check cards — populated by JS #}
+        <div class="ad-metric-list" data-ad-metric-list></div>
+
+        {# Combined alarms — multi-reading rules, explained #}
+        <div class="ev-rules-card ad-combined-card">
             <header class="ev-rules-head">
                 <span class="ev-section-title">Combined Alarms</span>
                 <span class="ev-rules-badge" data-cb-rules-badge>0</span>
                 <button class="ev-add-btn" data-cb-add-btn>+ Add Alarm</button>
             </header>
+            <p class="ad-combined-explain">
+                Some problems only show up when several readings line up a pump that is
+                <em>running</em> while vibration is <em>high</em>, for example. A combined alarm
+                watches two or more readings from the same device together and fires as one
+                clearly-named alarm. Optional the checks above cover most cases.
+            </p>
             {# Add-alarm form (hidden by default) #}
             <div class="ev-add-form cb-add-form ev-hidden" data-cb-add-form>
                 <select class="ev-form-sel" data-cb-form-device>
@@ -180,6 +208,11 @@
             <div class="ev-rules-list" data-cb-rules-list></div>
         </div>
 
+    </div>
+
+    {# ── Events panel ─────────────────────────────────────────────── #}
+    <div class="ov-panel ov-hidden" data-ov-panel="events">
+
         {# Filter bar #}
         <div class="ev-filter-bar">
             <select class="ev-filter-sel" data-ev-filter-sev>
@@ -197,8 +230,9 @@
             </div>
         </div>
 
-        {# Event timeline #}
+        {# Event timeline — paginated, newest first #}
         <div class="ev-timeline" data-ev-timeline></div>
+        <div class="ev-pager ov-hidden" data-ev-pager></div>
 
         {# Empty state #}
         <div class="ev-empty ov-hidden" data-ev-empty>

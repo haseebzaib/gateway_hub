@@ -3967,6 +3967,7 @@ document.addEventListener("DOMContentLoaded", () => {
         let ovLiveDevices     = [];  // latest from /api/insights/live
         let svRefreshFn       = null; // set by Sensors tab block
         let evRefreshFn       = null; // set by Events tab block
+        let adRefreshFn       = null; // set by Anomaly Detection tab block
 
         // ── DOM refs ─────────────────────────────────────────────────────
         const ovDeviceGrid = insightsShell.querySelector("[data-ov-device-grid]");
@@ -4383,6 +4384,10 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (btn.getAttribute("data-ov-tab") === "events" && evRefreshFn) {
                     evRefreshFn();
                 }
+                // Anomaly Detection tab: load the selected device's checks on open
+                if (btn.getAttribute("data-ov-tab") === "detection" && adRefreshFn) {
+                    adRefreshFn();
+                }
             });
         });
 
@@ -4526,7 +4531,6 @@ document.addEventListener("DOMContentLoaded", () => {
                             </div>
                             <span class="sv-quality-pill is-${q}">${q === "none" ? "—" : q}</span>
                             <button class="sv-toggle-btn${on ? " is-on" : ""}" data-sv-toggle="${m.name}">${on ? "ON" : "OFF"}</button>
-                            <button class="sv-detect-btn" data-sv-detect="${m.name}" title="Configure anomaly detection for ${lbl}">⚙</button>
                         </div>`;
                 }).join("");
 
@@ -4540,12 +4544,6 @@ document.addEventListener("DOMContentLoaded", () => {
                         svChartData   = {};
                         svLastFetchMs = 0;
                         svFetchAndRenderChart();
-                    });
-                });
-
-                svMetricList.querySelectorAll("[data-sv-detect]").forEach((btn) => {
-                    btn.addEventListener("click", () => {
-                        openDetectionModal(device, btn.getAttribute("data-sv-detect"));
                     });
                 });
             };
@@ -5345,213 +5343,6 @@ document.addEventListener("DOMContentLoaded", () => {
                     svRenderTrends();
                 }
             };
-
-            // ══════════════════════════════════════════════════════════════════
-            //  Detection config modal — per-metric anomaly rule configuration.
-            //  Plain-language question per detector type; fields only appear
-            //  once that detector is turned on. Smart defaults are pulled from
-            //  this metric's own rolling stats so the user isn't guessing
-            //  numbers from scratch.
-            // ══════════════════════════════════════════════════════════════════
-            const DETECTOR_DEFS = [
-                { key: "threshold", label: "Safe range (limits)", hint: "Flag when the reading crosses a fixed high or low limit." },
-                { key: "range", label: "Valid range", hint: "Flag when the reading falls outside a valid min/max band — good for catching sensor faults." },
-                { key: "delta", label: "Sudden jumps", hint: "Flag abrupt changes between one reading and the next." },
-                { key: "slope", label: "Rising / falling trend", hint: "Flag a steady rise or fall over time." },
-                { key: "z_score", label: "Unusual vs its own normal", hint: "Flag statistical outliers compared to this sensor's own recent behavior. Learns automatically — no numbers to fill in." },
-                { key: "timeout", label: "Stopped reporting", hint: "Flag if this sensor goes quiet for longer than expected." },
-            ];
-
-            let dvModal = null;
-            let dvCurrent = null; // { device, metricName }
-
-            const dvFieldVal = (v, fallback) => (v === undefined || v === null || v === "" ? fallback : v);
-
-            const dvFieldsHtml = (key, cfg, stats, pollIntervalMs) => {
-                cfg = cfg || {};
-                const suggestMin = stats && stats.min !== null && stats.min !== undefined ? Number(stats.min).toFixed(2) : "";
-                const suggestMax = stats && stats.max !== null && stats.max !== undefined ? Number(stats.max).toFixed(2) : "";
-                if (key === "threshold") {
-                    return `
-                        <label>Warning limit <input type="number" step="any" data-dv-field="warning_limit" value="${dvFieldVal(cfg.warning_limit, suggestMax)}"></label>
-                        <label>Critical limit <input type="number" step="any" data-dv-field="critical_limit" value="${dvFieldVal(cfg.critical_limit, "")}"></label>
-                        <label class="dv-check"><input type="checkbox" data-dv-field="trigger_above" ${cfg.trigger_above !== false ? "checked" : ""}> Flag when ABOVE the limit (uncheck to flag when below)</label>`;
-                }
-                if (key === "range") {
-                    return `
-                        <label>Min value <input type="number" step="any" data-dv-field="min_value" value="${dvFieldVal(cfg.min_value, suggestMin)}"></label>
-                        <label>Max value <input type="number" step="any" data-dv-field="max_value" value="${dvFieldVal(cfg.max_value, suggestMax)}"></label>
-                        <label>Severity
-                            <select data-dv-field="severity">
-                                <option value="warning" ${cfg.severity !== "critical" ? "selected" : ""}>Warning</option>
-                                <option value="critical" ${cfg.severity === "critical" ? "selected" : ""}>Critical</option>
-                            </select>
-                        </label>`;
-                }
-                if (key === "delta") {
-                    return `
-                        <label>Warning jump size <input type="number" step="any" data-dv-field="warning_delta" value="${dvFieldVal(cfg.warning_delta, "")}"></label>
-                        <label>Critical jump size <input type="number" step="any" data-dv-field="critical_delta" value="${dvFieldVal(cfg.critical_delta, "")}"></label>
-                        <label class="dv-check"><input type="checkbox" data-dv-field="trigger_positive" ${cfg.trigger_positive !== false ? "checked" : ""}> Flag increases (uncheck to flag decreases)</label>`;
-                }
-                if (key === "slope") {
-                    return `
-                        <label>Warning rate (per minute) <input type="number" step="any" data-dv-field="warning_slope_per_min" value="${dvFieldVal(cfg.warning_slope_per_min, "")}"></label>
-                        <label>Critical rate (per minute) <input type="number" step="any" data-dv-field="critical_slope_per_min" value="${dvFieldVal(cfg.critical_slope_per_min, "")}"></label>
-                        <label class="dv-check"><input type="checkbox" data-dv-field="trigger_positive" ${cfg.trigger_positive !== false ? "checked" : ""}> Flag rising (uncheck to flag falling)</label>`;
-                }
-                if (key === "z_score") {
-                    const sens = cfg.sensitivity || "medium";
-                    return `
-                        <label>Sensitivity
-                            <select data-dv-field="sensitivity">
-                                <option value="low" ${sens === "low" ? "selected" : ""}>Low — fewer false alarms</option>
-                                <option value="medium" ${sens === "medium" ? "selected" : ""}>Medium</option>
-                                <option value="high" ${sens === "high" ? "selected" : ""}>High — catches more</option>
-                            </select>
-                        </label>`;
-                }
-                if (key === "timeout") {
-                    const suggestSec = pollIntervalMs ? Math.max(10, Math.round(pollIntervalMs * 8 / 1000)) : 60;
-                    return `
-                        <label>Stopped reporting for (seconds) <input type="number" step="1" min="1" data-dv-field="timeout_seconds" value="${cfg.timeout_ms ? Math.round(cfg.timeout_ms / 1000) : suggestSec}"></label>
-                        <label>Severity
-                            <select data-dv-field="severity">
-                                <option value="warning" ${cfg.severity !== "critical" ? "selected" : ""}>Warning</option>
-                                <option value="critical" ${cfg.severity === "critical" ? "selected" : ""}>Critical</option>
-                            </select>
-                        </label>`;
-                }
-                return "";
-            };
-
-            const dvSectionHtml = (def, cfg) => {
-                const enabled = !!(cfg && cfg.enabled);
-                return `
-                    <section class="dv-section${enabled ? " is-on" : ""}" data-dv-section="${def.key}">
-                        <header class="dv-section-head">
-                            <button class="sv-toggle-btn${enabled ? " is-on" : ""}" data-dv-toggle="${def.key}" type="button">${enabled ? "ON" : "OFF"}</button>
-                            <span class="dv-section-label" title="${def.hint}">${def.label}</span>
-                        </header>
-                        <div class="dv-section-fields${enabled ? "" : " ev-hidden"}" data-dv-fields="${def.key}"></div>
-                    </section>`;
-            };
-
-            const dvBuildModal = () => {
-                if (dvModal) return;
-                dvModal = document.createElement("div");
-                dvModal.className = "sv-chart-modal dv-modal";
-                dvModal.innerHTML = `
-                    <div class="sv-modal-inner dv-modal-inner">
-                        <header class="sv-modal-head">
-                            <span class="sv-modal-device-name" data-dv-title></span>
-                            <button class="sv-modal-close-btn" data-dv-close>✕</button>
-                        </header>
-                        <div class="dv-modal-body" data-dv-body></div>
-                        <footer class="sv-modal-foot dv-modal-foot">
-                            <span class="dv-save-status" data-dv-status></span>
-                            <button class="ev-form-save-btn" data-dv-save>Save</button>
-                        </footer>
-                    </div>`;
-                document.body.appendChild(dvModal);
-                dvModal.querySelector("[data-dv-close]").addEventListener("click", () => dvModal.classList.remove("is-open"));
-                dvModal.addEventListener("click", (e) => { if (e.target === dvModal) dvModal.classList.remove("is-open"); });
-                dvModal.querySelector("[data-dv-save]").addEventListener("click", async () => {
-                    if (!dvCurrent) return;
-                    const statusEl = dvModal.querySelector("[data-dv-status]");
-                    if (statusEl) statusEl.textContent = "Saving…";
-                    try {
-                        const config = dvCollectConfig();
-                        const r = await fetch("/api/insights/detection-config", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ source: dvCurrent.device.source, device_id: dvCurrent.device.device_id, metric: dvCurrent.metricName, config }),
-                        });
-                        const d = await r.json();
-                        if (statusEl) statusEl.textContent = d.ok ? "Saved" : (d.message || "Failed to save.");
-                    } catch (e) {
-                        if (statusEl) statusEl.textContent = "Network error.";
-                    }
-                });
-            };
-
-            const dvCollectConfig = () => {
-                const bodyEl = dvModal.querySelector("[data-dv-body]");
-                const result = {};
-                DETECTOR_DEFS.forEach((def) => {
-                    const section = bodyEl.querySelector(`[data-dv-section="${def.key}"]`);
-                    const enabled = section && section.classList.contains("is-on");
-                    if (!enabled) { result[def.key] = { enabled: false }; return; }
-                    const fieldsEl = bodyEl.querySelector(`[data-dv-fields="${def.key}"]`);
-                    const entry = { enabled: true };
-                    (fieldsEl ? fieldsEl.querySelectorAll("[data-dv-field]") : []).forEach((input) => {
-                        const field = input.getAttribute("data-dv-field");
-                        if (input.type === "checkbox") entry[field] = input.checked;
-                        else if (input.type === "number") entry[field] = input.value === "" ? null : Number(input.value);
-                        else entry[field] = input.value;
-                    });
-                    if (def.key === "timeout" && entry.timeout_seconds !== undefined) {
-                        entry.timeout_ms = Math.max(1, Number(entry.timeout_seconds || 60)) * 1000;
-                        delete entry.timeout_seconds;
-                    }
-                    result[def.key] = entry;
-                });
-                return result;
-            };
-
-            const openDetectionModal = async (device, metricName) => {
-                dvBuildModal();
-                dvCurrent = { device, metricName };
-                const titleEl = dvModal.querySelector("[data-dv-title]");
-                if (titleEl) titleEl.textContent = `Configure Detection — ${displayLabel(metricName)}`;
-                const statusEl = dvModal.querySelector("[data-dv-status]");
-                if (statusEl) statusEl.textContent = "";
-                const bodyEl = dvModal.querySelector("[data-dv-body]");
-                if (bodyEl) bodyEl.innerHTML = `<p class="dv-loading">Loading…</p>`;
-                dvModal.classList.add("is-open");
-
-                let cfg = {};
-                let stats = null;
-                try {
-                    const [cfgRes, statsRes] = await Promise.all([
-                        fetch(`/api/insights/detection-config?source=${encodeURIComponent(device.source)}&device_id=${encodeURIComponent(device.device_id)}&metric=${encodeURIComponent(metricName)}`),
-                        fetch(`/api/insights/stats?source=${encodeURIComponent(device.source)}&device_id=${encodeURIComponent(device.device_id)}`),
-                    ]);
-                    const cfgData = await cfgRes.json();
-                    if (cfgData.ok) cfg = cfgData.config || {};
-                    const statsData = await statsRes.json();
-                    if (statsData.ok) stats = ((statsData.stats || {})["5min"] || {})[metricName] || null;
-                } catch (e) {
-                    console.warn("[Insights] detection config load failed:", e);
-                }
-
-                if (!dvModal.classList.contains("is-open") || dvCurrent.metricName !== metricName) return; // closed/changed while loading
-                if (bodyEl) {
-                    bodyEl.innerHTML = DETECTOR_DEFS.map((def) => dvSectionHtml(def, cfg[def.key])).join("");
-                    DETECTOR_DEFS.forEach((def) => {
-                        const fieldsEl = bodyEl.querySelector(`[data-dv-fields="${def.key}"]`);
-                        if (fieldsEl) fieldsEl.innerHTML = dvFieldsHtml(def.key, cfg[def.key], stats, device.poll_interval_ms);
-                    });
-                    bodyEl.querySelectorAll("[data-dv-toggle]").forEach((btn) => {
-                        btn.addEventListener("click", () => {
-                            const key = btn.getAttribute("data-dv-toggle");
-                            const nowOn = !btn.classList.contains("is-on");
-                            btn.classList.toggle("is-on", nowOn);
-                            btn.textContent = nowOn ? "ON" : "OFF";
-                            const section = bodyEl.querySelector(`[data-dv-section="${key}"]`);
-                            section?.classList.toggle("is-on", nowOn);
-                            const fieldsEl = bodyEl.querySelector(`[data-dv-fields="${key}"]`);
-                            if (fieldsEl) {
-                                fieldsEl.classList.toggle("ev-hidden", !nowOn);
-                                if (nowOn && !fieldsEl.innerHTML.trim()) {
-                                    fieldsEl.innerHTML = dvFieldsHtml(key, {}, stats, device.poll_interval_ms);
-                                }
-                            }
-                        });
-                    });
-                }
-            };
-
             svRefreshFn = svRefresh;   // expose to outer refresh() loop
         }
 
@@ -5611,6 +5402,7 @@ document.addEventListener("DOMContentLoaded", () => {
             // ── Notify Sensors + Events tabs ─────────────────────────────
             if (svRefreshFn) svRefreshFn();
             if (evRefreshFn) evRefreshFn();
+            if (adRefreshFn) adRefreshFn();
         };
 
         refresh();
@@ -5662,20 +5454,461 @@ document.addEventListener("DOMContentLoaded", () => {
                 evFilterDev.innerHTML = opts.join("");
             };
 
-            // ── Combined alarms (multi-condition rules) ─────────────────────────
-            const cbRulesList  = evPanel.querySelector("[data-cb-rules-list]");
-            const cbRulesBadge = evPanel.querySelector("[data-cb-rules-badge]");
-            const cbAddBtn     = evPanel.querySelector("[data-cb-add-btn]");
-            const cbAddForm    = evPanel.querySelector("[data-cb-add-form]");
-            const cbFormDevice = evPanel.querySelector("[data-cb-form-device]");
-            const cbFormName   = evPanel.querySelector("[data-cb-form-name]");
-            const cbConditions = evPanel.querySelector("[data-cb-conditions]");
-            const cbAddCondBtn = evPanel.querySelector("[data-cb-add-condition]");
-            const cbFormLogic  = evPanel.querySelector("[data-cb-form-logic]");
-            const cbFormSev    = evPanel.querySelector("[data-cb-form-severity]");
-            const cbFormMsg    = evPanel.querySelector("[data-cb-form-message]");
-            const cbFormSave   = evPanel.querySelector("[data-cb-form-save]");
-            const cbFormCancel = evPanel.querySelector("[data-cb-form-cancel]");
+            // ── Event timeline — paginated so long histories never become an
+            //    endless scroll; same pager pattern as the Connectivity audit ──
+            const EV_PER_PAGE = 8;
+            let evPage       = 0;
+            let evLastEvents = [];
+            const evPager    = evPanel.querySelector("[data-ev-pager]");
+
+            const evLoadEvents = async () => {
+                const params = new URLSearchParams({ window: evWindow });
+                if (evSeverity)  params.set("severity",  evSeverity);
+                if (evDeviceKey) {
+                    const [src, ...rest] = evDeviceKey.split(":");
+                    params.set("source",    src);
+                    params.set("device_id", rest.join(":"));
+                }
+                try {
+                    const r = await fetch(`/api/insights/events?${params}`);
+                    if (!r.ok) return;
+                    const d = await r.json();
+                    evLastEvents = d.events || [];
+                    evRenderTimeline();
+                    evLastFetch = Date.now();
+                } catch (e) {
+                    console.warn("[Events] events fetch failed:", e);
+                }
+            };
+
+            const evRenderTimeline = () => {
+                if (!evTimeline) return;
+                const events = evLastEvents;
+                if (events.length === 0) {
+                    evTimeline.innerHTML = "";
+                    evPager?.classList.add("ov-hidden");
+                    evEmpty?.classList.remove("ev-hidden");
+                    return;
+                }
+                evEmpty?.classList.add("ev-hidden");
+
+                const pageCount = Math.max(1, Math.ceil(events.length / EV_PER_PAGE));
+                evPage = Math.min(evPage, pageCount - 1);
+                const pageEvents = events.slice(evPage * EV_PER_PAGE, (evPage + 1) * EV_PER_PAGE);
+
+                if (evPager) {
+                    if (pageCount > 1) {
+                        evPager.classList.remove("ov-hidden");
+                        evPager.innerHTML = `
+                            <button class="ev-page-btn" data-ev-page-prev ${evPage === 0 ? "disabled" : ""}>← Newer</button>
+                            <span class="ev-page-label">Page ${evPage + 1} of ${pageCount} · ${events.length} events</span>
+                            <button class="ev-page-btn" data-ev-page-next ${evPage >= pageCount - 1 ? "disabled" : ""}>Older →</button>`;
+                        evPager.querySelector("[data-ev-page-prev]")?.addEventListener("click", () => { evPage = Math.max(0, evPage - 1); evRenderTimeline(); });
+                        evPager.querySelector("[data-ev-page-next]")?.addEventListener("click", () => { evPage = Math.min(pageCount - 1, evPage + 1); evRenderTimeline(); });
+                    } else {
+                        evPager.classList.add("ov-hidden");
+                        evPager.innerHTML = "";
+                    }
+                }
+
+                evTimeline.innerHTML = pageEvents.map((ev) => {
+                    const sev   = (ev.severity || "info").toLowerCase();
+                    const tone  = SEV_TONE[sev] || "is-info";
+                    const etype = (ev.event_type || "").replace(/^status:/, "").replace(/^anomaly:/, "⚡ ");
+                    const name  = ev.device_name || ev.device_id || "";
+                    const msg   = ev.message || "";
+                    const count = ev._count || 1;
+
+                    // Compact timestamp: single → "May 2  13:34:08"
+                    //                   range  → "13:23:30 → 13:23:55"
+                    const tsDisplay = count > 1
+                        ? `${evFmtTime(ev._first_ts)} → ${evFmtTime(ev.timestamp_ms)}`
+                        : evFmtTs(ev.timestamp_ms);
+                    const fullTs = count > 1
+                        ? `${evFmtTs(ev._first_ts)}  →  ${evFmtTs(ev.timestamp_ms)}`
+                        : evFmtTs(ev.timestamp_ms);
+                    const countBadge = count > 1
+                        ? `<span class="ev-count-badge">×${count}</span>`
+                        : "";
+
+                    return `
+                        <div class="ev-event-row ${tone}">
+                            <div class="ev-row-top">
+                                <span class="ev-sev-badge ${tone}">${sev}</span>
+                                <span class="ev-device">${name}</span>
+                                <span class="ev-type">${etype}</span>
+                            </div>
+                            <div class="ev-row-bottom">
+                                <span class="ev-ts" title="${fullTs}">${tsDisplay}</span>
+                                ${countBadge}
+                                <span class="ev-message" title="${msg}">${msg}</span>
+                            </div>
+                        </div>`;
+                }).join("");
+            };
+
+            // ── Filter wiring ──────────────────────────────────────────────────
+            if (evFilterSev) {
+                evFilterSev.addEventListener("change", () => {
+                    evSeverity = evFilterSev.value;
+                    evPage = 0;
+                    evLoadEvents();
+                });
+            }
+            if (evFilterDev) {
+                evFilterDev.addEventListener("change", () => {
+                    evDeviceKey = evFilterDev.value;
+                    evPage = 0;
+                    evLoadEvents();
+                });
+            }
+            if (evWindowBar) {
+                evWindowBar.querySelectorAll("[data-ev-win]").forEach((btn) => {
+                    btn.addEventListener("click", () => {
+                        evWindow = btn.getAttribute("data-ev-win");
+                        evWindowBar.querySelectorAll("[data-ev-win]").forEach((b) => b.classList.remove("is-current"));
+                        btn.classList.add("is-current");
+                        evLastFetch = 0;
+                        evPage = 0;
+                        evLoadEvents();
+                    });
+                });
+            }
+
+            // ── Entry point ────────────────────────────────────────────────────
+            const evRefresh = () => {
+                const tabBtn   = insightsShell.querySelector('[data-ov-tab="events"]');
+                const isActive = tabBtn?.classList.contains("is-current");
+
+                evUpdateDeviceFilter();
+
+                if (!isActive) return;
+
+                // Poll events every 10 s
+                if (!evLastFetch || (Date.now() - evLastFetch) > 10_000) {
+                    evLoadEvents();
+                }
+            };
+
+            evRefreshFn = evRefresh;
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        //  Anomaly Detection tab — the user-facing home for all detection setup.
+        //  Pick a device, open a reading, switch on plain-language checks. Every
+        //  save is pushed live to the on-device detection engine.
+        // ══════════════════════════════════════════════════════════════════════
+        const adPanel = insightsShell.querySelector('[data-ov-panel="detection"]');
+
+        if (adPanel) {
+            const adDeviceTabs = adPanel.querySelector("[data-ad-device-tabs]");
+            const adMetricList = adPanel.querySelector("[data-ad-metric-list]");
+            const adNoDevice   = adPanel.querySelector("[data-ad-no-device]");
+
+            let adSelectedKey  = "";
+            let adConfigs      = {};   // metric name -> friendly config (for the selected device)
+            let adStats        = {};   // metric name -> 5-min rolling stats
+            let adLastTabKeys  = "";
+            let adExpanded     = new Set();
+            let adLoadSeq      = 0;    // guards against out-of-order device loads
+
+            // One card per kind of check. Copy is written for a non-technical
+            // operator: what it catches + a concrete example, no detector jargon.
+            const AD_CHECKS = [
+                { key: "threshold", title: "Safe limits", icon: "⚠",
+                  what: "Flags the reading the moment it crosses a limit you set.",
+                  example: "Example: warn when pressure passes 6 bar, critical past 7 bar." },
+                { key: "range", title: "Impossible readings", icon: "✕",
+                  what: "Flags values this sensor could never truly produce — usually a sensor or wiring fault.",
+                  example: "Example: a 0–10 bar pressure sensor reading 40 bar." },
+                { key: "delta", title: "Sudden jumps", icon: "⚡",
+                  what: "Flags a big change from one reading to the next.",
+                  example: "Example: flow drops by 80 L/min between two readings." },
+                { key: "slope", title: "Rising or falling trend", icon: "↗",
+                  what: "Flags a steady climb or drop over minutes, before any limit is reached.",
+                  example: "Example: bearing temperature creeping up 2 °C every minute." },
+                { key: "z_score", title: "Unusual behaviour", icon: "◎",
+                  what: "The engine learns this reading's normal pattern by itself and flags anything that does not fit. No numbers needed.",
+                  example: "Just choose how sensitive it should be." },
+                { key: "timeout", title: "Stopped reporting", icon: "⏱",
+                  what: "Flags this reading if it goes silent for too long.",
+                  example: "Example: no reading for 60 seconds." },
+            ];
+
+            const adNum = (v) => (v === null || v === undefined || v === "" ? "" : Number(v).toFixed(2).replace(/\.00$/, ""));
+
+            // ── Field builders — only the fields that matter, prefilled from
+            //    this reading's own recent stats where a suggestion makes sense.
+            const adFieldsHtml = (key, cfg, stats, pollIntervalMs, unit) => {
+                cfg = cfg || {};
+                const u = unit ? ` (${unit})` : "";
+                const sMin = stats && stats.min != null ? adNum(stats.min) : "";
+                const sMax = stats && stats.max != null ? adNum(stats.max) : "";
+                const hint = (sMin !== "" && sMax !== "")
+                    ? `<p class="ad-field-hint">This reading has recently stayed between <strong>${sMin}</strong> and <strong>${sMax}</strong>${u ? " " + unit : ""}.</p>`
+                    : "";
+                if (key === "threshold") {
+                    return hint + `
+                        <label>Warn at${u} <input type="number" step="any" data-ad-field="warning_limit" value="${adNum(cfg.warning_limit)}" placeholder="${sMax}"></label>
+                        <label>Critical at${u} <input type="number" step="any" data-ad-field="critical_limit" value="${adNum(cfg.critical_limit)}"></label>
+                        <label class="dv-check"><input type="checkbox" data-ad-field="trigger_above" ${cfg.trigger_above !== false ? "checked" : ""}> Flag when it goes <strong>above</strong> the limit (untick to flag when it drops below)</label>`;
+                }
+                if (key === "range") {
+                    return hint + `
+                        <label>Lowest possible${u} <input type="number" step="any" data-ad-field="min_value" value="${adNum(cfg.min_value)}" placeholder="${sMin}"></label>
+                        <label>Highest possible${u} <input type="number" step="any" data-ad-field="max_value" value="${adNum(cfg.max_value)}" placeholder="${sMax}"></label>
+                        <label>Treat as
+                            <select data-ad-field="severity">
+                                <option value="warning" ${cfg.severity !== "critical" ? "selected" : ""}>Warning</option>
+                                <option value="critical" ${cfg.severity === "critical" ? "selected" : ""}>Critical</option>
+                            </select>
+                        </label>`;
+                }
+                if (key === "delta") {
+                    return hint + `
+                        <label>Warn on a jump of${u} <input type="number" step="any" data-ad-field="warning_delta" value="${adNum(cfg.warning_delta)}"></label>
+                        <label>Critical on a jump of${u} <input type="number" step="any" data-ad-field="critical_delta" value="${adNum(cfg.critical_delta)}"></label>
+                        <label class="dv-check"><input type="checkbox" data-ad-field="trigger_positive" ${cfg.trigger_positive !== false ? "checked" : ""}> Flag <strong>increases</strong> (untick to flag drops)</label>`;
+                }
+                if (key === "slope") {
+                    return hint + `
+                        <label>Warn when changing by${u} per minute <input type="number" step="any" data-ad-field="warning_slope_per_min" value="${adNum(cfg.warning_slope_per_min)}"></label>
+                        <label>Critical at${u} per minute <input type="number" step="any" data-ad-field="critical_slope_per_min" value="${adNum(cfg.critical_slope_per_min)}"></label>
+                        <label class="dv-check"><input type="checkbox" data-ad-field="trigger_positive" ${cfg.trigger_positive !== false ? "checked" : ""}> Flag <strong>rising</strong> (untick to flag falling)</label>`;
+                }
+                if (key === "z_score") {
+                    const sens = cfg.sensitivity || "medium";
+                    return `
+                        <label>Sensitivity
+                            <select data-ad-field="sensitivity">
+                                <option value="low" ${sens === "low" ? "selected" : ""}>Low — only flag clearly odd behaviour</option>
+                                <option value="medium" ${sens === "medium" ? "selected" : ""}>Medium — balanced (recommended)</option>
+                                <option value="high" ${sens === "high" ? "selected" : ""}>High — flag even small oddities</option>
+                            </select>
+                        </label>`;
+                }
+                if (key === "timeout") {
+                    const suggestSec = pollIntervalMs ? Math.max(10, Math.round(pollIntervalMs * 8 / 1000)) : 60;
+                    return `
+                        <label>Silent for how many seconds? <input type="number" step="1" min="1" data-ad-field="timeout_seconds" value="${cfg.timeout_ms ? Math.round(cfg.timeout_ms / 1000) : suggestSec}"></label>
+                        <label>Treat as
+                            <select data-ad-field="severity">
+                                <option value="warning" ${cfg.severity !== "critical" ? "selected" : ""}>Warning</option>
+                                <option value="critical" ${cfg.severity === "critical" ? "selected" : ""}>Critical</option>
+                            </select>
+                        </label>`;
+                }
+                return "";
+            };
+
+            // ── Device tabs ──────────────────────────────────────────────────
+            const adBuildTabs = () => {
+                if (!adDeviceTabs) return;
+                const keys = ovConfigured.map((d) => `${d.source}:${d.device_id}`).join(",");
+                if (keys === adLastTabKeys) return;
+                adLastTabKeys = keys;
+
+                if (ovConfigured.length === 0) {
+                    adDeviceTabs.innerHTML = "";
+                    adMetricList.innerHTML = "";
+                    adNoDevice?.classList.remove("ov-hidden");
+                    return;
+                }
+                adNoDevice?.classList.add("ov-hidden");
+
+                if (!adSelectedKey || !ovConfigured.some((d) => `${d.source}:${d.device_id}` === adSelectedKey)) {
+                    adSelectedKey = `${ovConfigured[0].source}:${ovConfigured[0].device_id}`;
+                }
+
+                adDeviceTabs.innerHTML = ovConfigured.map((d) => {
+                    const key = `${d.source}:${d.device_id}`;
+                    return `<button class="sv-device-tab${key === adSelectedKey ? " is-current" : ""}" data-ad-key="${key}">${d.name || d.device_id}</button>`;
+                }).join("");
+
+                adDeviceTabs.querySelectorAll("[data-ad-key]").forEach((btn) => {
+                    btn.addEventListener("click", () => {
+                        const newKey = btn.getAttribute("data-ad-key");
+                        if (newKey === adSelectedKey) return;
+                        adSelectedKey = newKey;
+                        adExpanded = new Set();
+                        adDeviceTabs.querySelectorAll("[data-ad-key]").forEach((b) => b.classList.remove("is-current"));
+                        btn.classList.add("is-current");
+                        adLoadDevice();
+                    });
+                });
+            };
+
+            const adDevice = () => ovConfigured.find((d) => `${d.source}:${d.device_id}` === adSelectedKey);
+
+            // ── Load the selected device's saved checks + stats, then render ──
+            const adLoadDevice = async () => {
+                const device = adDevice();
+                if (!device) return;
+                const seq = ++adLoadSeq;
+                if (adMetricList) adMetricList.innerHTML = `<p class="dv-loading">Loading…</p>`;
+                try {
+                    const [cfgRes, statsRes] = await Promise.all([
+                        fetch(`/api/insights/detection-config?source=${encodeURIComponent(device.source)}&device_id=${encodeURIComponent(device.device_id)}`),
+                        fetch(`/api/insights/stats?source=${encodeURIComponent(device.source)}&device_id=${encodeURIComponent(device.device_id)}`),
+                    ]);
+                    const cfgData = await cfgRes.json();
+                    const statsData = await statsRes.json();
+                    if (seq !== adLoadSeq) return; // user switched device while loading
+                    adConfigs = (cfgData.ok && cfgData.configs) || {};
+                    adStats = (statsData.ok && (statsData.stats || {})["5min"]) || {};
+                } catch (e) {
+                    console.warn("[Detection] load failed:", e);
+                    if (seq !== adLoadSeq) return;
+                    adConfigs = {};
+                    adStats = {};
+                }
+                adRenderMetricList();
+            };
+
+            const adEnabledChecks = (metricName) => {
+                const cfg = adConfigs[metricName] || {};
+                return AD_CHECKS.filter((c) => cfg[c.key] && cfg[c.key].enabled);
+            };
+
+            // ── Metric rows ──────────────────────────────────────────────────
+            const adRenderMetricList = () => {
+                const device = adDevice();
+                if (!adMetricList || !device) return;
+                const live = ovLiveDevices.find((d) => `${d.source}:${d.device_id}` === adSelectedKey);
+
+                adMetricList.innerHTML = (device.expected_metrics || []).map((m) => {
+                    const lbl = displayLabel(m.name);
+                    const lm = (live?.metrics || {})[m.name] || {};
+                    const liveVal = lm.value !== undefined && lm.value !== null ? `${fmtVal(lm.value)} ${m.unit || ""}`.trim() : "—";
+                    const on = adEnabledChecks(m.name);
+                    const chips = on.length
+                        ? on.map((c) => `<span class="ad-chip is-on">${c.icon} ${c.title}</span>`).join("")
+                        : `<span class="ad-chip is-off">No checks on yet — click to set up</span>`;
+                    const expanded = adExpanded.has(m.name);
+                    return `
+                        <div class="ad-metric${expanded ? " is-open" : ""}" data-ad-metric="${m.name}">
+                            <button class="ad-metric-head" data-ad-expand="${m.name}" type="button">
+                                <span class="ad-metric-name">${lbl}</span>
+                                <span class="ad-metric-live">${liveVal}</span>
+                                <span class="ad-chip-row">${chips}</span>
+                                <span class="ad-chevron">${expanded ? "▾" : "▸"}</span>
+                            </button>
+                            <div class="ad-metric-body${expanded ? "" : " ev-hidden"}" data-ad-body="${m.name}"></div>
+                        </div>`;
+                }).join("");
+
+                adMetricList.querySelectorAll("[data-ad-expand]").forEach((btn) => {
+                    btn.addEventListener("click", () => {
+                        const name = btn.getAttribute("data-ad-expand");
+                        if (adExpanded.has(name)) adExpanded.delete(name);
+                        else adExpanded.add(name);
+                        adRenderMetricList();
+                    });
+                });
+
+                adExpanded.forEach((name) => adRenderMetricBody(name));
+            };
+
+            // ── Check cards for one reading ──────────────────────────────────
+            const adRenderMetricBody = (metricName) => {
+                const device = adDevice();
+                const body = adMetricList?.querySelector(`[data-ad-body="${metricName}"]`);
+                if (!body || !device) return;
+                const metric = (device.expected_metrics || []).find((m) => m.name === metricName) || {};
+                const cfg = adConfigs[metricName] || {};
+                const stats = adStats[metricName] || null;
+
+                body.innerHTML = AD_CHECKS.map((def) => {
+                    const c = cfg[def.key] || {};
+                    const enabled = !!c.enabled;
+                    return `
+                        <section class="dv-section${enabled ? " is-on" : ""}" data-ad-section="${def.key}">
+                            <header class="dv-section-head">
+                                <button class="sv-toggle-btn${enabled ? " is-on" : ""}" data-ad-toggle="${def.key}" type="button">${enabled ? "ON" : "OFF"}</button>
+                                <div class="ad-check-text">
+                                    <span class="dv-section-label">${def.icon} ${def.title}</span>
+                                    <span class="ad-check-what">${def.what}</span>
+                                    <span class="ad-check-example">${def.example}</span>
+                                </div>
+                            </header>
+                            <div class="dv-section-fields${enabled ? "" : " ev-hidden"}" data-ad-fields="${def.key}">
+                                ${adFieldsHtml(def.key, c, stats, device.poll_interval_ms, metric.unit || "")}
+                            </div>
+                        </section>`;
+                }).join("") + `
+                    <footer class="ad-metric-foot">
+                        <span class="dv-save-status" data-ad-status></span>
+                        <button class="ev-form-save-btn" data-ad-save type="button">Save checks for this reading</button>
+                    </footer>`;
+
+                body.querySelectorAll("[data-ad-toggle]").forEach((btn) => {
+                    btn.addEventListener("click", () => {
+                        const key = btn.getAttribute("data-ad-toggle");
+                        const nowOn = !btn.classList.contains("is-on");
+                        btn.classList.toggle("is-on", nowOn);
+                        btn.textContent = nowOn ? "ON" : "OFF";
+                        const section = body.querySelector(`[data-ad-section="${key}"]`);
+                        section?.classList.toggle("is-on", nowOn);
+                        body.querySelector(`[data-ad-fields="${key}"]`)?.classList.toggle("ev-hidden", !nowOn);
+                    });
+                });
+
+                body.querySelector("[data-ad-save]")?.addEventListener("click", async () => {
+                    const statusEl = body.querySelector("[data-ad-status]");
+                    if (statusEl) statusEl.textContent = "Saving…";
+                    const config = {};
+                    AD_CHECKS.forEach((def) => {
+                        const section = body.querySelector(`[data-ad-section="${def.key}"]`);
+                        const enabled = section && section.classList.contains("is-on");
+                        if (!enabled) { config[def.key] = { enabled: false }; return; }
+                        const entry = { enabled: true };
+                        body.querySelectorAll(`[data-ad-fields="${def.key}"] [data-ad-field]`).forEach((input) => {
+                            const field = input.getAttribute("data-ad-field");
+                            if (input.type === "checkbox") entry[field] = input.checked;
+                            else if (input.type === "number") entry[field] = input.value === "" ? null : Number(input.value);
+                            else entry[field] = input.value;
+                        });
+                        if (def.key === "timeout" && entry.timeout_seconds !== undefined) {
+                            entry.timeout_ms = Math.max(1, Number(entry.timeout_seconds || 60)) * 1000;
+                            delete entry.timeout_seconds;
+                        }
+                        config[def.key] = entry;
+                    });
+                    try {
+                        const device = adDevice();
+                        const r = await fetch("/api/insights/detection-config", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ source: device.source, device_id: device.device_id, metric: metricName, config }),
+                        });
+                        const d = await r.json();
+                        if (d.ok) {
+                            adConfigs[metricName] = config;
+                            if (statusEl) statusEl.textContent = "Saved — the engine is now watching this reading.";
+                            adRenderMetricList();
+                        } else if (statusEl) {
+                            statusEl.textContent = d.message || "Failed to save.";
+                        }
+                    } catch (e) {
+                        if (statusEl) statusEl.textContent = "Network error.";
+                    }
+                });
+            };
+
+            // ── Combined alarms (multi-condition rules) ──────────────────────
+            const cbRulesList  = adPanel.querySelector("[data-cb-rules-list]");
+            const cbRulesBadge = adPanel.querySelector("[data-cb-rules-badge]");
+            const cbAddBtn     = adPanel.querySelector("[data-cb-add-btn]");
+            const cbAddForm    = adPanel.querySelector("[data-cb-add-form]");
+            const cbFormDevice = adPanel.querySelector("[data-cb-form-device]");
+            const cbFormName   = adPanel.querySelector("[data-cb-form-name]");
+            const cbConditions = adPanel.querySelector("[data-cb-conditions]");
+            const cbAddCondBtn = adPanel.querySelector("[data-cb-add-condition]");
+            const cbFormLogic  = adPanel.querySelector("[data-cb-form-logic]");
+            const cbFormSev    = adPanel.querySelector("[data-cb-form-severity]");
+            const cbFormMsg    = adPanel.querySelector("[data-cb-form-message]");
+            const cbFormSave   = adPanel.querySelector("[data-cb-form-save]");
+            const cbFormCancel = adPanel.querySelector("[data-cb-form-cancel]");
             const CB_OPS = { gt: ">", gte: "≥", lt: "<", lte: "≤", eq: "=", neq: "≠" };
 
             const cbMetricOptions = (deviceKey) => {
@@ -5692,7 +5925,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 const metrics = cbMetricOptions(deviceKey);
                 const metricOpts = metrics.map((m) => `<option value="${m.name}"${m.name === metricName ? " selected" : ""}>${displayLabel(m.name)}</option>`).join("");
                 row.innerHTML = `
-                    <select class="ev-form-sel" data-cb-cond-metric>${metricOpts || '<option value="">Metric…</option>'}</select>
+                    <select class="ev-form-sel" data-cb-cond-metric>${metricOpts || '<option value="">Reading…</option>'}</select>
                     <select class="ev-form-sel" data-cb-cond-op>
                         ${Object.entries(CB_OPS).map(([k, sym]) => `<option value="${k}"${k === op ? " selected" : ""}>${sym}</option>`).join("")}
                     </select>
@@ -5710,10 +5943,15 @@ document.addEventListener("DOMContentLoaded", () => {
                 cbAddConditionRow(cbFormDevice ? cbFormDevice.value : "");
             };
 
-            if (cbFormDevice) {
+            const cbFillDeviceOptions = () => {
+                if (!cbFormDevice) return;
+                const current = cbFormDevice.value;
                 cbFormDevice.innerHTML = ['<option value="">Device…</option>',
-                    ...ovConfigured.map((d) => `<option value="${d.source}|${d.device_id}">${d.name || d.device_id}</option>`),
+                    ...ovConfigured.map((d) => `<option value="${d.source}|${d.device_id}"${`${d.source}|${d.device_id}` === current ? " selected" : ""}>${d.name || d.device_id}</option>`),
                 ].join("");
+            };
+
+            if (cbFormDevice) {
                 cbFormDevice.addEventListener("change", () => {
                     if (cbConditions) cbConditions.innerHTML = "";
                     cbAddConditionRow(cbFormDevice.value);
@@ -5725,6 +5963,7 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             if (cbAddBtn && cbAddForm) {
                 cbAddBtn.addEventListener("click", () => {
+                    cbFillDeviceOptions();
                     cbResetForm();
                     cbAddForm.classList.remove("ev-hidden");
                     cbAddBtn.classList.add("ev-hidden");
@@ -5744,7 +5983,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     const d = await r.json();
                     cbRenderRules(d.rules || []);
                 } catch (e) {
-                    console.warn("[Events] combined alarms fetch failed:", e);
+                    console.warn("[Detection] combined alarms fetch failed:", e);
                 }
             };
 
@@ -5814,120 +6053,24 @@ document.addEventListener("DOMContentLoaded", () => {
                 });
             }
 
-            // ── Event timeline ─────────────────────────────────────────────────
-            const evLoadEvents = async () => {
-                const params = new URLSearchParams({ window: evWindow });
-                if (evSeverity)  params.set("severity",  evSeverity);
-                if (evDeviceKey) {
-                    const [src, ...rest] = evDeviceKey.split(":");
-                    params.set("source",    src);
-                    params.set("device_id", rest.join(":"));
-                }
-                try {
-                    const r = await fetch(`/api/insights/events?${params}`);
-                    if (!r.ok) return;
-                    const d = await r.json();
-                    evRenderTimeline(d.events || []);
-                    evLastFetch = Date.now();
-                } catch (e) {
-                    console.warn("[Events] events fetch failed:", e);
-                }
-            };
-
-            const evRenderTimeline = (events) => {
-                if (!evTimeline) return;
-                if (events.length === 0) {
-                    evTimeline.innerHTML = "";
-                    evEmpty?.classList.remove("ev-hidden");
-                    return;
-                }
-                evEmpty?.classList.add("ev-hidden");
-
-                evTimeline.innerHTML = events.map((ev) => {
-                    const sev   = (ev.severity || "info").toLowerCase();
-                    const tone  = SEV_TONE[sev] || "is-info";
-                    const etype = (ev.event_type || "").replace(/^status:/, "").replace(/^anomaly:/, "⚡ ");
-                    const name  = ev.device_name || ev.device_id || "";
-                    const msg   = ev.message || "";
-                    const count = ev._count || 1;
-
-                    // Compact timestamp: single → "May 2  13:34:08"
-                    //                   range  → "13:23:30 → 13:23:55"
-                    const tsDisplay = count > 1
-                        ? `${evFmtTime(ev._first_ts)} → ${evFmtTime(ev.timestamp_ms)}`
-                        : evFmtTs(ev.timestamp_ms);
-                    const fullTs = count > 1
-                        ? `${evFmtTs(ev._first_ts)}  →  ${evFmtTs(ev.timestamp_ms)}`
-                        : evFmtTs(ev.timestamp_ms);
-                    const countBadge = count > 1
-                        ? `<span class="ev-count-badge">×${count}</span>`
-                        : "";
-
-                    return `
-                        <div class="ev-event-row ${tone}">
-                            <div class="ev-row-top">
-                                <span class="ev-sev-badge ${tone}">${sev}</span>
-                                <span class="ev-device">${name}</span>
-                                <span class="ev-type">${etype}</span>
-                            </div>
-                            <div class="ev-row-bottom">
-                                <span class="ev-ts" title="${fullTs}">${tsDisplay}</span>
-                                ${countBadge}
-                                <span class="ev-message" title="${msg}">${msg}</span>
-                            </div>
-                        </div>`;
-                }).join("");
-            };
-
-            // ── Filter wiring ──────────────────────────────────────────────────
-            if (evFilterSev) {
-                evFilterSev.addEventListener("change", () => {
-                    evSeverity = evFilterSev.value;
-                    evLoadEvents();
-                });
-            }
-            if (evFilterDev) {
-                evFilterDev.addEventListener("change", () => {
-                    evDeviceKey = evFilterDev.value;
-                    evLoadEvents();
-                });
-            }
-            if (evWindowBar) {
-                evWindowBar.querySelectorAll("[data-ev-win]").forEach((btn) => {
-                    btn.addEventListener("click", () => {
-                        evWindow = btn.getAttribute("data-ev-win");
-                        evWindowBar.querySelectorAll("[data-ev-win]").forEach((b) => b.classList.remove("is-current"));
-                        btn.classList.add("is-current");
-                        evLastFetch = 0;
-                        evLoadEvents();
-                    });
-                });
-            }
-
-            // ── Entry point ────────────────────────────────────────────────────
-            const evRefresh = () => {
-                const tabBtn   = insightsShell.querySelector('[data-ov-tab="events"]');
+            // ── Entry point (called from the main refresh loop) ──────────────
+            let adInitialized = false;
+            const adRefresh = () => {
+                const tabBtn   = insightsShell.querySelector('[data-ov-tab="detection"]');
                 const isActive = tabBtn?.classList.contains("is-current");
 
-                evUpdateDeviceFilter();
+                adBuildTabs();
 
                 if (!isActive) return;
 
-                // Load combined alarms once per tab visit (they change rarely)
-                if (cbFormDevice && !cbFormDevice.options.length) {
-                    cbFormDevice.innerHTML = ['<option value="">Device…</option>',
-                        ...ovConfigured.map((d) => `<option value="${d.source}|${d.device_id}">${d.name || d.device_id}</option>`),
-                    ].join("");
-                }
-                if (!cbRulesList?.children.length) cbLoadRules();
-
-                // Poll events every 10 s
-                if (!evLastFetch || (Date.now() - evLastFetch) > 10_000) {
-                    evLoadEvents();
+                if (!adInitialized && ovConfigured.length > 0) {
+                    adInitialized = true;
+                    adLoadDevice();
+                    cbLoadRules();
                 }
             };
 
-            evRefreshFn = evRefresh;
+            adRefreshFn = adRefresh;
         }
     }
 

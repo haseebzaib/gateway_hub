@@ -2052,10 +2052,20 @@ async def get_detection_config(request: Request) -> JSONResponse:
         return auth
     params = request.query_params
     source, device_id, metric = params.get("source", ""), params.get("device_id", ""), params.get("metric", "")
-    if not source or not device_id or not metric:
-        return JSONResponse({"ok": False, "message": "source, device_id and metric are required."}, status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
-    config = insights_data.get_metric_detection_config(DETECTION_CONFIG, source, device_id, metric)
-    return JSONResponse({"ok": True, "config": config})
+    if not source or not device_id:
+        return JSONResponse({"ok": False, "message": "source and device_id are required."}, status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+    if metric:
+        config = insights_data.get_metric_detection_config(DETECTION_CONFIG, source, device_id, metric)
+        return JSONResponse({"ok": True, "config": config})
+    # No metric -> all of this device's per-metric configs at once, so the
+    # Anomaly Detection tab can show every reading's enabled checks in one call.
+    prefix = f"{source}|{device_id}|"
+    configs = {
+        key[len(prefix):]: value
+        for key, value in DETECTION_CONFIG.get("metrics", {}).items()
+        if key.startswith(prefix)
+    }
+    return JSONResponse({"ok": True, "configs": configs})
 
 
 @router.post("/api/insights/detection-config")

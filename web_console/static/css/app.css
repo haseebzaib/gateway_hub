@@ -10211,28 +10211,132 @@ body.anomaly-modal-open { overflow: hidden; }
 .ov-id-chip small:empty { display: none; }
 .ov-id-chip.is-active { border-color: rgba(98, 211, 158, 0.4); background: rgba(98, 211, 158, 0.08); }
 
-/* ── Detection config modal (Insights → Sensors → per-metric ⚙) ────────── */
-.sv-detect-btn {
-    padding: 0.16rem 0.4rem;
-    border-radius: 0.5rem;
+/* ── Anomaly Detection tab (Insights) ───────────────────────────────────── */
+.ad-intro {
+    border-radius: 1.35rem;
+    border: 1px solid rgba(57,208,200,0.18);
+    background: rgba(57,208,200,0.04);
+    padding: 1.1rem 1.4rem;
+    margin-bottom: 1rem;
+}
+.ad-intro-title {
+    margin: 0 0 0.35rem;
+    font-family: var(--font-display);
+    font-size: 1.05rem;
+    color: var(--text);
+}
+.ad-intro-lede {
+    margin: 0;
+    font-size: 0.88rem;
+    line-height: 1.55;
+    color: var(--muted);
+    max-width: 60rem;
+}
+.ad-intro-lede strong { color: var(--accent-cool); font-weight: 600; }
+
+.ad-metric-list { display: grid; gap: 0.65rem; margin-top: 0.85rem; }
+
+.ad-metric {
+    border-radius: 1rem;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: var(--surface);
+    overflow: hidden;
+    transition: border-color 180ms ease;
+}
+.ad-metric.is-open { border-color: rgba(57,208,200,0.3); }
+
+.ad-metric-head {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    width: 100%;
+    padding: 0.8rem 1.1rem;
+    background: transparent;
+    border: none;
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+    text-align: left;
+    transition: background 150ms ease;
+}
+.ad-metric-head:hover { background: rgba(255,255,255,0.03); }
+.ad-metric-name { font-weight: 600; font-size: 0.92rem; min-width: 11rem; }
+.ad-metric-live { font-family: monospace; font-size: 0.85rem; color: var(--accent-cool); min-width: 6.5rem; }
+.ad-chip-row { display: flex; flex-wrap: wrap; gap: 0.35rem; flex: 1; }
+.ad-chip {
+    padding: 0.14rem 0.55rem;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.ad-chip.is-on  { background: rgba(57,208,200,0.12); border: 1px solid rgba(57,208,200,0.28); color: var(--accent-cool); }
+.ad-chip.is-off { background: rgba(255,255,255,0.04); border: 1px dashed rgba(255,255,255,0.16); color: var(--muted); }
+.ad-chevron { color: var(--muted); font-size: 0.85rem; }
+
+.ad-metric-body {
+    display: grid;
+    gap: 0.7rem;
+    padding: 0.35rem 1.1rem 1rem;
+    border-top: 1px solid rgba(255,255,255,0.06);
+}
+
+.ad-check-text { display: grid; gap: 0.15rem; }
+.ad-metric-body .dv-section-head { align-items: flex-start; }
+.ad-metric-body .dv-section-head .sv-toggle-btn { margin-top: 0.15rem; }
+.ad-check-what { font-size: 0.8rem; color: var(--muted); line-height: 1.4; }
+.ad-check-example { font-size: 0.74rem; color: rgba(157,179,187,0.55); font-style: italic; }
+
+.ad-field-hint {
+    grid-column: 1 / -1;
+    margin: 0;
+    font-size: 0.76rem;
+    color: var(--muted);
+}
+.ad-field-hint strong { color: var(--accent-cool); }
+
+.ad-metric-foot {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.75rem;
+    padding-top: 0.25rem;
+}
+
+.ad-combined-card { margin-top: 1.4rem; }
+.ad-combined-explain {
+    margin: 0;
+    padding: 0.85rem 1.25rem;
+    font-size: 0.84rem;
+    line-height: 1.5;
+    color: var(--muted);
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.ad-combined-explain em { color: var(--accent-cool); font-style: normal; font-weight: 600; }
+
+/* Events pager */
+.ev-pager {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.9rem;
+    padding: 0.6rem 0;
+}
+.ev-page-btn {
+    padding: 0.3rem 0.9rem;
+    border-radius: 999px;
     border: 1px solid rgba(255,255,255,0.12);
     background: transparent;
     color: var(--muted);
+    font: inherit;
+    font-size: 0.8rem;
     cursor: pointer;
-    font-size: 0.78rem;
-    line-height: 1;
-    transition: all 180ms ease;
+    transition: all 150ms ease;
 }
-.sv-detect-btn:hover { color: var(--accent-cool); border-color: rgba(57,208,200,0.35); background: rgba(57,208,200,0.08); }
+.ev-page-btn:hover:not(:disabled) { color: var(--accent-cool); border-color: rgba(57,208,200,0.35); }
+.ev-page-btn:disabled { opacity: 0.35; cursor: default; }
+.ev-page-label { font-size: 0.78rem; color: var(--muted); font-family: monospace; }
 
-.dv-modal-inner { max-width: 640px; height: auto; max-height: 82vh; }
-
-.dv-modal-body {
-    padding: 1rem 1.25rem;
-    overflow-y: auto;
-    display: grid;
-    gap: 0.7rem;
-}
 .dv-loading { color: var(--muted); font-size: 0.85rem; }
 
 .dv-section {
