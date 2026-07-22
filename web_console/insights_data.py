@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import time
-from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,11 +21,7 @@ STATS_WINDOW_MS = {"5min": 300_000, "1hr": 3_600_000, "24hr": 86_400_000}
 TARGET_BUCKETS = 180
 TREND_LOOKBACK_MS = 300_000  # trends are computed from the last ~5 min of data
 
-DEFAULT_ALERT_RULES_PATH = Path(
-    os.environ.get("METACRUST_INSIGHTS_RULES_PATH", "/opt/metacrust/config/gateway_insights/alert_rules.json")
-)
 EVENT_GROUP_GAP_MS = 60_000
-MAX_EVENTS_MEMORY = 2000
 
 
 def _iso(ts_ms: int) -> str:
@@ -241,7 +236,7 @@ def _slope_per_minute(timestamps_ms: list[int], values: list[float]) -> float:
 
 def compute_trends(
     storage: GatewayInterfacesDataStorage, source_type: str, source_id: str,
-    metric_names: list[str], alert_rules: list[dict[str, Any]],
+    metric_names: list[str], detection_config: dict[str, Any],
 ) -> list[dict[str, Any]]:
     now_ms = int(time.time() * 1000)
     from_ms = now_ms - TREND_LOOKBACK_MS
@@ -261,28 +256,29 @@ def compute_trends(
 
         ttt_minutes = None
         ttt_rule = None
-        matching = [
-            r for r in alert_rules
-            if r.get("enabled") and r.get("source") == source_type and r.get("device_id") == source_id and r.get("metric_name") == name
-        ]
-        if abs(slope) > 1e-6 and matching:
-            best: tuple[float, dict[str, Any]] | None = None
-            for rule in matching:
-                threshold = rule.get("threshold")
-                cond = rule.get("condition")
-                if threshold is None:
+        threshold_cfg = get_metric_detection_config(detection_config, source_type, source_id, name).get("threshold")
+        if abs(slope) > 1e-6 and threshold_cfg and threshold_cfg.get("enabled"):
+            trigger_above = bool(threshold_cfg.get("trigger_above", True))
+            candidates = [
+                ("critical", threshold_cfg.get("critical_limit")),
+                ("warning", threshold_cfg.get("warning_limit")),
+            ]
+            best: tuple[float, str, float] | None = None
+            for severity, limit in candidates:
+                if limit is None:
                     continue
-                if cond in ("gt", "gte") and slope > 0 and current < threshold:
-                    minutes = (threshold - current) / slope
-                elif cond in ("lt", "lte") and slope < 0 and current > threshold:
-                    minutes = (current - threshold) / abs(slope)
+                limit = float(limit)
+                if trigger_above and slope > 0 and current < limit:
+                    minutes = (limit - current) / slope
+                elif not trigger_above and slope < 0 and current > limit:
+                    minutes = (current - limit) / abs(slope)
                 else:
                     continue
                 if minutes > 0 and (best is None or minutes < best[0]):
-                    best = (minutes, rule)
+                    best = (minutes, severity, limit)
             if best:
-                ttt_minutes, rule = best
-                ttt_rule = {"severity": rule.get("severity", "warning"), "threshold": rule.get("threshold")}
+                ttt_minutes, severity, limit = best
+                ttt_rule = {"severity": severity, "threshold": limit}
 
         trends.append({
             "metric_name": name, "slope": slope, "n_samples": len(values),
@@ -317,103 +313,52 @@ def export_csv_rows(
 
 
 # ---------------------------------------------------------------------------
-# Alert rules — persisted to a small JSON file so they survive hub restarts.
+# Events — real device online/error transitions (sensor_status_events) merged
+# with real detector-fired anomalies (sensor_anomaly_events, from the C++
+# engine — see detection config below). Consecutive rows for the same
+# (source, device, event_type) within EVENT_GROUP_GAP_MS are collapsed into
+# one row with _count/_first_ts, same grouping idea as the Monitor page's
+# anomaly episode dedup (the episode coalescing in gateway_ipc/task.py has
+# already thinned repeats before they reach the DB; this just re-groups for
+# display, e.g. after a window/filter change).
 # ---------------------------------------------------------------------------
 
-def load_alert_rules(path: Path = DEFAULT_ALERT_RULES_PATH) -> tuple[list[dict[str, Any]], int]:
-    if not path.exists():
-        return [], 1
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return [], 1
-    rules = payload.get("rules", []) if isinstance(payload, dict) else []
-    next_id = max([r.get("id", 0) for r in rules], default=0) + 1
-    return rules, next_id
+def query_events(
+    storage: GatewayInterfacesDataStorage, *, window_ms: int, severity: str,
+    source: str, device_id: str, device_lookup: dict[tuple[str, str], dict[str, Any]],
+) -> list[dict[str, Any]]:
+    now_ms = int(time.time() * 1000)
+    from_ms = now_ms - window_ms
 
+    rows: list[dict[str, Any]] = []
+    for ev in storage.status_events(source_type=source or None, source_id=device_id or None, from_ms=from_ms, to_ms=now_ms, limit=2000):
+        device = device_lookup.get((ev["source_type"], ev["source_id"]))
+        rows.append({
+            "severity": "error" if ev["status"] == "error" else "info",
+            "event_type": f"status:{ev['status']}",
+            "device_name": device.get("name") if device else ev["source_id"],
+            "device_id": ev["source_id"], "source": ev["source_type"],
+            "message": ev["error"] or f"Source is now {ev['status']}",
+            "timestamp_ms": ev["ts_ms"],
+        })
 
-def save_alert_rules(rules: list[dict[str, Any]], path: Path = DEFAULT_ALERT_RULES_PATH) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps({"rules": rules}, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    for ev in storage.sensor_anomaly_events(source_type=source or None, source_id=device_id or None, from_ms=from_ms, to_ms=now_ms, limit=2000):
+        device = device_lookup.get((ev["source_type"], ev["source_id"]))
+        rows.append({
+            "severity": str(ev.get("severity") or "info").lower(),
+            "event_type": f"anomaly:{ev.get('category') or 'detected'}",
+            "device_name": device.get("name") if device else ev["source_id"],
+            "device_id": ev["source_id"], "source": ev["source_type"],
+            "message": ev.get("headline") or ev.get("message") or "Anomaly detected",
+            "timestamp_ms": ev["ts_ms"],
+        })
 
+    if severity:
+        wanted = {"warning": {"warning", "critical", "error"}, "error": {"error", "critical"}}.get(severity, {severity})
+        rows = [r for r in rows if r["severity"] in wanted]
 
-# ---------------------------------------------------------------------------
-# Events — real device online/error transitions (from sensor_status_events)
-# merged with alert-rule violations (evaluated live, held in memory only).
-# Consecutive rows for the same (source, device, event_type) within
-# EVENT_GROUP_GAP_MS are collapsed into one row with _count/_first_ts, same
-# grouping idea as the Monitor page's anomaly episode dedup.
-# ---------------------------------------------------------------------------
-
-class AlertEventStore:
-    def __init__(self) -> None:
-        self._events: deque[dict[str, Any]] = deque(maxlen=MAX_EVENTS_MEMORY)
-
-    def evaluate(self, rules: list[dict[str, Any]], configured: list[dict[str, Any]], storage: GatewayInterfacesDataStorage) -> None:
-        now_ms = int(time.time() * 1000)
-        by_key = {(d["source"], d["device_id"]): d for d in configured}
-        for rule in rules:
-            if not rule.get("enabled"):
-                continue
-            device = by_key.get((rule.get("source"), rule.get("device_id")))
-            if device is None:
-                continue
-            latest = storage.latest_readings(rule["source"], rule["device_id"]).get(rule["metric_name"])
-            if latest is None or latest["value"] is None:
-                continue
-            value = latest["value"]
-            threshold = rule.get("threshold")
-            triggered = {
-                "gt": value > threshold, "gte": value >= threshold,
-                "lt": value < threshold, "lte": value <= threshold,
-                "eq": value == threshold,
-            }.get(rule.get("condition"), False)
-            if not triggered:
-                continue
-            self._events.append({
-                "severity": rule.get("severity", "warning"),
-                "event_type": f"alert:{rule['metric_name']}",
-                "device_name": device.get("name"), "device_id": rule["device_id"], "source": rule["source"],
-                "message": f"{rule['metric_name']} = {value:g} ({rule.get('condition')} {threshold})",
-                "timestamp_ms": now_ms,
-            })
-
-    def query(
-        self, storage: GatewayInterfacesDataStorage, *, window_ms: int, severity: str,
-        source: str, device_id: str, device_lookup: dict[tuple[str, str], dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        now_ms = int(time.time() * 1000)
-        from_ms = now_ms - window_ms
-
-        rows: list[dict[str, Any]] = []
-        for ev in storage.status_events(source_type=source or None, source_id=device_id or None, from_ms=from_ms, to_ms=now_ms, limit=2000):
-            device = device_lookup.get((ev["source_type"], ev["source_id"]))
-            rows.append({
-                "severity": "error" if ev["status"] == "error" else "info",
-                "event_type": f"status:{ev['status']}",
-                "device_name": device.get("name") if device else ev["source_id"],
-                "device_id": ev["source_id"], "source": ev["source_type"],
-                "message": ev["error"] or f"Source is now {ev['status']}",
-                "timestamp_ms": ev["ts_ms"],
-            })
-
-        for ev in self._events:
-            if ev["timestamp_ms"] < from_ms:
-                continue
-            if source and ev["source"] != source:
-                continue
-            if device_id and ev["device_id"] != device_id:
-                continue
-            rows.append(dict(ev))
-
-        if severity:
-            wanted = {"warning": {"warning", "critical", "error"}, "error": {"error", "critical"}}.get(severity, {severity})
-            rows = [r for r in rows if r["severity"] in wanted]
-
-        rows.sort(key=lambda r: r["timestamp_ms"], reverse=True)
-        return _group_events(rows)
+    rows.sort(key=lambda r: r["timestamp_ms"], reverse=True)
+    return _group_events(rows)
 
 
 def _group_events(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -434,3 +379,182 @@ def _group_events(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             item["_first_ts"] = row["timestamp_ms"]
             grouped.append(item)
     return grouped
+
+
+# ---------------------------------------------------------------------------
+# Detection config — the friendly, per-metric settings the Insights Sensors
+# tab lets a user turn on, persisted to JSON (survives hub restarts) and
+# translated into the exact sensorAnomalyConfig payload gateway_core expects
+# (see gateway_core/include/gateway/core/sensor_anomaly_config.hpp). This is
+# what actually configures the real C++ detectors — it supersedes the old
+# hub-side gt/lt-only alert-rules system.
+# ---------------------------------------------------------------------------
+
+DEFAULT_DETECTION_CONFIG_PATH = Path(
+    os.environ.get("METACRUST_DETECTION_CONFIG_PATH", "/opt/metacrust/config/gateway_insights/detection_config.json")
+)
+
+# z-score is exposed to non-technical users as a sensitivity slider rather
+# than raw warmup/min_std_dev/min_abs_delta params — "high" flags more (smaller
+# real-unit gap required before it's considered unusual), "low" flags less.
+Z_SENSITIVITY_PRESETS: dict[str, dict[str, float]] = {
+    "low": {"warning_z": 3.5, "critical_z": 6.0, "abs_delta_multiplier": 2.0},
+    "medium": {"warning_z": 3.0, "critical_z": 5.0, "abs_delta_multiplier": 1.0},
+    "high": {"warning_z": 2.5, "critical_z": 4.0, "abs_delta_multiplier": 0.5},
+}
+
+
+def load_detection_config(path: Path = DEFAULT_DETECTION_CONFIG_PATH) -> dict[str, Any]:
+    if path.exists():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict):
+            return {
+                "metrics": payload.get("metrics", {}) if isinstance(payload.get("metrics"), dict) else {},
+                "multi_condition": payload.get("multi_condition", []) if isinstance(payload.get("multi_condition"), list) else [],
+            }
+    return {"metrics": {}, "multi_condition": []}
+
+
+def save_detection_config(config: dict[str, Any], path: Path = DEFAULT_DETECTION_CONFIG_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _metric_key(source: str, device_id: str, metric_name: str) -> str:
+    return f"{source}|{device_id}|{metric_name}"
+
+
+def get_metric_detection_config(config: dict[str, Any], source: str, device_id: str, metric_name: str) -> dict[str, Any]:
+    return config.get("metrics", {}).get(_metric_key(source, device_id, metric_name), {})
+
+
+def set_metric_detection_config(config: dict[str, Any], source: str, device_id: str, metric_name: str, friendly: dict[str, Any]) -> None:
+    config.setdefault("metrics", {})[_metric_key(source, device_id, metric_name)] = friendly
+
+
+def _num(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _translate_zscore(friendly: dict[str, Any], metric_name: str, stats: dict[str, Any] | None) -> dict[str, Any]:
+    if friendly.get("advanced"):
+        return {
+            "metric_name": metric_name,
+            "warning_z": _num(friendly.get("warning_z"), 3.0),
+            "critical_z": _num(friendly.get("critical_z"), 5.0),
+            "warmup_samples": int(friendly.get("warmup_samples", 30)),
+            "min_std_dev": _num(friendly.get("min_std_dev"), 0.0),
+            "min_abs_delta": _num(friendly.get("min_abs_delta"), 0.0),
+            "message": friendly.get("message", ""),
+        }
+
+    preset = Z_SENSITIVITY_PRESETS.get(friendly.get("sensitivity", "medium"), Z_SENSITIVITY_PRESETS["medium"])
+    stddev = _num((stats or {}).get("stddev"), 0.0)
+    return {
+        "metric_name": metric_name,
+        "warning_z": preset["warning_z"],
+        "critical_z": preset["critical_z"],
+        "warmup_samples": 30,
+        "min_std_dev": max(stddev * 0.05, 1e-6),
+        "min_abs_delta": stddev * preset["abs_delta_multiplier"],
+        "message": friendly.get("message", ""),
+    }
+
+
+def build_sensor_anomaly_payload(
+    config: dict[str, Any], source_type: str, source_id: str,
+    expected_metrics: list[dict[str, Any]], poll_interval_ms: int,
+    stats_by_metric: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Assemble the full sensorAnomalyConfig payload for one sensor from its
+    friendly per-metric settings — always the FULL set (not a diff), since
+    gateway_core's apply_anomaly_rules() replaces this connection's rules
+    wholesale each time, same as tcpModbusConfig already does for connections."""
+    payload: dict[str, Any] = {
+        "source_type": source_type, "source_id": source_id,
+        "threshold": [], "range": [], "delta": [], "slope": [], "z_score": [], "timeout": [], "multi_condition": [],
+    }
+
+    for metric in expected_metrics:
+        name = metric["name"]
+        friendly = get_metric_detection_config(config, source_type, source_id, name)
+        if not friendly:
+            continue
+
+        threshold = friendly.get("threshold")
+        if threshold and threshold.get("enabled"):
+            payload["threshold"].append({
+                "metric_name": name,
+                "warning_limit": _num(threshold.get("warning_limit"), 0.0),
+                "critical_limit": _num(threshold.get("critical_limit"), 0.0),
+                "trigger_above": bool(threshold.get("trigger_above", True)),
+                "message": threshold.get("message", ""),
+            })
+
+        range_cfg = friendly.get("range")
+        if range_cfg and range_cfg.get("enabled"):
+            payload["range"].append({
+                "metric_name": name,
+                "min_value": _num(range_cfg.get("min_value"), 0.0),
+                "max_value": _num(range_cfg.get("max_value"), 0.0),
+                "severity": range_cfg.get("severity", "warning"),
+                "message": range_cfg.get("message", ""),
+            })
+
+        delta = friendly.get("delta")
+        if delta and delta.get("enabled"):
+            payload["delta"].append({
+                "metric_name": name,
+                "warning_delta": _num(delta.get("warning_delta"), 0.0),
+                "critical_delta": _num(delta.get("critical_delta"), 0.0),
+                "trigger_positive": bool(delta.get("trigger_positive", True)),
+                "max_sample_gap_ms": int(delta.get("max_sample_gap_ms", max(30000, poll_interval_ms * 10))),
+                "message": delta.get("message", ""),
+            })
+
+        slope = friendly.get("slope")
+        if slope and slope.get("enabled"):
+            payload["slope"].append({
+                "metric_name": name,
+                "warning_slope_per_min": _num(slope.get("warning_slope_per_min"), 0.0),
+                "critical_slope_per_min": _num(slope.get("critical_slope_per_min"), 0.0),
+                "min_elapsed_ms": int(slope.get("min_elapsed_ms", max(10000, poll_interval_ms * 5))),
+                "min_samples": int(slope.get("min_samples", 5)),
+                "trigger_positive": bool(slope.get("trigger_positive", True)),
+                "window_ms": int(slope.get("window_ms", 300000)),
+                "max_sample_gap_ms": int(slope.get("max_sample_gap_ms", max(30000, poll_interval_ms * 10))),
+                "message": slope.get("message", ""),
+            })
+
+        z_score = friendly.get("z_score")
+        if z_score and z_score.get("enabled"):
+            payload["z_score"].append(_translate_zscore(z_score, name, stats_by_metric.get(name)))
+
+        timeout = friendly.get("timeout")
+        if timeout and timeout.get("enabled"):
+            payload["timeout"].append({
+                "metric_name": name,
+                "timeout_ms": int(timeout.get("timeout_ms", max(10000, poll_interval_ms * 8))),
+                "severity": timeout.get("severity", "warning"),
+                "message": timeout.get("message", ""),
+            })
+
+    for rule in config.get("multi_condition", []):
+        if rule.get("source_type") == source_type and rule.get("source_id") == source_id and rule.get("enabled", True):
+            payload["multi_condition"].append({
+                "alarm_name": rule.get("alarm_name", ""),
+                "conditions": rule.get("conditions", []),
+                "logic": rule.get("logic", "all"),
+                "severity": rule.get("severity", "warning"),
+                "message": rule.get("message", ""),
+            })
+
+    return payload

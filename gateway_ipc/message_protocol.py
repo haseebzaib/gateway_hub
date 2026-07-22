@@ -11,6 +11,7 @@ CONFIG_MESSAGE_KEYS = {
     "rs232": "rs232Config",
     "rs485": "rs485ModbusConfig",
     "modbus_tcp": "tcpModbusConfig",
+    "sensor_anomaly": "sensorAnomalyConfig",
 }
 
 
@@ -286,6 +287,70 @@ def _anomaly_headline(event: dict[str, Any], label: str, category: str, unit: st
     if detector == "multiconditiondetector":
         return f"{label}: {event.get('message') or category}."
     return f"{label} was flagged."
+
+
+def _sensor_metric_label(metric_name: str) -> str:
+    """Sensor metric names are user-defined register names (e.g.
+    ambient_temperature_c), not device metric IDs — no _METRIC_LABELS entry
+    exists for them, so just humanize the raw name (same convention as
+    displayLabel() in app.js's Insights page)."""
+    clean = (metric_name or "").strip()
+    if not clean:
+        return "Sensor"
+    return clean.replace("_", " ").title()
+
+
+def normalize_sensor_anomaly_message(message: dict[str, Any]) -> list[dict[str, Any]]:
+    """Turn a raw sensorAnomaly IPC message into client-friendly event rows.
+
+    Same event shape as deviceAnamoly (see normalize_anomaly_message), plus
+    source_type/source_id carried in the message envelope — needed so two
+    sensors sharing a metric name (e.g. two Modbus devices both with a
+    "temperature" register) don't collide when stored/displayed. Returns a
+    list ready for GatewayInterfacesDataStorage.add_sensor_anomaly_events().
+    """
+    data = message.get("data") if isinstance(message.get("data"), dict) else {}
+    source_type = str(data.get("source_type") or "")
+    source_id = str(data.get("source_id") or "")
+    raw_events = data.get("events") if isinstance(data.get("events"), list) else []
+    fallback_ts = int(_number(data.get("timestamp_ms"), time.time() * 1000))
+
+    rows: list[dict[str, Any]] = []
+    for event in raw_events:
+        if not isinstance(event, dict):
+            continue
+        metric_name = str(event.get("metricName") or "")
+        detector = str(event.get("detectorName") or "")
+        alarm_name = str(event.get("alarmName") or "")
+        severity = str(event.get("severity") or "Info")
+        category = _DETECTOR_CATEGORY.get(detector.lower(), "Anomaly detected")
+        label = alarm_name.replace("_", " ").title() if alarm_name else _sensor_metric_label(metric_name)
+        headline = _anomaly_headline(event, label, category, "")
+
+        rows.append(
+            {
+                "timestamp_ms": int(_number(event.get("timestamp_ms"), fallback_ts)),
+                "source_type": source_type,
+                "source_id": source_id,
+                "metric": metric_name or None,
+                "detector": detector or None,
+                "severity": severity,
+                "value": event.get("value"),
+                "z_score": event.get("zScore"),
+                "delta_value": event.get("deltaValue"),
+                "slope_value": event.get("slopeValue"),
+                "warning_limit": event.get("warningLimit"),
+                "critical_limit": event.get("criticalLimit"),
+                "min_value": event.get("minValue"),
+                "max_value": event.get("maxValue"),
+                "alarm_name": alarm_name or None,
+                "category": category,
+                "metric_label": label,
+                "headline": headline,
+                "message": str(event.get("message") or ""),
+            }
+        )
+    return rows
 
 
 def headline_for_stored(row: dict[str, Any], metric: str | None = None) -> str:

@@ -17,6 +17,7 @@ from .message_protocol import (
     inbound_message_type,
     normalize_anomaly_message,
     normalize_device_data_message,
+    normalize_sensor_anomaly_message,
 )
 from .monitor_storage import MonitorStorage
 from gateway_interfaces import GatewayInterfacesDataStorage
@@ -64,11 +65,15 @@ class GatewayCoreIpcTask:
         self._latest_device_metrics: dict[str, Any] | None = None
         self._device_metric_history: deque[dict[str, Any]] = deque(maxlen=600)
         self._anomaly_count = 0
+        self._sensor_anomaly_count = 0
         self._rs232_sniffer_frames: deque[dict[str, Any]] = deque(maxlen=1000)
         self._sensor_samples: deque[dict[str, Any]] = deque(maxlen=5000)
         self._sensor_status: dict[tuple[str, str], dict[str, Any]] = {}
         # (metric, detector) -> {"last_ts": ms, "rank": severity} for episode dedup
         self._anomaly_episodes: dict[tuple[Any, Any], dict[str, Any]] = {}
+        # (source_type, source_id, metric, detector) -> same, but source-aware so
+        # two sensors sharing a metric name don't share an episode slot.
+        self._sensor_anomaly_episodes: dict[tuple[Any, Any, Any, Any], dict[str, Any]] = {}
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
         self._pending_acks: dict[str, asyncio.Future[dict[str, Any]]] = {}
@@ -172,6 +177,7 @@ class GatewayCoreIpcTask:
             "heartbeat_count": self.status.heartbeat_count,
             "latest_device_metrics_at": self._latest_device_metrics.get("received_at") if self._latest_device_metrics else None,
             "anomaly_count": self._anomaly_count,
+            "sensor_anomaly_count": self._sensor_anomaly_count,
             "rs232_sniffer_frame_count": len(self._rs232_sniffer_frames),
             "sensor_sample_count": len(self._sensor_samples),
         }
@@ -246,6 +252,8 @@ class GatewayCoreIpcTask:
                 self._store_metric_sample(metrics)
             elif message_type == "deviceAnamoly":
                 self._store_anomaly_events(message)
+            elif message_type == "sensorAnomaly":
+                self._store_sensor_anomaly_events(message)
             elif message_type == "heartBeat":
                 self.status.heartbeat_count += 1
             elif message_type in {"ack", "nAck"}:
@@ -308,6 +316,15 @@ class GatewayCoreIpcTask:
         except Exception as exc:
             self.status.last_error = f"anomaly store failed: {exc}"
 
+    def _store_sensor_anomaly_events(self, message: dict[str, Any]) -> None:
+        try:
+            rows = self._coalesce_sensor_episodes(normalize_sensor_anomaly_message(message))
+            if rows:
+                self.interface_storage.add_sensor_anomaly_events(rows)
+                self._sensor_anomaly_count += len(rows)
+        except Exception as exc:
+            self.status.last_error = f"sensor anomaly store failed: {exc}"
+
     def _coalesce_episodes(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Collapse a still-true condition into one alert per episode.
 
@@ -317,16 +334,31 @@ class GatewayCoreIpcTask:
         a higher severity — and start a fresh episode only after the condition
         has been quiet for EPISODE_GAP_MS. This is edge-triggered alerting.
         """
+        return self._coalesce(rows, self._anomaly_episodes, lambda row: (row.get("metric"), row.get("detector")))
+
+    def _coalesce_sensor_episodes(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Same edge-triggered coalescing as _coalesce_episodes, but keyed with
+        source_type/source_id too — two sensors sharing a metric name (e.g. two
+        Modbus devices both with a "temperature" register) must not share an
+        episode slot, or one device's events would suppress the other's."""
+        return self._coalesce(
+            rows, self._sensor_anomaly_episodes,
+            lambda row: (row.get("source_type"), row.get("source_id"), row.get("metric"), row.get("detector")),
+        )
+
+    def _coalesce(
+        self, rows: list[dict[str, Any]], episodes: dict[Any, dict[str, Any]], key_fn: Any,
+    ) -> list[dict[str, Any]]:
         kept: list[dict[str, Any]] = []
         for row in rows:
-            key = (row.get("metric"), row.get("detector"))
+            key = key_fn(row)
             ts = int(row.get("timestamp_ms") or 0)
             rank = _SEVERITY_RANK.get(row.get("severity"), 1)
-            episode = self._anomaly_episodes.get(key)
+            episode = episodes.get(key)
 
             if episode is None or ts - episode["last_ts"] > EPISODE_GAP_MS:
                 kept.append(row)                       # new episode (leading edge)
-                self._anomaly_episodes[key] = {"last_ts": ts, "rank": rank}
+                episodes[key] = {"last_ts": ts, "rank": rank}
                 continue
 
             if rank > episode["rank"]:

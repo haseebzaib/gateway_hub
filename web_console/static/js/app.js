@@ -4526,6 +4526,7 @@ document.addEventListener("DOMContentLoaded", () => {
                             </div>
                             <span class="sv-quality-pill is-${q}">${q === "none" ? "—" : q}</span>
                             <button class="sv-toggle-btn${on ? " is-on" : ""}" data-sv-toggle="${m.name}">${on ? "ON" : "OFF"}</button>
+                            <button class="sv-detect-btn" data-sv-detect="${m.name}" title="Configure anomaly detection for ${lbl}">⚙</button>
                         </div>`;
                 }).join("");
 
@@ -4539,6 +4540,12 @@ document.addEventListener("DOMContentLoaded", () => {
                         svChartData   = {};
                         svLastFetchMs = 0;
                         svFetchAndRenderChart();
+                    });
+                });
+
+                svMetricList.querySelectorAll("[data-sv-detect]").forEach((btn) => {
+                    btn.addEventListener("click", () => {
+                        openDetectionModal(device, btn.getAttribute("data-sv-detect"));
                     });
                 });
             };
@@ -5339,6 +5346,212 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
             };
 
+            // ══════════════════════════════════════════════════════════════════
+            //  Detection config modal — per-metric anomaly rule configuration.
+            //  Plain-language question per detector type; fields only appear
+            //  once that detector is turned on. Smart defaults are pulled from
+            //  this metric's own rolling stats so the user isn't guessing
+            //  numbers from scratch.
+            // ══════════════════════════════════════════════════════════════════
+            const DETECTOR_DEFS = [
+                { key: "threshold", label: "Safe range (limits)", hint: "Flag when the reading crosses a fixed high or low limit." },
+                { key: "range", label: "Valid range", hint: "Flag when the reading falls outside a valid min/max band — good for catching sensor faults." },
+                { key: "delta", label: "Sudden jumps", hint: "Flag abrupt changes between one reading and the next." },
+                { key: "slope", label: "Rising / falling trend", hint: "Flag a steady rise or fall over time." },
+                { key: "z_score", label: "Unusual vs its own normal", hint: "Flag statistical outliers compared to this sensor's own recent behavior. Learns automatically — no numbers to fill in." },
+                { key: "timeout", label: "Stopped reporting", hint: "Flag if this sensor goes quiet for longer than expected." },
+            ];
+
+            let dvModal = null;
+            let dvCurrent = null; // { device, metricName }
+
+            const dvFieldVal = (v, fallback) => (v === undefined || v === null || v === "" ? fallback : v);
+
+            const dvFieldsHtml = (key, cfg, stats, pollIntervalMs) => {
+                cfg = cfg || {};
+                const suggestMin = stats && stats.min !== null && stats.min !== undefined ? Number(stats.min).toFixed(2) : "";
+                const suggestMax = stats && stats.max !== null && stats.max !== undefined ? Number(stats.max).toFixed(2) : "";
+                if (key === "threshold") {
+                    return `
+                        <label>Warning limit <input type="number" step="any" data-dv-field="warning_limit" value="${dvFieldVal(cfg.warning_limit, suggestMax)}"></label>
+                        <label>Critical limit <input type="number" step="any" data-dv-field="critical_limit" value="${dvFieldVal(cfg.critical_limit, "")}"></label>
+                        <label class="dv-check"><input type="checkbox" data-dv-field="trigger_above" ${cfg.trigger_above !== false ? "checked" : ""}> Flag when ABOVE the limit (uncheck to flag when below)</label>`;
+                }
+                if (key === "range") {
+                    return `
+                        <label>Min value <input type="number" step="any" data-dv-field="min_value" value="${dvFieldVal(cfg.min_value, suggestMin)}"></label>
+                        <label>Max value <input type="number" step="any" data-dv-field="max_value" value="${dvFieldVal(cfg.max_value, suggestMax)}"></label>
+                        <label>Severity
+                            <select data-dv-field="severity">
+                                <option value="warning" ${cfg.severity !== "critical" ? "selected" : ""}>Warning</option>
+                                <option value="critical" ${cfg.severity === "critical" ? "selected" : ""}>Critical</option>
+                            </select>
+                        </label>`;
+                }
+                if (key === "delta") {
+                    return `
+                        <label>Warning jump size <input type="number" step="any" data-dv-field="warning_delta" value="${dvFieldVal(cfg.warning_delta, "")}"></label>
+                        <label>Critical jump size <input type="number" step="any" data-dv-field="critical_delta" value="${dvFieldVal(cfg.critical_delta, "")}"></label>
+                        <label class="dv-check"><input type="checkbox" data-dv-field="trigger_positive" ${cfg.trigger_positive !== false ? "checked" : ""}> Flag increases (uncheck to flag decreases)</label>`;
+                }
+                if (key === "slope") {
+                    return `
+                        <label>Warning rate (per minute) <input type="number" step="any" data-dv-field="warning_slope_per_min" value="${dvFieldVal(cfg.warning_slope_per_min, "")}"></label>
+                        <label>Critical rate (per minute) <input type="number" step="any" data-dv-field="critical_slope_per_min" value="${dvFieldVal(cfg.critical_slope_per_min, "")}"></label>
+                        <label class="dv-check"><input type="checkbox" data-dv-field="trigger_positive" ${cfg.trigger_positive !== false ? "checked" : ""}> Flag rising (uncheck to flag falling)</label>`;
+                }
+                if (key === "z_score") {
+                    const sens = cfg.sensitivity || "medium";
+                    return `
+                        <label>Sensitivity
+                            <select data-dv-field="sensitivity">
+                                <option value="low" ${sens === "low" ? "selected" : ""}>Low — fewer false alarms</option>
+                                <option value="medium" ${sens === "medium" ? "selected" : ""}>Medium</option>
+                                <option value="high" ${sens === "high" ? "selected" : ""}>High — catches more</option>
+                            </select>
+                        </label>`;
+                }
+                if (key === "timeout") {
+                    const suggestSec = pollIntervalMs ? Math.max(10, Math.round(pollIntervalMs * 8 / 1000)) : 60;
+                    return `
+                        <label>Stopped reporting for (seconds) <input type="number" step="1" min="1" data-dv-field="timeout_seconds" value="${cfg.timeout_ms ? Math.round(cfg.timeout_ms / 1000) : suggestSec}"></label>
+                        <label>Severity
+                            <select data-dv-field="severity">
+                                <option value="warning" ${cfg.severity !== "critical" ? "selected" : ""}>Warning</option>
+                                <option value="critical" ${cfg.severity === "critical" ? "selected" : ""}>Critical</option>
+                            </select>
+                        </label>`;
+                }
+                return "";
+            };
+
+            const dvSectionHtml = (def, cfg) => {
+                const enabled = !!(cfg && cfg.enabled);
+                return `
+                    <section class="dv-section${enabled ? " is-on" : ""}" data-dv-section="${def.key}">
+                        <header class="dv-section-head">
+                            <button class="sv-toggle-btn${enabled ? " is-on" : ""}" data-dv-toggle="${def.key}" type="button">${enabled ? "ON" : "OFF"}</button>
+                            <span class="dv-section-label" title="${def.hint}">${def.label}</span>
+                        </header>
+                        <div class="dv-section-fields${enabled ? "" : " ev-hidden"}" data-dv-fields="${def.key}"></div>
+                    </section>`;
+            };
+
+            const dvBuildModal = () => {
+                if (dvModal) return;
+                dvModal = document.createElement("div");
+                dvModal.className = "sv-chart-modal dv-modal";
+                dvModal.innerHTML = `
+                    <div class="sv-modal-inner dv-modal-inner">
+                        <header class="sv-modal-head">
+                            <span class="sv-modal-device-name" data-dv-title></span>
+                            <button class="sv-modal-close-btn" data-dv-close>✕</button>
+                        </header>
+                        <div class="dv-modal-body" data-dv-body></div>
+                        <footer class="sv-modal-foot dv-modal-foot">
+                            <span class="dv-save-status" data-dv-status></span>
+                            <button class="ev-form-save-btn" data-dv-save>Save</button>
+                        </footer>
+                    </div>`;
+                document.body.appendChild(dvModal);
+                dvModal.querySelector("[data-dv-close]").addEventListener("click", () => dvModal.classList.remove("is-open"));
+                dvModal.addEventListener("click", (e) => { if (e.target === dvModal) dvModal.classList.remove("is-open"); });
+                dvModal.querySelector("[data-dv-save]").addEventListener("click", async () => {
+                    if (!dvCurrent) return;
+                    const statusEl = dvModal.querySelector("[data-dv-status]");
+                    if (statusEl) statusEl.textContent = "Saving…";
+                    try {
+                        const config = dvCollectConfig();
+                        const r = await fetch("/api/insights/detection-config", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ source: dvCurrent.device.source, device_id: dvCurrent.device.device_id, metric: dvCurrent.metricName, config }),
+                        });
+                        const d = await r.json();
+                        if (statusEl) statusEl.textContent = d.ok ? "Saved" : (d.message || "Failed to save.");
+                    } catch (e) {
+                        if (statusEl) statusEl.textContent = "Network error.";
+                    }
+                });
+            };
+
+            const dvCollectConfig = () => {
+                const bodyEl = dvModal.querySelector("[data-dv-body]");
+                const result = {};
+                DETECTOR_DEFS.forEach((def) => {
+                    const section = bodyEl.querySelector(`[data-dv-section="${def.key}"]`);
+                    const enabled = section && section.classList.contains("is-on");
+                    if (!enabled) { result[def.key] = { enabled: false }; return; }
+                    const fieldsEl = bodyEl.querySelector(`[data-dv-fields="${def.key}"]`);
+                    const entry = { enabled: true };
+                    (fieldsEl ? fieldsEl.querySelectorAll("[data-dv-field]") : []).forEach((input) => {
+                        const field = input.getAttribute("data-dv-field");
+                        if (input.type === "checkbox") entry[field] = input.checked;
+                        else if (input.type === "number") entry[field] = input.value === "" ? null : Number(input.value);
+                        else entry[field] = input.value;
+                    });
+                    if (def.key === "timeout" && entry.timeout_seconds !== undefined) {
+                        entry.timeout_ms = Math.max(1, Number(entry.timeout_seconds || 60)) * 1000;
+                        delete entry.timeout_seconds;
+                    }
+                    result[def.key] = entry;
+                });
+                return result;
+            };
+
+            const openDetectionModal = async (device, metricName) => {
+                dvBuildModal();
+                dvCurrent = { device, metricName };
+                const titleEl = dvModal.querySelector("[data-dv-title]");
+                if (titleEl) titleEl.textContent = `Configure Detection — ${displayLabel(metricName)}`;
+                const statusEl = dvModal.querySelector("[data-dv-status]");
+                if (statusEl) statusEl.textContent = "";
+                const bodyEl = dvModal.querySelector("[data-dv-body]");
+                if (bodyEl) bodyEl.innerHTML = `<p class="dv-loading">Loading…</p>`;
+                dvModal.classList.add("is-open");
+
+                let cfg = {};
+                let stats = null;
+                try {
+                    const [cfgRes, statsRes] = await Promise.all([
+                        fetch(`/api/insights/detection-config?source=${encodeURIComponent(device.source)}&device_id=${encodeURIComponent(device.device_id)}&metric=${encodeURIComponent(metricName)}`),
+                        fetch(`/api/insights/stats?source=${encodeURIComponent(device.source)}&device_id=${encodeURIComponent(device.device_id)}`),
+                    ]);
+                    const cfgData = await cfgRes.json();
+                    if (cfgData.ok) cfg = cfgData.config || {};
+                    const statsData = await statsRes.json();
+                    if (statsData.ok) stats = ((statsData.stats || {})["5min"] || {})[metricName] || null;
+                } catch (e) {
+                    console.warn("[Insights] detection config load failed:", e);
+                }
+
+                if (!dvModal.classList.contains("is-open") || dvCurrent.metricName !== metricName) return; // closed/changed while loading
+                if (bodyEl) {
+                    bodyEl.innerHTML = DETECTOR_DEFS.map((def) => dvSectionHtml(def, cfg[def.key])).join("");
+                    DETECTOR_DEFS.forEach((def) => {
+                        const fieldsEl = bodyEl.querySelector(`[data-dv-fields="${def.key}"]`);
+                        if (fieldsEl) fieldsEl.innerHTML = dvFieldsHtml(def.key, cfg[def.key], stats, device.poll_interval_ms);
+                    });
+                    bodyEl.querySelectorAll("[data-dv-toggle]").forEach((btn) => {
+                        btn.addEventListener("click", () => {
+                            const key = btn.getAttribute("data-dv-toggle");
+                            const nowOn = !btn.classList.contains("is-on");
+                            btn.classList.toggle("is-on", nowOn);
+                            btn.textContent = nowOn ? "ON" : "OFF";
+                            const section = bodyEl.querySelector(`[data-dv-section="${key}"]`);
+                            section?.classList.toggle("is-on", nowOn);
+                            const fieldsEl = bodyEl.querySelector(`[data-dv-fields="${key}"]`);
+                            if (fieldsEl) {
+                                fieldsEl.classList.toggle("ev-hidden", !nowOn);
+                                if (nowOn && !fieldsEl.innerHTML.trim()) {
+                                    fieldsEl.innerHTML = dvFieldsHtml(key, {}, stats, device.poll_interval_ms);
+                                }
+                            }
+                        });
+                    });
+                }
+            };
+
             svRefreshFn = svRefresh;   // expose to outer refresh() loop
         }
 
@@ -5404,7 +5617,8 @@ document.addEventListener("DOMContentLoaded", () => {
         setInterval(refresh, 3000);
 
         // ══════════════════════════════════════════════════════════════════════
-        //  Events tab — diagnostics timeline + Tier 1 alert rules management
+        //  Events tab — diagnostics timeline (status transitions + real
+        //  detector-fired anomalies from the C++ engine)
         // ══════════════════════════════════════════════════════════════════════
         const evPanel = insightsShell.querySelector('[data-ov-panel="events"]');
 
@@ -5418,17 +5632,6 @@ document.addEventListener("DOMContentLoaded", () => {
             // ── DOM refs ───────────────────────────────────────────────────────
             const evTimeline    = evPanel.querySelector("[data-ev-timeline]");
             const evEmpty       = evPanel.querySelector("[data-ev-empty]");
-            const evRulesList   = evPanel.querySelector("[data-ev-rules-list]");
-            const evRulesBadge  = evPanel.querySelector("[data-ev-rules-badge]");
-            const evAddBtn      = evPanel.querySelector("[data-ev-add-btn]");
-            const evAddForm     = evPanel.querySelector("[data-ev-add-form]");
-            const evFormDevice  = evPanel.querySelector("[data-ev-form-device]");
-            const evFormMetric  = evPanel.querySelector("[data-ev-form-metric]");
-            const evFormCond    = evPanel.querySelector("[data-ev-form-cond]");
-            const evFormThresh  = evPanel.querySelector("[data-ev-form-threshold]");
-            const evFormSev     = evPanel.querySelector("[data-ev-form-severity]");
-            const evFormSave    = evPanel.querySelector("[data-ev-form-save]");
-            const evFormCancel  = evPanel.querySelector("[data-ev-form-cancel]");
             const evFilterSev   = evPanel.querySelector("[data-ev-filter-sev]");
             const evFilterDev   = evPanel.querySelector("[data-ev-filter-device]");
             const evWindowBar   = evPanel.querySelector(".ev-window-bar");
@@ -5459,127 +5662,154 @@ document.addEventListener("DOMContentLoaded", () => {
                 evFilterDev.innerHTML = opts.join("");
             };
 
-            // ── Alert rules ────────────────────────────────────────────────────
-            const evLoadRules = async () => {
+            // ── Combined alarms (multi-condition rules) ─────────────────────────
+            const cbRulesList  = evPanel.querySelector("[data-cb-rules-list]");
+            const cbRulesBadge = evPanel.querySelector("[data-cb-rules-badge]");
+            const cbAddBtn     = evPanel.querySelector("[data-cb-add-btn]");
+            const cbAddForm    = evPanel.querySelector("[data-cb-add-form]");
+            const cbFormDevice = evPanel.querySelector("[data-cb-form-device]");
+            const cbFormName   = evPanel.querySelector("[data-cb-form-name]");
+            const cbConditions = evPanel.querySelector("[data-cb-conditions]");
+            const cbAddCondBtn = evPanel.querySelector("[data-cb-add-condition]");
+            const cbFormLogic  = evPanel.querySelector("[data-cb-form-logic]");
+            const cbFormSev    = evPanel.querySelector("[data-cb-form-severity]");
+            const cbFormMsg    = evPanel.querySelector("[data-cb-form-message]");
+            const cbFormSave   = evPanel.querySelector("[data-cb-form-save]");
+            const cbFormCancel = evPanel.querySelector("[data-cb-form-cancel]");
+            const CB_OPS = { gt: ">", gte: "≥", lt: "<", lte: "≤", eq: "=", neq: "≠" };
+
+            const cbMetricOptions = (deviceKey) => {
+                const [src, ...rest] = (deviceKey || "").split("|");
+                const did = rest.join("|");
+                const device = ovConfigured.find((d) => d.source === src && d.device_id === did);
+                return (device && device.expected_metrics) || [];
+            };
+
+            const cbAddConditionRow = (deviceKey, metricName, op, value) => {
+                if (!cbConditions) return;
+                const row = document.createElement("div");
+                row.className = "cb-condition-row";
+                const metrics = cbMetricOptions(deviceKey);
+                const metricOpts = metrics.map((m) => `<option value="${m.name}"${m.name === metricName ? " selected" : ""}>${displayLabel(m.name)}</option>`).join("");
+                row.innerHTML = `
+                    <select class="ev-form-sel" data-cb-cond-metric>${metricOpts || '<option value="">Metric…</option>'}</select>
+                    <select class="ev-form-sel" data-cb-cond-op>
+                        ${Object.entries(CB_OPS).map(([k, sym]) => `<option value="${k}"${k === op ? " selected" : ""}>${sym}</option>`).join("")}
+                    </select>
+                    <input class="ev-form-input" type="number" step="any" placeholder="Value" data-cb-cond-value value="${value !== undefined ? value : ""}">
+                    <button class="cb-remove-condition-btn" type="button" data-cb-remove-condition title="Remove condition">✕</button>`;
+                row.querySelector("[data-cb-remove-condition]").addEventListener("click", () => row.remove());
+                cbConditions.appendChild(row);
+            };
+
+            const cbResetForm = () => {
+                if (cbFormName) cbFormName.value = "";
+                if (cbFormMsg) cbFormMsg.value = "";
+                if (cbConditions) cbConditions.innerHTML = "";
+                cbAddConditionRow(cbFormDevice ? cbFormDevice.value : "");
+                cbAddConditionRow(cbFormDevice ? cbFormDevice.value : "");
+            };
+
+            if (cbFormDevice) {
+                cbFormDevice.innerHTML = ['<option value="">Device…</option>',
+                    ...ovConfigured.map((d) => `<option value="${d.source}|${d.device_id}">${d.name || d.device_id}</option>`),
+                ].join("");
+                cbFormDevice.addEventListener("change", () => {
+                    if (cbConditions) cbConditions.innerHTML = "";
+                    cbAddConditionRow(cbFormDevice.value);
+                    cbAddConditionRow(cbFormDevice.value);
+                });
+            }
+            if (cbAddCondBtn) {
+                cbAddCondBtn.addEventListener("click", () => cbAddConditionRow(cbFormDevice ? cbFormDevice.value : ""));
+            }
+            if (cbAddBtn && cbAddForm) {
+                cbAddBtn.addEventListener("click", () => {
+                    cbResetForm();
+                    cbAddForm.classList.remove("ev-hidden");
+                    cbAddBtn.classList.add("ev-hidden");
+                });
+            }
+            if (cbFormCancel) {
+                cbFormCancel.addEventListener("click", () => {
+                    cbAddForm?.classList.add("ev-hidden");
+                    cbAddBtn?.classList.remove("ev-hidden");
+                });
+            }
+
+            const cbLoadRules = async () => {
                 try {
-                    const r = await fetch("/api/insights/alert-rules");
+                    const r = await fetch("/api/insights/detection-config/multi-condition");
                     if (!r.ok) return;
                     const d = await r.json();
-                    evRenderRules(d.rules || []);
+                    cbRenderRules(d.rules || []);
                 } catch (e) {
-                    console.warn("[Events] rules fetch failed:", e);
+                    console.warn("[Events] combined alarms fetch failed:", e);
                 }
             };
 
-            const evRenderRules = (rules) => {
-                if (!evRulesList) return;
-                if (evRulesBadge) evRulesBadge.textContent = String(rules.length);
+            const cbRenderRules = (rules) => {
+                if (!cbRulesList) return;
+                if (cbRulesBadge) cbRulesBadge.textContent = String(rules.length);
                 if (rules.length === 0) {
-                    evRulesList.innerHTML = `<p class="ev-rules-empty">No alert rules configured.</p>`;
+                    cbRulesList.innerHTML = `<p class="ev-rules-empty">No combined alarms configured.</p>`;
                     return;
                 }
-                const SYM = { gt: ">", lt: "<", gte: "≥", lte: "≤", eq: "=" };
-                evRulesList.innerHTML = rules.map((rule) => {
-                    const on  = rule.enabled;
+                cbRulesList.innerHTML = rules.map((rule) => {
                     const sev = (rule.severity || "warning").toLowerCase();
-                    const sym = SYM[rule.condition] || rule.condition;
-                    const expr = `${rule.metric_name} ${sym} ${rule.threshold}`;
-                    const label = ovConfigured.find((d) => d.source === rule.source && d.device_id === rule.device_id)?.name || rule.device_id;
+                    const label = ovConfigured.find((d) => d.source === rule.source_type && d.device_id === rule.source_id)?.name || rule.source_id;
+                    const joiner = (rule.logic === "any") ? " OR " : " AND ";
+                    const expr = (rule.conditions || []).map((c) => `${displayLabel(c.metric_name)} ${CB_OPS[c.op] || c.op} ${c.value}`).join(joiner);
                     return `
                         <div class="ev-rule-row" data-rule-id="${rule.id}">
-                            <span class="ev-rule-device">${label}</span>
-                            <span class="ev-rule-expr">${expr}</span>
+                            <span class="ev-rule-device">${rule.alarm_name}</span>
+                            <span class="cb-rule-conditions">${label}: ${expr}</span>
                             <span class="ev-rule-sev-pill is-${sev}">${sev}</span>
-                            <button class="ev-rule-toggle-btn${on ? " is-on" : ""}" data-rule-toggle="${rule.id}">${on ? "ON" : "OFF"}</button>
-                            <button class="ev-rule-del-btn" data-rule-del="${rule.id}" title="Delete">✕</button>
+                            <button class="ev-rule-del-btn" data-cb-rule-del="${rule.id}" title="Delete">✕</button>
                         </div>`;
                 }).join("");
 
-                // Toggle
-                evRulesList.querySelectorAll("[data-rule-toggle]").forEach((btn) => {
+                cbRulesList.querySelectorAll("[data-cb-rule-del]").forEach((btn) => {
                     btn.addEventListener("click", async () => {
-                        const rid     = Number(btn.getAttribute("data-rule-toggle"));
-                        const curr    = btn.classList.contains("is-on");
-                        const r       = await fetch(`/api/insights/alert-rules/${rid}`, {
-                            method: "PUT",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ enabled: !curr }),
-                        });
-                        if (r.ok) evLoadRules();
-                    });
-                });
-                // Delete
-                evRulesList.querySelectorAll("[data-rule-del]").forEach((btn) => {
-                    btn.addEventListener("click", async () => {
-                        const rid = Number(btn.getAttribute("data-rule-del"));
-                        if (!confirm("Delete this alert rule?")) return;
-                        const r = await fetch(`/api/insights/alert-rules/${rid}`, { method: "DELETE" });
-                        if (r.ok) evLoadRules();
+                        const rid = Number(btn.getAttribute("data-cb-rule-del"));
+                        if (!confirm("Delete this combined alarm?")) return;
+                        const r = await fetch(`/api/insights/detection-config/multi-condition/${rid}`, { method: "DELETE" });
+                        if (r.ok) cbLoadRules();
                     });
                 });
             };
 
-            // ── Add-rule form ─────────────────────────────────────────────────
-            // Populate device select from ovConfigured
-            const evPopulateFormDevices = () => {
-                if (!evFormDevice) return;
-                evFormDevice.innerHTML = ['<option value="">Device…</option>',
-                    ...ovConfigured.map((d) => {
-                        const k = `${d.source}|${d.device_id}`;
-                        return `<option value="${k}">${d.name || d.device_id}</option>`;
-                    })
-                ].join("");
-            };
-
-            if (evFormDevice) {
-                evFormDevice.addEventListener("change", () => {
-                    if (!evFormMetric) return;
-                    const [src, did] = (evFormDevice.value || "").split("|");
-                    const device = ovConfigured.find((d) => d.source === src && d.device_id === did);
-                    const metrics = device?.expected_metrics || [];
-                    evFormMetric.innerHTML = ['<option value="">Metric…</option>',
-                        ...metrics.map((m) => `<option value="${m.name}">${displayLabel(m.name)}</option>`)
-                    ].join("");
-                });
-            }
-
-            if (evAddBtn && evAddForm) {
-                evAddBtn.addEventListener("click", () => {
-                    evPopulateFormDevices();
-                    evAddForm.classList.remove("ev-hidden");
-                    evAddBtn.classList.add("ev-hidden");
-                });
-            }
-            if (evFormCancel) {
-                evFormCancel.addEventListener("click", () => {
-                    evAddForm?.classList.add("ev-hidden");
-                    evAddBtn?.classList.remove("ev-hidden");
-                });
-            }
-            if (evFormSave) {
-                evFormSave.addEventListener("click", async () => {
-                    const [src, did] = (evFormDevice?.value || "").split("|");
-                    const metric    = evFormMetric?.value;
-                    const cond      = evFormCond?.value;
-                    const threshold = evFormThresh?.value;
-                    const severity  = evFormSev?.value || "warning";
-                    if (!src || !did || !metric || !cond || threshold === "") {
-                        alert("Fill in all fields."); return;
+            if (cbFormSave) {
+                cbFormSave.addEventListener("click", async () => {
+                    const [src, ...rest] = (cbFormDevice?.value || "").split("|");
+                    const did = rest.join("|");
+                    const alarmName = cbFormName?.value.trim();
+                    const conditions = Array.from(cbConditions ? cbConditions.querySelectorAll(".cb-condition-row") : [])
+                        .map((row) => ({
+                            metric_name: row.querySelector("[data-cb-cond-metric]")?.value,
+                            op: row.querySelector("[data-cb-cond-op]")?.value,
+                            value: Number(row.querySelector("[data-cb-cond-value]")?.value),
+                        }))
+                        .filter((c) => c.metric_name && !Number.isNaN(c.value));
+                    if (!src || !did || !alarmName || conditions.length === 0) {
+                        alert("Pick a device, name the alarm, and fill in at least one condition.");
+                        return;
                     }
                     try {
-                        const r = await fetch("/api/insights/alert-rules", {
+                        const r = await fetch("/api/insights/detection-config/multi-condition", {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ source: src, device_id: did, metric_name: metric, condition: cond, threshold: Number(threshold), severity }),
+                            body: JSON.stringify({
+                                source_type: src, source_id: did, alarm_name: alarmName, conditions,
+                                logic: cbFormLogic?.value || "all", severity: cbFormSev?.value || "warning",
+                                message: cbFormMsg?.value || "",
+                            }),
                         });
                         const d = await r.json();
                         if (!d.ok) { alert(d.message || "Failed to save."); return; }
-                        evAddForm?.classList.add("ev-hidden");
-                        evAddBtn?.classList.remove("ev-hidden");
-                        if (evFormDevice)  evFormDevice.value  = "";
-                        if (evFormMetric)  evFormMetric.innerHTML = '<option value="">Metric…</option>';
-                        if (evFormThresh)  evFormThresh.value   = "";
-                        evLoadRules();
+                        cbAddForm?.classList.add("ev-hidden");
+                        cbAddBtn?.classList.remove("ev-hidden");
+                        cbLoadRules();
                     } catch (e) { alert("Network error."); }
                 });
             }
@@ -5616,7 +5846,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 evTimeline.innerHTML = events.map((ev) => {
                     const sev   = (ev.severity || "info").toLowerCase();
                     const tone  = SEV_TONE[sev] || "is-info";
-                    const etype = (ev.event_type || "").replace("alert:", "⚡ ");
+                    const etype = (ev.event_type || "").replace(/^status:/, "").replace(/^anomaly:/, "⚡ ");
                     const name  = ev.device_name || ev.device_id || "";
                     const msg   = ev.message || "";
                     const count = ev._count || 1;
@@ -5683,8 +5913,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
                 if (!isActive) return;
 
-                // Load rules once per tab visit (they change rarely)
-                if (!evRulesList?.children.length) evLoadRules();
+                // Load combined alarms once per tab visit (they change rarely)
+                if (cbFormDevice && !cbFormDevice.options.length) {
+                    cbFormDevice.innerHTML = ['<option value="">Device…</option>',
+                        ...ovConfigured.map((d) => `<option value="${d.source}|${d.device_id}">${d.name || d.device_id}</option>`),
+                    ].join("");
+                }
+                if (!cbRulesList?.children.length) cbLoadRules();
 
                 // Poll events every 10 s
                 if (!evLastFetch || (Date.now() - evLastFetch) > 10_000) {

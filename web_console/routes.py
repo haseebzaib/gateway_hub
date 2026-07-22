@@ -154,6 +154,16 @@ async def send_saved_sensor_configs_to_core(ipc: object, config_names: list[str]
     results: list[dict[str, object]] = []
     for config_name in names:
         results.append(await _send_config_payload_to_core(ipc, config_name, CONFIGS[config_name]))
+
+    # gateway_core keeps no local copy of anomaly detection rules either (same
+    # reason as rs232/rs485/modbus_tcp above) — resync every configured
+    # sensor's detection config here too, so it survives a core restart/crash
+    # without the user having to re-save anything through the UI.
+    storage = getattr(ipc, "interface_storage", None)
+    if storage is not None:
+        for device in _configured_devices(storage):
+            payload = _build_detection_payload(storage, device)
+            results.append(await _send_config_payload_to_core(ipc, "sensor_anomaly", payload))
     return results
 
 
@@ -563,8 +573,7 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "edge_server": _default_edge_server_config(),
 }
 
-ALERT_RULES, NEXT_RULE_ID = insights_data.load_alert_rules()
-INSIGHTS_EVENTS = insights_data.AlertEventStore()
+DETECTION_CONFIG = insights_data.load_detection_config()
 
 
 def _forwarding_available_sources(request: Request) -> list[dict[str, Any]]:
@@ -1946,11 +1955,14 @@ async def export_edge_server_messages_jsonl(request: Request) -> Response:
     return _jsonl_download("edge-server-messages.jsonl", rows)
 
 
-def _insights_configured(request: Request) -> list[dict[str, Any]]:
-    storage = _interface_data_storage(request)
+def _configured_devices(storage: object | None) -> list[dict[str, Any]]:
     if storage is None:
         return []
     return insights_data.configured_devices(INTERFACES_SERVICE.snapshot(), storage)
+
+
+def _insights_configured(request: Request) -> list[dict[str, Any]]:
+    return _configured_devices(_interface_data_storage(request))
 
 
 def _insights_device(configured: list[dict[str, Any]], source: str, device_id: str) -> dict[str, Any] | None:
@@ -1958,6 +1970,26 @@ def _insights_device(configured: list[dict[str, Any]], source: str, device_id: s
         if device["source"] == source and device["device_id"] == device_id:
             return device
     return None
+
+
+def _build_detection_payload(storage: object, device: dict[str, Any]) -> dict[str, Any]:
+    source_type, source_id = device["source"], device["device_id"]
+    poll_interval_ms = device.get("poll_interval_ms", 1000)
+    metric_names = [m["name"] for m in device["expected_metrics"]]
+    stats = insights_data.rolling_stats(storage, source_type, source_id, metric_names, poll_interval_ms)
+    return insights_data.build_sensor_anomaly_payload(
+        DETECTION_CONFIG, source_type, source_id, device["expected_metrics"], poll_interval_ms, stats.get("5min", {}),
+    )
+
+
+async def _push_detection_config_for_device(request: Request, source_type: str, source_id: str) -> dict[str, object]:
+    storage = _interface_data_storage(request)
+    if storage is None:
+        return {"sent": False, "reason": "gateway core IPC task is not started"}
+    device = _insights_device(_configured_devices(storage), source_type, source_id)
+    if device is None:
+        return {"sent": False, "reason": "device not configured"}
+    return await _send_config_to_core(request, "sensor_anomaly", _build_detection_payload(storage, device))
 
 
 @router.get("/api/insights/configured")
@@ -2002,9 +2034,8 @@ async def insights_events(request: Request) -> JSONResponse:
     if storage is None:
         return JSONResponse({"ok": True, "events": []})
     configured = _insights_configured(request)
-    INSIGHTS_EVENTS.evaluate(ALERT_RULES, configured, storage)
     params = request.query_params
-    events = INSIGHTS_EVENTS.query(
+    events = insights_data.query_events(
         storage,
         window_ms=insights_data.WINDOW_MS.get(params.get("window", "24h"), insights_data.WINDOW_MS["24h"]),
         severity=params.get("severity", ""),
@@ -2015,55 +2046,84 @@ async def insights_events(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "events": events})
 
 
-@router.get("/api/insights/alert-rules")
-async def get_alert_rules(request: Request) -> JSONResponse:
+@router.get("/api/insights/detection-config")
+async def get_detection_config(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    return JSONResponse({"ok": True, "rules": ALERT_RULES})
+    params = request.query_params
+    source, device_id, metric = params.get("source", ""), params.get("device_id", ""), params.get("metric", "")
+    if not source or not device_id or not metric:
+        return JSONResponse({"ok": False, "message": "source, device_id and metric are required."}, status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+    config = insights_data.get_metric_detection_config(DETECTION_CONFIG, source, device_id, metric)
+    return JSONResponse({"ok": True, "config": config})
 
 
-@router.post("/api/insights/alert-rules")
-async def create_alert_rule(request: Request) -> JSONResponse:
+@router.post("/api/insights/detection-config")
+async def save_detection_config_route(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    global NEXT_RULE_ID
     payload = await request.json()
+    source = str(payload.get("source", ""))
+    device_id = str(payload.get("device_id", ""))
+    metric = str(payload.get("metric", ""))
+    friendly = payload.get("config")
+    if not source or not device_id or not metric or not isinstance(friendly, dict):
+        return JSONResponse({"ok": False, "message": "source, device_id, metric and config are required."}, status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+    insights_data.set_metric_detection_config(DETECTION_CONFIG, source, device_id, metric, friendly)
+    insights_data.save_detection_config(DETECTION_CONFIG)
+    core_ipc = await _push_detection_config_for_device(request, source, device_id)
+    return JSONResponse({"ok": True, "core_ipc": core_ipc})
+
+
+@router.get("/api/insights/detection-config/multi-condition")
+async def list_multi_condition_rules(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    return JSONResponse({"ok": True, "rules": DETECTION_CONFIG.get("multi_condition", [])})
+
+
+@router.post("/api/insights/detection-config/multi-condition")
+async def create_multi_condition_rule(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    payload = await request.json()
+    source_type = str(payload.get("source_type", ""))
+    source_id = str(payload.get("source_id", ""))
+    alarm_name = str(payload.get("alarm_name", ""))
+    if not source_type or not source_id or not alarm_name:
+        return JSONResponse({"ok": False, "message": "source_type, source_id and alarm_name are required."}, status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+    rules = DETECTION_CONFIG.setdefault("multi_condition", [])
     rule = {
-        "id": NEXT_RULE_ID,
-        "source": payload.get("source", ""),
-        "device_id": payload.get("device_id", ""),
-        "metric_name": payload.get("metric_name", ""),
-        "condition": payload.get("condition", "gt"),
-        "threshold": payload.get("threshold", 0),
+        "id": max([r.get("id", 0) for r in rules], default=0) + 1,
+        "source_type": source_type,
+        "source_id": source_id,
+        "alarm_name": alarm_name,
+        "conditions": payload.get("conditions", []),
+        "logic": payload.get("logic", "all"),
         "severity": payload.get("severity", "warning"),
+        "message": payload.get("message", ""),
         "enabled": True,
     }
-    NEXT_RULE_ID += 1
-    ALERT_RULES.append(rule)
-    insights_data.save_alert_rules(ALERT_RULES)
-    return JSONResponse({"ok": True, "rule": rule})
+    rules.append(rule)
+    insights_data.save_detection_config(DETECTION_CONFIG)
+    core_ipc = await _push_detection_config_for_device(request, source_type, source_id)
+    return JSONResponse({"ok": True, "rule": rule, "core_ipc": core_ipc})
 
 
-@router.delete("/api/insights/alert-rules/{rule_id}")
-async def delete_alert_rule(request: Request, rule_id: int) -> JSONResponse:
+@router.delete("/api/insights/detection-config/multi-condition/{rule_id}")
+async def delete_multi_condition_rule(request: Request, rule_id: int) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
-    ALERT_RULES[:] = [rule for rule in ALERT_RULES if rule["id"] != rule_id]
-    insights_data.save_alert_rules(ALERT_RULES)
-    return JSONResponse({"ok": True})
-
-
-@router.put("/api/insights/alert-rules/{rule_id}")
-async def toggle_alert_rule(request: Request, rule_id: int) -> JSONResponse:
-    if auth := _json_auth_required(request):
-        return auth
-    payload = await request.json()
-    for rule in ALERT_RULES:
-        if rule["id"] == rule_id:
-            rule["enabled"] = bool(payload["enabled"]) if "enabled" in payload else not bool(rule.get("enabled"))
-            insights_data.save_alert_rules(ALERT_RULES)
-            return JSONResponse({"ok": True, "rule": rule})
-    return JSONResponse({"ok": False, "message": "Rule not found."}, status_code=status.HTTP_404_NOT_FOUND)
+    rules = DETECTION_CONFIG.get("multi_condition", [])
+    match = next((r for r in rules if r.get("id") == rule_id), None)
+    if match is None:
+        return JSONResponse({"ok": False, "message": "Rule not found."}, status_code=status.HTTP_404_NOT_FOUND)
+    rules.remove(match)
+    insights_data.save_detection_config(DETECTION_CONFIG)
+    core_ipc = await _push_detection_config_for_device(request, match.get("source_type", ""), match.get("source_id", ""))
+    return JSONResponse({"ok": True, "core_ipc": core_ipc})
 
 
 @router.get("/api/insights/summary")
@@ -2106,7 +2166,7 @@ async def insights_trends(request: Request) -> JSONResponse:
     if device is None:
         return JSONResponse({"ok": True, "trends": []})
     metric_names = [m["name"] for m in device["expected_metrics"]]
-    trends = insights_data.compute_trends(storage, source, device_id, metric_names, ALERT_RULES)
+    trends = insights_data.compute_trends(storage, source, device_id, metric_names, DETECTION_CONFIG)
     return JSONResponse({"ok": True, "trends": trends})
 
 

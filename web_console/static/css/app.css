@@ -10210,4 +10210,111 @@ body.anomaly-modal-open { overflow: hidden; }
 .ov-id-chip small { color: var(--muted); }
 .ov-id-chip small:empty { display: none; }
 .ov-id-chip.is-active { border-color: rgba(98, 211, 158, 0.4); background: rgba(98, 211, 158, 0.08); }
+
+/* ── Detection config modal (Insights → Sensors → per-metric ⚙) ────────── */
+.sv-detect-btn {
+    padding: 0.16rem 0.4rem;
+    border-radius: 0.5rem;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 0.78rem;
+    line-height: 1;
+    transition: all 180ms ease;
+}
+.sv-detect-btn:hover { color: var(--accent-cool); border-color: rgba(57,208,200,0.35); background: rgba(57,208,200,0.08); }
+
+.dv-modal-inner { max-width: 640px; height: auto; max-height: 82vh; }
+
+.dv-modal-body {
+    padding: 1rem 1.25rem;
+    overflow-y: auto;
+    display: grid;
+    gap: 0.7rem;
+}
+.dv-loading { color: var(--muted); font-size: 0.85rem; }
+
+.dv-section {
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 0.85rem;
+    background: rgba(255,255,255,0.015);
+    overflow: hidden;
+}
+.dv-section.is-on { border-color: rgba(57,208,200,0.25); background: rgba(57,208,200,0.03); }
+
+.dv-section-head {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    padding: 0.65rem 0.9rem;
+}
+.dv-section-label { font-size: 0.85rem; font-weight: 600; color: var(--text); cursor: help; }
+
+.dv-section-fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    gap: 0.6rem;
+    padding: 0 0.9rem 0.85rem;
+    font-size: 0.78rem;
+    color: var(--muted);
+}
+.dv-section-fields label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+.dv-section-fields input[type="number"],
+.dv-section-fields select {
+    height: 2rem;
+    padding: 0 0.6rem;
+    border-radius: 0.5rem;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.05);
+    color: var(--text);
+    font: inherit;
+    font-size: 0.82rem;
+    outline: none;
+}
+.dv-section-fields input:focus,
+.dv-section-fields select:focus { border-color: rgba(57,208,200,0.4); background: rgba(57,208,200,0.06); }
+.dv-section-fields label.dv-check {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.5rem;
+}
+.dv-section-fields label.dv-check input { width: auto; height: auto; }
+
+.dv-modal-foot { justify-content: flex-end; }
+.dv-save-status { font-size: 0.78rem; color: var(--accent-cool); margin-right: auto; }
+
+/* ── Combined Alarms card (Insights → Events) ───────────────────────────── */
+.cb-add-form { align-items: flex-start; }
+.cb-conditions { display: grid; gap: 0.4rem; width: 100%; }
+.cb-condition-row { display: flex; gap: 0.4rem; align-items: center; }
+.cb-condition-row select.ev-form-sel { min-width: 8rem; }
+.cb-condition-row input.ev-form-input { width: 6rem; }
+.cb-remove-condition-btn {
+    width: 1.6rem; height: 1.6rem;
+    border-radius: 999px;
+    border: 1px solid rgba(255,255,255,0.1);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    line-height: 1;
+}
+.cb-remove-condition-btn:hover { color: #ff8e8e; border-color: rgba(220,80,80,0.3); }
+.cb-add-condition-btn {
+    padding: 0.25rem 0.7rem;
+    border-radius: 999px;
+    border: 1px dashed rgba(255,255,255,0.18);
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 0.78rem;
+    cursor: pointer;
+}
+.cb-add-condition-btn:hover { color: var(--accent-cool); border-color: rgba(57,208,200,0.35); }
+.cb-rule-conditions { font-family: monospace; font-size: 0.78rem; color: var(--accent-cool); flex: 1; }
 .ov-id-chip.is-standby { border-color: rgba(240, 166, 75, 0.35); }

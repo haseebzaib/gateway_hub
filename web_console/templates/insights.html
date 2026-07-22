@@ -149,37 +149,35 @@
     {# ── Events panel ─────────────────────────────────────────────── #}
     <div class="ov-panel ov-hidden" data-ov-panel="events">
 
-        {# Alert rules card #}
-        <div class="ev-rules-card" data-ev-rules-card>
+        {# Combined alarms card — multi-condition rules (e.g. "pump running AND
+           vibration high"), scoped to metrics on the same device #}
+        <div class="ev-rules-card" data-cb-rules-card>
             <header class="ev-rules-head">
-                <span class="ev-section-title">Alert Rules</span>
-                <span class="ev-rules-badge" data-ev-rules-badge>0</span>
-                <button class="ev-add-btn" data-ev-add-btn>+ Add Rule</button>
+                <span class="ev-section-title">Combined Alarms</span>
+                <span class="ev-rules-badge" data-cb-rules-badge>0</span>
+                <button class="ev-add-btn" data-cb-add-btn>+ Add Alarm</button>
             </header>
-            {# Add-rule form (hidden by default) #}
-            <div class="ev-add-form ev-hidden" data-ev-add-form>
-                <select class="ev-form-sel" data-ev-form-device>
+            {# Add-alarm form (hidden by default) #}
+            <div class="ev-add-form cb-add-form ev-hidden" data-cb-add-form>
+                <select class="ev-form-sel" data-cb-form-device>
                     <option value="">Device…</option>
                 </select>
-                <select class="ev-form-sel" data-ev-form-metric>
-                    <option value="">Metric…</option>
+                <input class="ev-form-input" type="text" placeholder="Alarm name" data-cb-form-name style="width:11rem">
+                <div class="cb-conditions" data-cb-conditions></div>
+                <button class="cb-add-condition-btn" data-cb-add-condition type="button">+ Condition</button>
+                <select class="ev-form-sel" data-cb-form-logic>
+                    <option value="all">ALL conditions must be true</option>
+                    <option value="any">ANY condition true</option>
                 </select>
-                <select class="ev-form-sel" data-ev-form-cond>
-                    <option value="gt">&gt;</option>
-                    <option value="lt">&lt;</option>
-                    <option value="gte">&ge;</option>
-                    <option value="lte">&le;</option>
-                    <option value="eq">=</option>
-                </select>
-                <input  class="ev-form-input" type="number" step="any" placeholder="Threshold" data-ev-form-threshold>
-                <select class="ev-form-sel" data-ev-form-severity>
+                <select class="ev-form-sel" data-cb-form-severity>
                     <option value="warning">Warning</option>
                     <option value="critical">Critical</option>
                 </select>
-                <button class="ev-form-save-btn" data-ev-form-save>Save</button>
-                <button class="ev-form-cancel-btn" data-ev-form-cancel>Cancel</button>
+                <input class="ev-form-input" type="text" placeholder="Message shown when it fires" data-cb-form-message style="width:16rem">
+                <button class="ev-form-save-btn" data-cb-form-save>Save</button>
+                <button class="ev-form-cancel-btn" data-cb-form-cancel>Cancel</button>
             </div>
-            <div class="ev-rules-list" data-ev-rules-list></div>
+            <div class="ev-rules-list" data-cb-rules-list></div>
         </div>
 
         {# Filter bar #}

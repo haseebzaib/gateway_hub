@@ -107,6 +107,31 @@ class GatewayInterfacesDataStorage:
                 message_count INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (source_type, source_id)
             );
+
+            CREATE TABLE IF NOT EXISTS sensor_anomaly_events (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts_ms          INTEGER NOT NULL,
+                source_type    TEXT NOT NULL,
+                source_id      TEXT NOT NULL,
+                metric         TEXT,
+                detector       TEXT,
+                severity       TEXT,
+                value          REAL,
+                z_score        REAL,
+                delta_value    REAL,
+                slope_value    REAL,
+                warning_limit  REAL,
+                critical_limit REAL,
+                min_value      REAL,
+                max_value      REAL,
+                alarm_name     TEXT,
+                category       TEXT,
+                metric_label   TEXT,
+                headline       TEXT,
+                message        TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_sensor_anomaly_source_time
+                ON sensor_anomaly_events (source_type, source_id, ts_ms);
             """
         )
         self._conn.commit()
@@ -316,6 +341,112 @@ class GatewayInterfacesDataStorage:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def add_sensor_anomaly_events(self, events: list[dict[str, Any]]) -> None:
+        """Persist a batch of normalized sensor anomaly events (see
+        gateway_ipc.message_protocol.normalize_sensor_anomaly_message)."""
+        if not events:
+            return
+        with self._lock:
+            self.open()
+            assert self._conn is not None
+            self._conn.executemany(
+                """
+                INSERT INTO sensor_anomaly_events (
+                    ts_ms, source_type, source_id, metric, detector, severity, value,
+                    z_score, delta_value, slope_value,
+                    warning_limit, critical_limit, min_value, max_value,
+                    alarm_name, category, metric_label, headline, message
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        int(ev.get("timestamp_ms") or 0),
+                        ev.get("source_type"),
+                        ev.get("source_id"),
+                        ev.get("metric"),
+                        ev.get("detector"),
+                        ev.get("severity"),
+                        _optional_float(ev.get("value")),
+                        _optional_float(ev.get("z_score")),
+                        _optional_float(ev.get("delta_value")),
+                        _optional_float(ev.get("slope_value")),
+                        _optional_float(ev.get("warning_limit")),
+                        _optional_float(ev.get("critical_limit")),
+                        _optional_float(ev.get("min_value")),
+                        _optional_float(ev.get("max_value")),
+                        ev.get("alarm_name"),
+                        ev.get("category"),
+                        ev.get("metric_label"),
+                        ev.get("headline"),
+                        ev.get("message"),
+                    )
+                    for ev in events
+                ],
+            )
+            self._conn.commit()
+            self._maybe_maintain_locked(int(events[-1].get("timestamp_ms") or 0))
+
+    def sensor_anomaly_events(
+        self, *, source_type: str | None = None, source_id: str | None = None,
+        from_ms: int = 0, to_ms: int = 2**63 - 1, limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        clauses = ["ts_ms >= ?", "ts_ms <= ?"]
+        values: list[Any] = [int(from_ms), int(to_ms)]
+        for column, value in (("source_type", source_type), ("source_id", source_id)):
+            if value is not None:
+                clauses.append(f"{column} = ?")
+                values.append(value)
+        values.append(max(1, min(int(limit), 10000)))
+        with self._lock:
+            self.open()
+            assert self._conn is not None
+            rows = self._conn.execute(
+                f"""SELECT ts_ms, source_type, source_id, metric, detector, severity, value,
+                           z_score, delta_value, slope_value, warning_limit, critical_limit,
+                           min_value, max_value, alarm_name, category, metric_label, headline, message
+                    FROM sensor_anomaly_events WHERE {' AND '.join(clauses)} ORDER BY ts_ms DESC LIMIT ?""",
+                values,
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def grouped_sensor_anomalies(self, source_type: str, source_id: str, since_ms: int) -> list[dict[str, Any]]:
+        """Collapse repeats into one row per (metric, category, severity) for
+        this sensor — mirrors monitor_storage.MonitorStorage.grouped_anomalies()."""
+        with self._lock:
+            self.open()
+            assert self._conn is not None
+            rows = self._conn.execute(
+                """
+                SELECT metric, metric_label, category, severity,
+                       COUNT(*)     AS count,
+                       MIN(ts_ms)   AS first_ts,
+                       MAX(ts_ms)   AS latest_ts,
+                       MIN(value)   AS min_value,
+                       MAX(value)   AS max_value,
+                       (SELECT value FROM sensor_anomaly_events e2
+                          WHERE e2.source_type = e1.source_type AND e2.source_id = e1.source_id
+                            AND e2.metric IS e1.metric AND e2.category IS e1.category AND e2.severity IS e1.severity
+                            AND e2.ts_ms >= ?
+                          ORDER BY e2.ts_ms DESC LIMIT 1) AS latest_value,
+                       (SELECT headline FROM sensor_anomaly_events e3
+                          WHERE e3.source_type = e1.source_type AND e3.source_id = e1.source_id
+                            AND e3.metric IS e1.metric AND e3.category IS e1.category AND e3.severity IS e1.severity
+                            AND e3.ts_ms >= ?
+                          ORDER BY e3.ts_ms DESC LIMIT 1) AS latest_headline,
+                       (SELECT message FROM sensor_anomaly_events e4
+                          WHERE e4.source_type = e1.source_type AND e4.source_id = e1.source_id
+                            AND e4.metric IS e1.metric AND e4.category IS e1.category AND e4.severity IS e1.severity
+                            AND e4.ts_ms >= ?
+                          ORDER BY e4.ts_ms DESC LIMIT 1) AS latest_message
+                FROM sensor_anomaly_events e1
+                WHERE source_type = ? AND source_id = ? AND ts_ms >= ?
+                GROUP BY metric, category, severity
+                ORDER BY latest_ts DESC
+                """,
+                (int(since_ms), int(since_ms), int(since_ms), source_type, source_id, int(since_ms)),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
     def sensor_messages(
         self, *, source_type: str | None = None, source_id: str | None = None,
         from_ms: int = 0, to_ms: int = 2**63 - 1, limit: int = 1000,
@@ -388,6 +519,7 @@ class GatewayInterfacesDataStorage:
         self._conn.execute("DELETE FROM sensor_messages WHERE ts_ms < ?", (cutoff,))
         self._conn.execute("DELETE FROM rs232_sniffer_frames WHERE ts_ms < ?", (cutoff,))
         self._conn.execute("DELETE FROM sensor_status_events WHERE ts_ms < ?", (cutoff,))
+        self._conn.execute("DELETE FROM sensor_anomaly_events WHERE ts_ms < ?", (cutoff,))
         self._conn.commit()
 
 
