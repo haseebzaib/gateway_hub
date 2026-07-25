@@ -3,6 +3,11 @@
 {% block page_eyebrow %}Sensor Analytics{% endblock %}
 {% block page_title %}Insights{% endblock %}
 
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', path='css/uPlot.min.css') }}">
+<script src="{{ url_for('static', path='js/uPlot.min.js') }}" defer></script>
+{% endblock %}
+
 {% block console_content %}
 <section class="ov-shell" data-insights-shell>
 
@@ -34,33 +39,51 @@
     {# ── Overview panel ──────────────────────────────────────────────── #}
     <div class="ov-panel" data-ov-panel="overview">
 
-        {# KPI strip #}
-        <div class="ov-kpi-strip">
-            <article class="ov-kpi-card">
-                <p class="ov-kpi-label">Active Devices</p>
-                <p class="ov-kpi-value" data-ov-kpi="devices">--</p>
-                <p class="ov-kpi-sub" data-ov-kpi-sub="devices">of -- configured</p>
+        {# KPI strip — four glanceable tiles #}
+        <div class="ovk-strip">
+            <article class="ovk-tile">
+                <span class="ovk-icon is-devices">
+                    <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="2" y="4" width="14" height="8" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M6 15h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M9 12v3" stroke="currentColor" stroke-width="1.5"/></svg>
+                </span>
+                <div class="ovk-body">
+                    <p class="ovk-value" data-ov-kpi="devices">--</p>
+                    <p class="ovk-label">Devices online</p>
+                    <p class="ovk-sub" data-ov-kpi-sub="devices">of -- configured</p>
+                </div>
             </article>
-            <article class="ov-kpi-card">
-                <p class="ov-kpi-label">Data Quality</p>
-                <p class="ov-kpi-value" data-ov-kpi="quality">--%</p>
-                <div class="ov-kpi-bar"><div class="ov-kpi-bar-fill" data-ov-kpi-bar="quality"></div></div>
-                <p class="ov-kpi-sub" data-ov-kpi-sub="quality">Good / total readings</p>
+            <article class="ovk-tile">
+                <span class="ovk-icon is-fresh">
+                    <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M2 9h3l2-5 4 10 2-5h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </span>
+                <div class="ovk-body">
+                    <p class="ovk-value" data-ov-kpi="fresh">--</p>
+                    <p class="ovk-label">Readings updating</p>
+                    <p class="ovk-sub" data-ov-kpi-sub="fresh">right now</p>
+                </div>
             </article>
-            <article class="ov-kpi-card">
-                <p class="ov-kpi-label">Anomalies</p>
-                <p class="ov-kpi-value" data-ov-kpi="anomalies">--</p>
-                <p class="ov-kpi-sub" data-ov-kpi-sub="anomalies">Across all devices</p>
+            <article class="ovk-tile">
+                <span class="ovk-icon is-flags">
+                    <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M9 2v14M9 3h6l-1.8 3L15 9H9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </span>
+                <div class="ovk-body">
+                    <p class="ovk-value" data-ov-kpi="flags">--</p>
+                    <p class="ovk-label">Flags · last 24 h</p>
+                    <p class="ovk-sub">from anomaly detection</p>
+                </div>
             </article>
-            <article class="ov-kpi-card">
-                <p class="ov-kpi-label">System Health</p>
-                <p class="ov-kpi-value" data-ov-kpi="health">--%</p>
-                <div class="ov-kpi-bar"><div class="ov-kpi-bar-fill" data-ov-kpi-bar="health"></div></div>
-                <p class="ov-kpi-sub">Good readings / last hour</p>
+            <article class="ovk-tile">
+                <span class="ovk-icon is-quality">
+                    <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M3 12l4-4 3 3 5-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M15 5v3h-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </span>
+                <div class="ovk-body">
+                    <p class="ovk-value" data-ov-kpi="quality">--%</p>
+                    <p class="ovk-label">Data quality</p>
+                    <div class="ov-kpi-bar"><div class="ov-kpi-bar-fill" data-ov-kpi-bar="quality"></div></div>
+                </div>
             </article>
         </div>
 
-        {# Device card grid — populated by JS. Issues now appear inline per card. #}
+        {# Device card grid — populated by JS. Compact tiles per reading; click a card to open it in Sensors. #}
         <div class="ov-device-grid" data-ov-device-grid></div>
 
     </div>
@@ -79,13 +102,14 @@
         {# Two-column body: metric list (left) + chart area (right) #}
         <div class="sv-body" data-sv-body>
 
-            {# Left: device header + metric rows — populated by JS #}
+            {# Left: device header + reading rows (click a row to chart it) #}
             <aside class="sv-metric-col">
                 <div class="sv-device-header" data-sv-device-header></div>
+                <p class="sv-pick-hint">Click a reading to chart it</p>
                 <div class="sv-metric-list"   data-sv-metric-list></div>
             </aside>
 
-            {# Right: window picker + chart + legend + stats #}
+            {# Right: chart card #}
             <div class="sv-chart-col">
                 <div class="sv-top-bar">
                     <div class="sv-window-bar" data-sv-window-bar>
@@ -93,18 +117,41 @@
                         <button class="sv-win-btn"            data-sv-win="6h">6 h</button>
                         <button class="sv-win-btn"            data-sv-win="24h">24 h</button>
                         <button class="sv-win-btn"            data-sv-win="7d">7 d</button>
+                        <button class="sv-win-btn"            data-sv-win="30d">30 d</button>
                     </div>
-                    <button class="sv-export-btn" data-sv-export-btn title="Download data as CSV">
-                        ↓ Export CSV
+                    <div class="sv-date-bar">
+                        <input type="date" class="sv-date-input" data-sv-date-from title="From date">
+                        <span class="sv-date-sep">→</span>
+                        <input type="date" class="sv-date-input" data-sv-date-to title="To date">
+                        <button class="sv-win-btn" data-sv-date-apply>Show</button>
+                    </div>
+                    <button class="sv-export-btn" data-sv-export-btn title="Download this reading's data as CSV">
+                        ↓ CSV
                     </button>
                 </div>
-                <div class="sv-chart-wrap">
-                    <svg class="sv-chart-svg" data-sv-chart preserveAspectRatio="none"></svg>
-                    <div class="sv-chart-empty" data-sv-chart-empty>
-                        Toggle metrics ON to see the chart.
-                    </div>
+
+                <div class="sv-chart-card">
+                    <header class="sv-chart-head">
+                        <span class="sv-chart-metric" data-sv-chart-title>—</span>
+                        <span class="sv-chart-hint">Scroll to zoom · drag to pan · double-click to reset · click a marked point to see what happened</span>
+                    </header>
+                    <div class="sv-uplot-wrap" data-sv-uplot></div>
+                    <div class="sv-chart-empty ov-hidden" data-sv-chart-empty>No data in this time range.</div>
+                    {# Clicked-anomaly detail — filled by JS #}
+                    <div class="sv-anom-detail ov-hidden" data-sv-anom-detail></div>
                 </div>
-                <div class="sv-chart-legend" data-sv-legend></div>
+
+                {# Detected issues in the visible range — grouped + paginated #}
+                <div class="ev-rules-card sv-issues-card">
+                    <header class="ev-rules-head">
+                        <span class="ev-section-title">Detected issues in this time range</span>
+                        <span class="ev-rules-badge" data-sv-issues-badge>0</span>
+                    </header>
+                    <div class="sv-issues-list" data-sv-issues-list>
+                        <p class="ev-rules-empty">Nothing flagged in this time range.</p>
+                    </div>
+                    <div class="ev-pager ov-hidden" data-sv-issues-pager></div>
+                </div>
 
                 {# Analytics panel: Rolling Stats + Trend Analysis tabs #}
                 <div class="sv-analytics-panel">

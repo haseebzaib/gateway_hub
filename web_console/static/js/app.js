@@ -3968,6 +3968,7 @@ document.addEventListener("DOMContentLoaded", () => {
         let svRefreshFn       = null; // set by Sensors tab block
         let evRefreshFn       = null; // set by Events tab block
         let adRefreshFn       = null; // set by Anomaly Detection tab block
+        let svSelectDevice    = null; // set by Sensors tab block — jump to a device
 
         // ── DOM refs ─────────────────────────────────────────────────────
         const ovDeviceGrid = insightsShell.querySelector("[data-ov-device-grid]");
@@ -4031,94 +4032,62 @@ document.addEventListener("DOMContentLoaded", () => {
             return "flat";
         };
 
-        // ── Sparkline SVG ────────────────────────────────────────────────
-        const drawSparkline = (svgEl, values, quality) => {
-            if (!svgEl) return;
-            const W = svgEl.clientWidth || 100;
-            const H = 32;
-            const pad = 3;
-            const uH  = H - pad * 2;
-            const color = quality === "good"  ? "rgba(57,208,200,0.72)" :
-                          quality === "stale" ? "rgba(240,166,75,0.6)"  :
-                                               "rgba(220,80,80,0.55)";
-
-            if (!values || values.length < 2) {
-                svgEl.innerHTML = `<line x1="0" y1="${H/2}" x2="${W}" y2="${H/2}" stroke="rgba(255,255,255,0.08)" stroke-dasharray="2,3"/>`;
-                return;
-            }
-
-            const min = Math.min(...values);
-            const max = Math.max(...values);
-            const rng = max - min || 1;
-            const step = (W - pad * 2) / (values.length - 1);
-            const toX = (i) => pad + i * step;
-            const toY = (v) => pad + uH - ((v - min) / rng) * uH;
-
-            // Area fill
-            const pathD = values.map((v, i) => `${i === 0 ? "M" : "L"} ${toX(i).toFixed(1)},${toY(v).toFixed(1)}`).join(" ");
-            const areaD = `${pathD} L ${toX(values.length-1).toFixed(1)},${H} L ${pad},${H} Z`;
-
-            svgEl.setAttribute("viewBox", `0 0 ${W} ${H}`);
-            svgEl.innerHTML = `
-                <path d="${areaD}" fill="${color.replace('0.72','0.1').replace('0.6','0.08').replace('0.55','0.07')}" stroke="none"/>
-                <path d="${pathD}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>`;
-        };
-
         // ── Build card skeleton from configured device ─────────────────────
+        // Compact by design: readings render as small tiles in a wrapping grid
+        // (no per-reading sparkline), capped at OV_TILE_LIMIT with a "+N more"
+        // tile, so cards stay a predictable height no matter how many
+        // registers a device has. The whole card opens that device in Sensors.
+        const OV_TILE_LIMIT = 6;
+
         const buildCard = (device) => {
             const key     = `${device.source}:${device.device_id}`;
-            const type    = device.device_type || device.source || "sensor";
             const tp      = tpStr(device.transport);
             const metrics = device.expected_metrics || [];
+            const shown   = metrics.slice(0, OV_TILE_LIMIT);
+            const hidden  = metrics.length - shown.length;
 
-            const metricRows = metrics.map((m) => {
+            const tiles = shown.map((m) => {
                 const label = displayLabel(m.name);
                 const unit  = (m.unit || "").trim();
                 return `
-                    <div class="ov-metric-row" data-ov-metric="${m.name}">
-                        <span class="ov-metric-label" title="${label}">${label}</span>
-                        <div class="ov-metric-reading">
-                            <span class="ov-metric-val" data-ov-val>--</span>
-                            <span class="ov-metric-unit">${unit}</span>
+                    <div class="ovc-tile" data-ov-metric="${m.name}">
+                        <span class="ovc-tile-label" title="${label}">${label}</span>
+                        <span class="ovc-tile-reading">
+                            <span class="ovc-tile-val" data-ov-val>--</span>
+                            <span class="ovc-tile-unit">${unit}</span>
                             <span class="ov-trend" data-ov-trend></span>
-                        </div>
-                        <svg class="ov-sparkline" data-ov-spark height="32" preserveAspectRatio="none">
-                            <line x1="0" y1="16" x2="100" y2="16" stroke="rgba(255,255,255,0.08)" stroke-dasharray="2,3"/>
-                        </svg>
-                        <span class="ov-quality-dot" data-ov-quality></span>
+                        </span>
+                        <span class="ovc-tile-dot" data-ov-quality></span>
                     </div>`;
             }).join("");
+            const moreTile = hidden > 0
+                ? `<div class="ovc-tile ovc-tile-more">+${hidden} more reading${hidden > 1 ? "s" : ""}</div>`
+                : "";
 
             return `
-                <article class="ov-card" data-ov-card="${key}">
-                    <header class="ov-card-head">
-                        <div>
-                            <p class="ov-card-name">${device.name || device.device_id}</p>
-                            <div class="ov-card-chips">
-                                <span class="ov-chip ov-chip-type">${type}</span>
-                                ${tp ? `<span class="ov-chip ov-chip-transport">${tp}</span>` : ""}
-                            </div>
+                <article class="ovc-card" data-ov-card="${key}" role="button" tabindex="0" title="Open in Sensors">
+                    <header class="ovc-head">
+                        <div class="ovc-title">
+                            <p class="ovc-name">${device.name || device.device_id}</p>
+                            ${tp ? `<p class="ovc-sub">${tp}</p>` : ""}
                         </div>
                         <span class="ov-status-badge ov-status-awaiting" data-ov-status>
                             <span class="ov-status-pulse"></span>
                             <span class="ov-status-text">Awaiting</span>
                         </span>
                     </header>
-                    <div class="ov-card-issues" data-ov-issues hidden>
-                        <span class="ov-card-issues-dot"></span>
-                        <span class="ov-card-issues-text" data-ov-issues-text></span>
+                    <div class="ovc-issues" data-ov-issues hidden>
+                        <span class="ovc-issues-dot"></span>
+                        <span data-ov-issues-text></span>
                     </div>
-                    <div class="ov-metric-list">
-                        ${metricRows || `<p style="padding:1rem;color:var(--muted);font-size:.84rem">No registers configured.</p>`}
+                    <div class="ovc-tiles">
+                        ${tiles || `<p class="ovc-empty">No registers configured.</p>`}${moreTile}
                     </div>
-                    <footer class="ov-card-foot">
-                        <div class="ov-health-row">
-                            <span class="ov-health-pct" data-ov-health-pct>-- health</span>
-                            <span class="ov-last-seen" data-ov-last-seen></span>
-                        </div>
-                        <div class="ov-health-bar-track">
-                            <div class="ov-health-bar-fill" data-ov-health-bar></div>
-                        </div>
+                    <footer class="ovc-foot">
+                        <div class="ovc-health-track"><div class="ov-health-bar-fill" data-ov-health-bar></div></div>
+                        <span class="ovc-foot-health" data-ov-health-pct>--</span>
+                        <span class="ovc-foot-seen" data-ov-last-seen></span>
+                        <span class="ovc-foot-open">Details →</span>
                     </footer>
                 </article>`;
         };
@@ -4135,13 +4104,14 @@ document.addEventListener("DOMContentLoaded", () => {
             ovDeviceGrid.querySelectorAll("[data-ov-card]").forEach((card) => {
                 const key       = card.getAttribute("data-ov-card");
                 const live      = liveMap[key];
+                const device    = ovConfigured.find((d) => `${d.source}:${d.device_id}` === key);
                 const status    = card.querySelector("[data-ov-status]");
                 const stText    = status?.querySelector(".ov-status-text");
                 const issuesEl  = card.querySelector("[data-ov-issues]");
                 const issuesTx  = card.querySelector("[data-ov-issues-text]");
 
                 if (!live) {
-                    // Device configured but not live in Redis
+                    // Configured but nothing received yet
                     if (status) {
                         status.className = "ov-status-badge ov-status-offline";
                         if (stText) stText.textContent = "Offline";
@@ -4154,6 +4124,30 @@ document.addEventListener("DOMContentLoaded", () => {
 
                 // ── Status badge ──────────────────────────────────────────
                 const devStatus = live.status || "ok";
+                if (devStatus === "offline") {
+                    // The engine reports it cannot reach this device (or has
+                    // gone quiet itself) — say so plainly instead of "Live".
+                    if (status) {
+                        status.className = "ov-status-badge ov-status-offline";
+                        if (stText) stText.textContent = "Offline";
+                    }
+                    card.classList.remove("is-live", "is-warning", "is-error");
+                    card.classList.add("is-offline");
+                    if (issuesEl && issuesTx) {
+                        issuesTx.textContent = live.error?.message
+                            ? `Cannot reach this device: ${live.error.message}`
+                            : "Cannot reach this device.";
+                        issuesEl.classList.add("is-error");
+                        issuesEl.hidden = false;
+                    }
+                    const hp = card.querySelector("[data-ov-health-pct]");
+                    if (hp) hp.textContent = "offline";
+                    const hb = card.querySelector("[data-ov-health-bar]");
+                    if (hb) { hb.style.width = "0%"; hb.className = "ov-health-bar-fill is-crit"; }
+                    const ls = card.querySelector("[data-ov-last-seen]");
+                    if (ls && live.timestamp_ms) ls.textContent = `Last data ${fmtAge((Date.now() - live.timestamp_ms) / 1000)}`;
+                    return;
+                }
                 const sc = devStatus === "ok"      ? "ov-status-live"    :
                            devStatus === "warning"  ? "ov-status-warning" :
                                                      "ov-status-error";
@@ -4171,69 +4165,55 @@ document.addEventListener("DOMContentLoaded", () => {
                 // ── Last seen ─────────────────────────────────────────────
                 const lastSeenEl = card.querySelector("[data-ov-last-seen]");
                 if (lastSeenEl && live.timestamp_ms) {
-                    lastSeenEl.textContent = fmtAge((Date.now() - live.timestamp_ms) / 1000);
+                    lastSeenEl.textContent = `Updated ${fmtAge((Date.now() - live.timestamp_ms) / 1000)}`;
                 }
 
-                // ── Metric rows ───────────────────────────────────────────
+                // ── Health counts over ALL readings (not just visible tiles) ──
                 const metrics  = live.metrics  || {};
                 const samples  = live._samples || {};
+                const deviceInError = !!(live.error || live.status === "error");
                 let goodCount  = 0;
                 let totalCount = 0;
                 let staleCount = 0;
                 let errorCount = 0;
-
-                card.querySelectorAll("[data-ov-metric]").forEach((row) => {
-                    const mkey    = row.getAttribute("data-ov-metric");
-                    const m       = metrics[mkey];
-                    const valEl   = row.querySelector("[data-ov-val]");
-                    const sparkEl = row.querySelector("[data-ov-spark]");
-                    const qualEl  = row.querySelector("[data-ov-quality]");
-                    const trendEl = row.querySelector("[data-ov-trend]");
-
-                    if (!m) {
-                        // Device has an error and this metric has no data at all —
-                        // count it as errored so health doesn't default to 100%
-                        if (live.error || live.status === "error") {
-                            totalCount++;
-                            errorCount++;
-                        }
-                        row.classList.remove("is-stale", "is-error");
+                (device?.expected_metrics || []).forEach((m) => {
+                    const lm = metrics[m.name];
+                    if (!lm) {
+                        if (deviceInError) { totalCount++; errorCount++; }
                         return;
                     }
-
                     totalCount++;
-                    // If value is null/undefined, treat as error regardless of stored quality flag
-                    const valueIsNull = m.value === null || m.value === undefined;
-                    const q = valueIsNull ? "error" : (m.quality || "good");
+                    const q = (lm.value === null || lm.value === undefined) ? "error" : (lm.quality || "good");
                     if (q === "good")  goodCount++;
                     if (q === "stale") staleCount++;
                     if (q === "error") errorCount++;
+                });
 
-                    // Row tint
-                    row.classList.toggle("is-stale", q === "stale");
-                    row.classList.toggle("is-error", q === "error");
+                // ── Reading tiles (the first OV_TILE_LIMIT only) ─────────
+                card.querySelectorAll("[data-ov-metric]").forEach((tile) => {
+                    const mkey    = tile.getAttribute("data-ov-metric");
+                    const m       = metrics[mkey];
+                    const valEl   = tile.querySelector("[data-ov-val]");
+                    const qualEl  = tile.querySelector("[data-ov-quality]");
+                    const trendEl = tile.querySelector("[data-ov-trend]");
 
-                    // Value
-                    if (valEl) {
-                        valEl.textContent = fmtVal(m.value);
-                        valEl.className = `ov-metric-val${q === "stale" ? " is-stale" : q === "error" ? " is-error" : ""}`;
+                    if (!m) {
+                        tile.classList.remove("is-stale", "is-error");
+                        if (valEl) valEl.textContent = "--";
+                        if (qualEl) qualEl.className = "ovc-tile-dot";
+                        return;
                     }
-
-                    // Sparkline
-                    if (sparkEl) {
-                        drawSparkline(sparkEl, samples[mkey] || [], q);
-                    }
-
-                    // Trend arrow
+                    const q = (m.value === null || m.value === undefined) ? "error" : (m.quality || "good");
+                    tile.classList.toggle("is-stale", q === "stale");
+                    tile.classList.toggle("is-error", q === "error");
+                    if (valEl) valEl.textContent = fmtVal(m.value);
                     if (trendEl) {
                         const trend = computeTrend(samples[mkey] || []);
                         trendEl.textContent = trend === "up" ? "↑" : trend === "down" ? "↓" : "";
                         trendEl.className   = `ov-trend ov-trend-${trend}`;
                     }
-
-                    // Quality dot
                     if (qualEl) {
-                        qualEl.className = `ov-quality-dot${q === "good" ? " is-good" : q === "stale" ? " is-stale" : " is-error"}`;
+                        qualEl.className = `ovc-tile-dot${q === "good" ? " is-good" : q === "stale" ? " is-stale" : " is-error"}`;
                     }
                 });
 
@@ -4245,10 +4225,10 @@ document.addEventListener("DOMContentLoaded", () => {
                         txt = live.error.message || `${live.error.type || "device error"}`;
                         isErr = true;
                     } else if (errorCount > 0) {
-                        txt = `${errorCount} reading${errorCount > 1 ? "s" : ""} errored`;
+                        txt = `${errorCount} reading${errorCount > 1 ? "s" : ""} not updating`;
                         isErr = true;
                     } else if (staleCount > 0) {
-                        txt = `${staleCount} reading${staleCount > 1 ? "s" : ""} stale`;
+                        txt = `${staleCount} reading${staleCount > 1 ? "s" : ""} running behind`;
                         isErr = false;
                     }
                     if (txt) {
@@ -4261,13 +4241,12 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
 
                 // ── Health bar ────────────────────────────────────────────
-                // If device has an error OR no metrics counted, health is 0 — not 100.
-                const pct = (live.error || live.status === "error")
+                const pct = deviceInError
                     ? 0
                     : totalCount > 0 ? Math.round((goodCount / totalCount) * 100) : 0;
                 const hPctEl   = card.querySelector("[data-ov-health-pct]");
                 const hBarEl   = card.querySelector("[data-ov-health-bar]");
-                if (hPctEl)  hPctEl.textContent  = `${pct}% health`;
+                if (hPctEl)  hPctEl.textContent  = `${pct}% healthy`;
                 if (hBarEl) {
                     hBarEl.style.width = `${pct}%`;
                     hBarEl.className   = `ov-health-bar-fill${pct < 70 ? " is-crit" : pct < 90 ? " is-warn" : ""}`;
@@ -4276,80 +4255,80 @@ document.addEventListener("DOMContentLoaded", () => {
         };
 
         // ── KPI Strip ─────────────────────────────────────────────────────
+        // Four tiles with distinct meanings:
+        //   devices — how many configured devices are currently reporting
+        //   fresh   — how many individual readings are updating right now
+        //   flags   — real anomaly-engine flags in the last 24 h (fetched)
+        //   quality — fresh readings as a % of all configured readings
+        let ovFlags24h = null;
+        let ovFlagsFetchedAt = 0;
+
+        const refreshFlags24h = async () => {
+            try {
+                const r = await fetch("/api/insights/events?window=24h");
+                if (!r.ok) return;
+                const d = await r.json();
+                if (!d.ok) return;
+                ovFlags24h = (d.events || [])
+                    .filter((ev) => (ev.event_type || "").startsWith("anomaly:"))
+                    .reduce((sum, ev) => sum + (ev._count || 1), 0);
+                ovFlagsFetchedAt = Date.now();
+            } catch (e) {
+                console.warn("[Insights] flags fetch failed:", e);
+            }
+        };
+
         const updateKPIs = () => {
             const kpi    = (k) => insightsShell.querySelector(`[data-ov-kpi="${k}"]`);
             const kpiSub = (k) => insightsShell.querySelector(`[data-ov-kpi-sub="${k}"]`);
 
-            const liveCount = ovLiveDevices.length;
+            // "Online" = actually reporting data — offline (unreachable) devices
+            // have a live entry too, but must not count here.
+            const liveCount = ovLiveDevices.filter((d) => d.status !== "offline").length;
             const devEl     = kpi("devices");
-            if (devEl) devEl.textContent = String(liveCount);
+            if (devEl) devEl.textContent = ovConfiguredCount > 0 ? `${liveCount}/${ovConfiguredCount}` : "--";
             const devSub = kpiSub("devices");
-            if (devSub) devSub.textContent = `of ${ovConfiguredCount} configured`;
+            if (devSub) devSub.textContent = liveCount === ovConfiguredCount && liveCount > 0
+                ? "all devices reporting"
+                : liveCount === 0 && ovConfiguredCount > 0
+                    ? "nothing reporting"
+                    : `of ${ovConfiguredCount} configured`;
 
-            // ── Data Quality: good readings / total metric slots ──────────────
-            // A metric counts as "good" only when:
-            //   • the device itself is ok (not error/offline/warning)
-            //   • the metric has an actual value (not null)
-            //   • PES quality field is "good"
-            // If a device is in error, ALL its metrics count as bad — even if
-            // the quality field still says "good" from the last successful read.
+            // Count individual readings: fresh (good) vs everything configured.
             let totalMetrics = 0, goodMetrics = 0;
-            for (const d of ovLiveDevices) {
-                const deviceOk = d.status === "ok" && !d.error;
-                const metrics  = Object.values(d.metrics || {});
-                if (metrics.length === 0) {
-                    // Device has no metric data at all — count as one bad slot
+            for (const device of ovConfigured) {
+                const live = ovLiveDevices.find((d) => d.source === device.source && d.device_id === device.device_id);
+                const deviceOk = live && live.status !== "error" && live.status !== "offline" && !live.error;
+                for (const m of (device.expected_metrics || [])) {
                     totalMetrics++;
-                } else {
-                    for (const m of metrics) {
-                        totalMetrics++;
-                        if (deviceOk && m.value !== null && m.value !== undefined && m.quality === "good") {
-                            goodMetrics++;
-                        }
+                    const lm = live && (live.metrics || {})[m.name];
+                    if (deviceOk && lm && lm.value !== null && lm.value !== undefined && lm.quality === "good") {
+                        goodMetrics++;
                     }
                 }
             }
-            const qualPct = ovConfiguredCount > 0
-                ? Math.round((goodMetrics / Math.max(totalMetrics, 1)) * 100)
-                : 0;
 
-            // ── System Health: devices fully operational / configured ──────────
-            // Distinct from data quality — measures device-level reachability.
-            const okDevices = ovLiveDevices.filter(
-                (d) => d.status === "ok" && !d.error &&
-                       !Object.values(d.metrics || {}).some(
-                           (m) => m.quality !== "good" || m.value === null || m.value === undefined
-                       )
-            ).length;
-            const healthPct = ovConfiguredCount > 0
-                ? Math.round((okDevices / ovConfiguredCount) * 100)
-                : 0;
+            const fEl = kpi("fresh");
+            if (fEl) fEl.textContent = totalMetrics > 0 ? `${goodMetrics}/${totalMetrics}` : "--";
+            const fSub = kpiSub("fresh");
+            if (fSub) fSub.textContent = goodMetrics === totalMetrics && totalMetrics > 0
+                ? "all readings healthy"
+                : "right now";
 
+            const flEl = kpi("flags");
+            if (flEl) flEl.textContent = ovFlags24h === null ? "--" : String(ovFlags24h);
+
+            const qualPct = totalMetrics > 0 ? Math.round((goodMetrics / totalMetrics) * 100) : 0;
             const qEl = kpi("quality");
-            if (qEl) qEl.textContent = ovConfiguredCount > 0 ? `${qualPct}%` : "--%";
+            if (qEl) qEl.textContent = totalMetrics > 0 ? `${qualPct}%` : "--%";
             const qBar = insightsShell.querySelector(`[data-ov-kpi-bar="quality"]`);
             if (qBar) {
                 qBar.style.width  = `${qualPct}%`;
                 qBar.className    = `ov-kpi-bar-fill${qualPct < 70 ? " is-hot" : qualPct < 90 ? " is-warm" : ""}`;
             }
 
-            const hEl = kpi("health");
-            if (hEl) hEl.textContent = ovConfiguredCount > 0 ? `${healthPct}%` : "--%";
-            const hBar = insightsShell.querySelector(`[data-ov-kpi-bar="health"]`);
-            if (hBar) {
-                hBar.style.width = `${healthPct}%`;
-                hBar.className   = `ov-kpi-bar-fill${healthPct < 70 ? " is-hot" : healthPct < 90 ? " is-warm" : ""}`;
-            }
-
-            // Anomalies count
-            const anCount = ovLiveDevices.filter((d) => {
-                if (d.status !== "ok" || d.error) return true;
-                return Object.values(d.metrics || {}).some(m => m.quality !== "good");
-            }).length;
-            const anEl  = kpi("anomalies");
-            if (anEl) anEl.textContent = String(anCount);
-            const anSub = kpiSub("anomalies");
-            if (anSub) anSub.textContent = anCount === 0 ? "All systems nominal" : `${anCount} device${anCount > 1 ? "s" : ""} affected`;
+            // Flags are cheap to keep roughly current (30 s cadence)
+            if (Date.now() - ovFlagsFetchedAt > 30_000) refreshFlags24h();
         };
 
         // ── Load live data → overlay on skeletons ──────────────────────────
@@ -4399,7 +4378,9 @@ document.addEventListener("DOMContentLoaded", () => {
             // ── State (key selections persisted across page navigations) ─────────
             let svSelectedKey = localStorage.getItem("metacrust.sv.selectedKey") || "";
             let svWindow      = localStorage.getItem("metacrust.sv.window")      || "1h";
-            let svChartData   = {};    // { metricName: { timestamps, avg, min, max, count } }
+            let svRange       = { mode: "window" };  // or { mode: "custom", from_ms, to_ms }
+            let svSeries      = null;  // { timestamps, avg, min, max } for the charted reading
+            let svAnoms       = [];    // anomaly events for this device in the charted range
             let svLastFetchMs = 0;     // throttle chart re-fetches to 60 s
             let svLastTabKeys = "";    // detect configured set changes
 
@@ -4407,33 +4388,36 @@ document.addEventListener("DOMContentLoaded", () => {
             const svDeviceTabs   = svPanel.querySelector("[data-sv-device-tabs]");
             const svDeviceHeader = svPanel.querySelector("[data-sv-device-header]");
             const svMetricList   = svPanel.querySelector("[data-sv-metric-list]");
-            const svChart        = svPanel.querySelector("[data-sv-chart]");
+            const svUplotWrap    = svPanel.querySelector("[data-sv-uplot]");
+            const svChartTitle   = svPanel.querySelector("[data-sv-chart-title]");
             const svChartEmpty   = svPanel.querySelector("[data-sv-chart-empty]");
-            const svLegend       = svPanel.querySelector("[data-sv-legend]");
-            const svStats        = svPanel.querySelector("[data-sv-stats]");
+            const svAnomDetail   = svPanel.querySelector("[data-sv-anom-detail]");
+            const svIssuesList   = svPanel.querySelector("[data-sv-issues-list]");
+            const svIssuesBadge  = svPanel.querySelector("[data-sv-issues-badge]");
+            const svIssuesPager  = svPanel.querySelector("[data-sv-issues-pager]");
+            const svDateFrom     = svPanel.querySelector("[data-sv-date-from]");
+            const svDateTo       = svPanel.querySelector("[data-sv-date-to]");
+            const svDateApply    = svPanel.querySelector("[data-sv-date-apply]");
             const svWindowBar    = svPanel.querySelector("[data-sv-window-bar]");
             const svExportBtn    = svPanel.querySelector("[data-sv-export-btn]");
             const svNoDevice     = svPanel.querySelector("[data-sv-no-device]");
             const svBody         = svPanel.querySelector("[data-sv-body]");
 
-            // ── Chart colours (up to 4 overlaid metrics) ──────────────────────
-            const SV_COLORS = ["#39d0c8", "#f0a64b", "#a78bfa", "#fb7185"];
-
-            // ── Metric toggle persistence (localStorage) ───────────────────────
-            const SV_LS_KEY = "metacrust.sv.toggles";
-            const svToggles = (() => {
-                try { return JSON.parse(localStorage.getItem(SV_LS_KEY) || "{}"); }
+            // ── Charted-reading selection (one at a time, remembered per device) ─
+            const SV_METRIC_LS = "metacrust.sv.metricSel";
+            const svMetricSel = (() => {
+                try { return JSON.parse(localStorage.getItem(SV_METRIC_LS) || "{}"); }
                 catch { return {}; }
             })();
-            const svSaveToggles = () => {
-                try { localStorage.setItem(SV_LS_KEY, JSON.stringify(svToggles)); } catch {}
+            const svSelectedMetric = () => {
+                const device = ovConfigured.find((d) => `${d.source}:${d.device_id}` === svSelectedKey);
+                const names = (device?.expected_metrics || []).map((m) => m.name);
+                const saved = svMetricSel[svSelectedKey];
+                return names.includes(saved) ? saved : (names[0] || "");
             };
-            const svGetToggle = (dKey, mName) =>
-                (svToggles[dKey] || {})[mName] !== false;   // default ON
-            const svSetToggle = (dKey, mName, val) => {
-                if (!svToggles[dKey]) svToggles[dKey] = {};
-                svToggles[dKey][mName] = val;
-                svSaveToggles();
+            const svSetMetric = (name) => {
+                svMetricSel[svSelectedKey] = name;
+                try { localStorage.setItem(SV_METRIC_LS, JSON.stringify(svMetricSel)); } catch {}
             };
 
             // ── Device tabs ────────────────────────────────────────────────────
@@ -4470,7 +4454,8 @@ document.addEventListener("DOMContentLoaded", () => {
                         localStorage.setItem("metacrust.sv.selectedKey", svSelectedKey);
                         svDeviceTabs.querySelectorAll("[data-sv-key]").forEach((b) => b.classList.remove("is-current"));
                         btn.classList.add("is-current");
-                        svChartData   = {};
+                        svSeries      = null;
+                        svAnoms       = [];
                         svLastFetchMs = 0;
                         svStatsData       = {};
                         svStatsLastFetch  = 0;
@@ -4509,6 +4494,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
                 const metrics = device.expected_metrics || [];
                 const deviceInError = !!(live?.error || live?.status === "error");
+                const selected = svSelectedMetric();
                 svMetricList.innerHTML = metrics.map((m) => {
                     const lm   = (live?.metrics || {})[m.name] || {};
                     const val  = lm.value !== undefined ? fmtVal(lm.value) : "--";
@@ -4519,10 +4505,9 @@ document.addEventListener("DOMContentLoaded", () => {
                                : valueIsNull   ? "error"
                                : lm.quality    ? lm.quality
                                : live          ? "good" : "none";
-                    const on   = svGetToggle(svSelectedKey, m.name);
                     const lbl  = displayLabel(m.name);
                     return `
-                        <div class="sv-metric-row" data-sv-row="${m.name}">
+                        <div class="sv-metric-row is-selectable${m.name === selected ? " is-selected" : ""}" data-sv-row="${m.name}" role="button" tabindex="0">
                             <span class="sv-quality-dot${q === "good" ? " is-good" : q === "stale" ? " is-stale" : q === "error" ? " is-error" : ""}"></span>
                             <span class="sv-metric-name" title="${lbl}">${lbl}</span>
                             <div class="sv-metric-reading">
@@ -4530,20 +4515,23 @@ document.addEventListener("DOMContentLoaded", () => {
                                 <span class="sv-metric-unit">${unit}</span>
                             </div>
                             <span class="sv-quality-pill is-${q}">${q === "none" ? "—" : q}</span>
-                            <button class="sv-toggle-btn${on ? " is-on" : ""}" data-sv-toggle="${m.name}">${on ? "ON" : "OFF"}</button>
                         </div>`;
                 }).join("");
 
-                svMetricList.querySelectorAll("[data-sv-toggle]").forEach((btn) => {
-                    btn.addEventListener("click", () => {
-                        const mName = btn.getAttribute("data-sv-toggle");
-                        const curr  = svGetToggle(svSelectedKey, mName);
-                        svSetToggle(svSelectedKey, mName, !curr);
-                        btn.classList.toggle("is-on", !curr);
-                        btn.textContent = !curr ? "ON" : "OFF";
-                        svChartData   = {};
+                svMetricList.querySelectorAll("[data-sv-row]").forEach((row) => {
+                    const pick = () => {
+                        const mName = row.getAttribute("data-sv-row");
+                        if (mName === svSelectedMetric()) return;
+                        svSetMetric(mName);
+                        svMetricList.querySelectorAll("[data-sv-row]").forEach((r) => r.classList.remove("is-selected"));
+                        row.classList.add("is-selected");
+                        svSeries = null;
                         svLastFetchMs = 0;
                         svFetchAndRenderChart();
+                    };
+                    row.addEventListener("click", pick);
+                    row.addEventListener("keydown", (e) => {
+                        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); }
                     });
                 });
             };
@@ -4559,9 +4547,9 @@ document.addEventListener("DOMContentLoaded", () => {
                     const bText  = badge?.querySelector("span:last-child");
                     const dStatus = live.status || "ok";
                     if (badge) {
-                        const sc = dStatus === "ok" ? "ov-status-live" : dStatus === "warning" ? "ov-status-warning" : "ov-status-error";
+                        const sc = dStatus === "ok" ? "ov-status-live" : dStatus === "warning" ? "ov-status-warning" : dStatus === "error" ? "ov-status-error" : "ov-status-offline";
                         badge.className = `ov-status-badge ${sc}`;
-                        if (bText) bText.textContent = dStatus === "ok" ? "Live" : dStatus === "warning" ? "Warning" : "Error";
+                        if (bText) bText.textContent = dStatus === "ok" ? "Live" : dStatus === "warning" ? "Warning" : dStatus === "error" ? "Error" : "Offline";
                     }
                 }
 
@@ -4590,477 +4578,549 @@ document.addEventListener("DOMContentLoaded", () => {
                 });
             };
 
-            // ── History fetch ──────────────────────────────────────────────────
+            // ══════════════════════════════════════════════════════════════════════
+            //  Chart — one reading at a time on a real-unit uPlot chart (same
+            //  engine as the Monitor page) with anomaly markers overlaid.
+            //  Drag = zoom, double-click = reset, click a marker = detail.
+            // ══════════════════════════════════════════════════════════════════════
+            const SV_SEV_COLOR = { Critical: "#ff6b6b", Warning: "#f0a64b", Info: "#39d0c8" };
+            let svPlot         = null;   // live uPlot instance
+            let svPlotContextKey = null; // device|metric|range this instance was built for
+            let svMarkers      = [];     // hit-test list: {x, y, ev}
+            let svSelectedAnom = null;   // event id currently shown in the detail panel
+            let svIssuesPage      = 0;
+            let svExpandedIssues  = new Set(); // issue-group keys expanded inline in the list
+
+            const svDevice = () => ovConfigured.find((d) => `${d.source}:${d.device_id}` === svSelectedKey);
+
+            const svRangeParams = (params) => {
+                if (svRange.mode === "custom") {
+                    params.set("from_ms", String(svRange.from_ms));
+                    params.set("to_ms", String(svRange.to_ms));
+                } else {
+                    params.set("window", svWindow);
+                }
+                return params;
+            };
+
+            // ── Fetch history for the selected reading + anomalies for the range ─
             const svFetchAndRenderChart = async () => {
                 if (!svSelectedKey) return;
-                const device = ovConfigured.find((d) => `${d.source}:${d.device_id}` === svSelectedKey);
-                if (!device) return;
-
-                const activeMetrics = (device.expected_metrics || [])
-                    .filter((m) => svGetToggle(svSelectedKey, m.name))
-                    .slice(0, 4)
-                    .map((m) => m.name);
-
-                if (activeMetrics.length === 0) {
-                    svChartData = {};
-                    svRenderChart();
-                    svRenderStats();
-                    return;
-                }
+                const device = svDevice();
+                const metric = svSelectedMetric();
+                if (!device || !metric) return;
 
                 const [src, ...didParts] = svSelectedKey.split(":");
-                const did    = didParts.join(":");
-                const params = new URLSearchParams({
-                    source:    src,
-                    device_id: did,
-                    metrics:   activeMetrics.join(","),
-                    window:    svWindow,
-                });
+                const did = didParts.join(":");
+                const histParams = svRangeParams(new URLSearchParams({ source: src, device_id: did, metrics: metric }));
+                const anomParams = svRangeParams(new URLSearchParams({ source: src, device_id: did }));
 
                 try {
-                    const r = await fetch(`/api/insights/history?${params}`);
-                    if (!r.ok) return;
-                    const d = await r.json();
-                    if (!d.ok) return;
-                    svChartData   = d.metrics || {};
+                    const [histRes, anomRes] = await Promise.all([
+                        fetch(`/api/insights/history?${histParams}`),
+                        fetch(`/api/insights/sensor-anomalies?${anomParams}`),
+                    ]);
+                    const hist = await histRes.json();
+                    const anom = await anomRes.json();
+                    if (!hist.ok) return;
+                    svSeries = (hist.metrics || {})[metric] || null;
+                    svAnoms  = (anom.ok && anom.events) || [];
                     svLastFetchMs = Date.now();
                 } catch (e) {
-                    console.warn("[Sensors] history fetch failed:", e);
+                    console.warn("[Sensors] chart fetch failed:", e);
                     return;
                 }
-                svRenderChart();
-                svRenderStats();
+                svRenderPlot();
+                svRenderIssues();
             };
 
-            // ═══════════════════════════════════════════════════════════════════
-            //  Core chart drawing — shared by small chart + expanded modal
-            // ═══════════════════════════════════════════════════════════════════
-            const svDrawIntoSvg = (svgEl, data, visMetrics, zStart = 0, zEnd = 1) => {
-                const active = visMetrics.filter((k) => (data[k]?.timestamps?.length || 0) > 1);
-                if (!active.length) return null;
+            // ── uPlot rendering ─────────────────────────────────────────────────
+            const svPlotDestroy = () => {
+                if (svPlot) { try { svPlot.destroy(); } catch {} svPlot = null; }
+                svMarkers = [];
+                svPlotContextKey = null;
+            };
 
-                // Stable color map: color is determined by position in the FULL data keyset,
-                // so colors never shift when individual metrics are toggled off.
-                const allDataKeys = Object.keys(data);
-                const colorMap = {};
-                allDataKeys.forEach((k, i) => { colorMap[k] = SV_COLORS[i % SV_COLORS.length]; });
+            const svUnitForMetric = (name) => {
+                const device = svDevice();
+                const m = (device?.expected_metrics || []).find((x) => x.name === name);
+                return (m?.unit || "").trim();
+            };
 
-                const W = svgEl.clientWidth  || 600;
-                const H = svgEl.clientHeight || 260;
-                const padL = 48, padR = 14, padT = 14, padB = 34;
-                const cW = W - padL - padR;
-                const cH = H - padT - padB;
+            const svMetricUnit = () => {
+                return svUnitForMetric(svSelectedMetric());
+            };
 
-                // Full time range, then apply zoom window
-                const allTs     = active.flatMap((k) => data[k].timestamps);
-                const gMin = Math.min(...allTs), gMax = Math.max(...allTs);
-                const gRng      = gMax - gMin || 1;
-                const visMin    = gMin + zStart * gRng;
-                const visMax    = gMin + zEnd   * gRng;
-                const visRng    = visMax - visMin || 1;
-                const inView    = (ts) => ts >= visMin - visRng * 0.01 && ts <= visMax + visRng * 0.01;
-                const toX       = (ts) => padL + ((ts - visMin) / visRng) * cW;
-
-                // Per-metric Y scale (each metric normalised to its visible range)
-                const mScale = {};
-                for (const k of active) {
-                    const vals = data[k].timestamps.map((ts, i) => inView(ts) ? data[k].avg[i] : null).filter((v) => v !== null);
-                    const mn = vals.length ? Math.min(...vals) : 0;
-                    const mx = vals.length ? Math.max(...vals) : 1;
-                    mScale[k] = { min: mn, rng: mx - mn || 1, max: mx };
-                }
-                const toY = (k, v) => padT + cH - ((v - mScale[k].min) / mScale[k].rng) * cH;
-
-                const parts = [];
-
-                // Grid lines
-                for (let i = 0; i <= 4; i++) {
-                    const y = padT + (i / 4) * cH;
-                    parts.push(`<line x1="${padL}" y1="${y.toFixed(1)}" x2="${(W - padR).toFixed(1)}" y2="${y.toFixed(1)}" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>`);
-                }
-
-                // Y axis labels (for first metric only — shows normalised %)
-                for (let i = 0; i <= 4; i++) {
-                    const y   = padT + (i / 4) * cH;
-                    const pct = 100 - i * 25;
-                    parts.push(`<text x="${padL - 4}" y="${(y + 3.5).toFixed(1)}" fill="rgba(157,179,187,0.4)" font-size="9" text-anchor="end" font-family="monospace">${pct}%</text>`);
-                }
-
-                // X axis time labels
-                const lblCount = Math.min(6, Math.max(3, Math.floor(W / 110)));
-                for (let i = 0; i <= lblCount; i++) {
-                    const ts  = visMin + (i / lblCount) * visRng;
-                    const x   = padL + (i / lblCount) * cW;
-                    const dt  = new Date(ts);
-                    const lbl = dt.getHours().toString().padStart(2, "0") + ":" + dt.getMinutes().toString().padStart(2, "0");
-                    parts.push(`<text x="${x.toFixed(1)}" y="${H - 9}" fill="rgba(157,179,187,0.5)" font-size="10" text-anchor="middle" font-family="monospace">${lbl}</text>`);
-                }
-
-                // Crosshair (hidden by default)
-                parts.push(`<line class="sv-xhair" x1="-9" y1="${padT}" x2="-9" y2="${padT + cH}" stroke="rgba(255,255,255,0.22)" stroke-width="1" stroke-dasharray="3,2" pointer-events="none"/>`);
-
-                // Per-metric area + line
-                active.forEach((k) => {
-                    const color  = colorMap[k];
-                    const series = data[k];
-                    const pts    = series.timestamps
-                        .map((ts, i) => (series.avg[i] !== null && inView(ts)) ? { x: toX(ts), y: toY(k, series.avg[i]), ts, v: series.avg[i] } : null)
-                        .filter(Boolean);
-                    if (pts.length < 2) return;
-                    const lineD = pts.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
-                    const areaD = `${lineD} L${pts[pts.length-1].x.toFixed(1)},${(padT+cH).toFixed(1)} L${pts[0].x.toFixed(1)},${(padT+cH).toFixed(1)}Z`;
-                    parts.push(`<path d="${areaD}" fill="${color}" fill-opacity="0.07" stroke="none"/>`);
-                    parts.push(`<path d="${lineD}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/>`);
-                });
-
-                svgEl.setAttribute("viewBox", `0 0 ${W} ${H}`);
-                svgEl.innerHTML = parts.join("");
-
-                // Return state object for hit-testing (tooltip)
-                return {
-                    active, mScale, colorMap, visMin, visMax, visRng, padL, cW, gMin, gMax, gRng,
-                    hitTest(xFrac) {
-                        const ts = visMin + xFrac * visRng;
-                        const result = {};
-                        for (const k of active) {
-                            const s = data[k];
-                            let best = null, bestD = Infinity;
-                            for (let i = 0; i < s.timestamps.length; i++) {
-                                if (!inView(s.timestamps[i])) continue;
-                                const d = Math.abs(s.timestamps[i] - ts);
-                                if (d < bestD) { bestD = d; best = { ts: s.timestamps[i], v: s.avg[i], min: s.min[i], max: s.max[i] }; }
+            const svMarkersPlugin = () => ({
+                hooks: {
+                    draw: (u) => {
+                        svMarkers = [];
+                        const metric = svSelectedMetric();
+                        const events = svAnoms.filter((ev) => ev.metric === metric || (!ev.metric && ev.alarm_name));
+                        if (!events.length) return;
+                        const ctx = u.ctx;
+                        const [xMin, xMax] = u.scales.x ? [u.scales.x.min, u.scales.x.max] : [null, null];
+                        ctx.save();
+                        events.forEach((ev) => {
+                            const ts = ev.ts_ms / 1000;
+                            if (xMin !== null && (ts < xMin || ts > xMax)) return;
+                            // Always anchor to the LINE's own value at this moment,
+                            // never the event's raw instant reading: the line is a
+                            // bucket average, so a raw reading can legitimately sit
+                            // off the line by a bucket's worth of smoothing (worse
+                            // at wider zoom, where each bucket spans more samples).
+                            // The exact raw reading still shows in the detail text.
+                            let val = svSeriesValueAt(ts);
+                            if (val === null) return;
+                            const yMin = u.scales.y.min, yMax = u.scales.y.max;
+                            if (Number.isFinite(yMin) && Number.isFinite(yMax)) val = Math.max(yMin, Math.min(yMax, val));
+                            const color = SV_SEV_COLOR[ev.severity] || SV_SEV_COLOR.Info;
+                            const isSel = svSelectedAnom !== null && svAnomId(ev) === svSelectedAnom;
+                            const r = isSel ? 8 : 6;
+                            let x = u.valToPos(ts, "x", true);
+                            let y = u.valToPos(val, "y", true);
+                            // Belt-and-braces: never let a marker paint outside the
+                            // plot box itself, whatever caused the value/scale to
+                            // disagree (a spike value the auto-range didn't expect,
+                            // a stale scale on the very first draw, etc).
+                            const pad = r + 6;
+                            x = Math.max(u.bbox.left + pad, Math.min(u.bbox.left + u.bbox.width - pad, x));
+                            y = Math.max(u.bbox.top + pad, Math.min(u.bbox.top + u.bbox.height - pad, y));
+                            ctx.beginPath();
+                            ctx.fillStyle = color + "2e";
+                            ctx.arc(x, y, r + 5, 0, Math.PI * 2);
+                            ctx.fill();
+                            ctx.beginPath();
+                            ctx.fillStyle = color;
+                            ctx.moveTo(x, y - r); ctx.lineTo(x + r, y); ctx.lineTo(x, y + r); ctx.lineTo(x - r, y);
+                            ctx.closePath();
+                            ctx.fill();
+                            // Always outline the diamond so it reads clearly against
+                            // the line/fill underneath it, not just when selected.
+                            ctx.lineWidth = 1.25;
+                            ctx.strokeStyle = "rgba(10,20,24,0.85)";
+                            ctx.stroke();
+                            if (isSel) {
+                                ctx.beginPath();
+                                ctx.strokeStyle = "#fff";
+                                ctx.lineWidth = 1.5;
+                                ctx.arc(x, y, r + 3, 0, Math.PI * 2);
+                                ctx.stroke();
                             }
-                            if (best) result[k] = best;
-                        }
-                        return result;
+                            svMarkers.push({ x, y, ev });
+                        });
+                        ctx.restore();
                     },
-                };
+                },
+            });
+
+            const svAnomId = (ev) => `${ev.ts_ms}|${ev.metric}|${ev.detector}`;
+
+            // The full extent of whatever is currently loaded — pan/zoom is
+            // clamped to this so it can never run out of data or fail to
+            // reset, unlike a server-refetch-on-zoom design would.
+            const svFullRange = () => {
+                const ts = svSeries?.timestamps;
+                return (ts && ts.length >= 2) ? [ts[0] / 1000, ts[ts.length - 1] / 1000] : null;
             };
 
-            // ── Hover tooltip handler ─────────────────────────────────────────
-            const svAttachHover = (wrapEl, svgEl, ttEl, getState) => {
-                if (!wrapEl || !svgEl || !ttEl) return;
-                const onMove = (e) => {
-                    const st = getState();
-                    if (!st) { ttEl.style.display = "none"; return; }
-                    const svgRect = svgEl.getBoundingClientRect();
-                    const rawX    = e.clientX - svgRect.left;
-                    const xFrac   = Math.max(0, Math.min(1, (rawX - 48) / (svgRect.width - 62)));
-                    const hit     = st.hitTest(xFrac);
-                    if (!Object.keys(hit).length) { ttEl.style.display = "none"; return; }
+            // Pure client-side pan/zoom over the already-loaded series, same
+            // approach as the Monitor tab's anomaly charts (wheelPanZoom):
+            // scroll to zoom on the cursor, drag to pan, double-click to reset
+            // — all clamped to the loaded data, no network round trip. That's
+            // what makes "zoom back out" always work and rules out ever
+            // zooming past real data into an empty result.
+            const svPanZoomPlugin = (getFull) => ({
+                hooks: {
+                    ready: (u) => {
+                        const over = u.over;
+                        over.style.cursor = "grab";
+                        const clampToFull = (nMin, nMax) => {
+                            const full = getFull();
+                            if (!full) return [nMin, nMax];
+                            const range = nMax - nMin;
+                            if (range >= full[1] - full[0]) return [full[0], full[1]];
+                            if (nMin < full[0]) { nMin = full[0]; nMax = nMin + range; }
+                            if (nMax > full[1]) { nMax = full[1]; nMin = nMax - range; }
+                            return [nMin, nMax];
+                        };
+                        over.addEventListener("wheel", (e) => {
+                            e.preventDefault();
+                            const rect = over.getBoundingClientRect();
+                            const curMin = u.scales.x.min, curMax = u.scales.x.max;
+                            const range = curMax - curMin;
+                            const cursorVal = u.posToVal(e.clientX - rect.left, "x");
+                            const leftPct = (cursorVal - curMin) / range;
+                            const factor = e.deltaY < 0 ? 0.8 : 1.25;
+                            const newRange = range * factor;
+                            const [nMin, nMax] = clampToFull(cursorVal - leftPct * newRange, cursorVal - leftPct * newRange + newRange);
+                            u.setScale("x", { min: nMin, max: nMax });
+                        }, { passive: false });
+                        over.addEventListener("mousedown", (e) => {
+                            if (e.button !== 0) return;
+                            const rect = over.getBoundingClientRect();
+                            const startX = e.clientX;
+                            const min0 = u.scales.x.min, max0 = u.scales.x.max;
+                            const perPx = (max0 - min0) / rect.width;
+                            over.__dragged = false;
+                            over.style.cursor = "grabbing";
+                            const move = (e2) => {
+                                const dx = e2.clientX - startX;
+                                if (Math.abs(dx) > 3) over.__dragged = true;
+                                const d = dx * perPx;
+                                const [nMin, nMax] = clampToFull(min0 - d, max0 - d);
+                                u.setScale("x", { min: nMin, max: nMax });
+                            };
+                            const up = () => {
+                                over.style.cursor = "grab";
+                                document.removeEventListener("mousemove", move);
+                                document.removeEventListener("mouseup", up);
+                            };
+                            document.addEventListener("mousemove", move);
+                            document.addEventListener("mouseup", up);
+                        });
+                        over.addEventListener("dblclick", () => {
+                            const full = getFull();
+                            if (full) u.setScale("x", { min: full[0], max: full[1] });
+                        });
+                    },
+                },
+            });
 
-                    const xhair = svgEl.querySelector(".sv-xhair");
-                    if (xhair) { const cx = rawX.toFixed(1); xhair.setAttribute("x1", cx); xhair.setAttribute("x2", cx); }
-
-                    const firstTs = Object.values(hit)[0]?.ts;
-                    const dt = firstTs ? new Date(firstTs) : null;
-                    const hdr = dt
-                        ? dt.toLocaleDateString([], { month: "short", day: "numeric" }) + "  " + dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-                        : "";
-                    const rows = st.active.map((k) => {
-                        const h = hit[k]; if (!h) return "";
-                        const color = st.colorMap?.[k] || SV_COLORS[0];
-                        const pct = Math.round(((h.v - st.mScale[k].min) / st.mScale[k].rng) * 100);
-                        return `<div class="sv-tt-row"><span class="sv-tt-dot" style="background:${color}"></span><span class="sv-tt-label">${displayLabel(k)}</span><span class="sv-tt-val">${fmtVal(h.v)}</span><span class="sv-tt-pct">${pct}%</span></div>`;
-                    }).join("");
-                    ttEl.innerHTML = `<div class="sv-tt-hdr">${hdr}</div>${rows}`;
-                    ttEl.style.display = "block";
-
-                    const wrapRect = wrapEl.getBoundingClientRect();
-                    const lx = e.clientX - wrapRect.left + 14;
-                    const flip = lx + 175 > wrapRect.width;
-                    ttEl.style.left = `${flip ? lx - 190 : lx}px`;
-                    ttEl.style.top  = `${Math.max(0, e.clientY - wrapRect.top - 20)}px`;
-                };
-                wrapEl.addEventListener("mousemove", onMove);
-                wrapEl.addEventListener("mouseleave", () => {
-                    ttEl.style.display = "none";
-                    const xhair = svgEl.querySelector(".sv-xhair");
-                    if (xhair) { xhair.setAttribute("x1", "-9"); xhair.setAttribute("x2", "-9"); }
+            const svSeriesValueAt = (tsSec) => {
+                if (!svSeries || !svSeries.timestamps?.length) return null;
+                let best = null, bestD = Infinity;
+                svSeries.timestamps.forEach((t, i) => {
+                    const d = Math.abs(t / 1000 - tsSec);
+                    if (d < bestD && svSeries.avg[i] !== null) { bestD = d; best = svSeries.avg[i]; }
                 });
+                return best;
             };
 
-            // ── Small chart render ─────────────────────────────────────────────
-            // Inject tooltip overlay + expand button once
-            const svChartWrap = svPanel.querySelector(".sv-chart-wrap");
-            let svSmallTt = null, svExpandBtn = null;
-            if (svChartWrap) {
-                svSmallTt = document.createElement("div");
-                svSmallTt.className = "sv-tooltip";
-                svSmallTt.style.display = "none";
-                svChartWrap.appendChild(svSmallTt);
+            const svRenderPlot = () => {
+                if (!svUplotWrap) return;
+                const metric = svSelectedMetric();
+                const unit = svMetricUnit();
+                if (svChartTitle) svChartTitle.textContent = `${displayLabel(metric)}${unit ? ` (${unit})` : ""}`;
 
-                svExpandBtn = document.createElement("button");
-                svExpandBtn.className = "sv-expand-btn";
-                svExpandBtn.title = "Expand / fullscreen";
-                svExpandBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1 5V1h4M9 1h4v4M13 9v4H9M5 13H1V9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
-                svChartWrap.appendChild(svExpandBtn);
-            }
-
-            let svSmallChartState = null;
-            svAttachHover(svChartWrap, svChart, svSmallTt, () => svSmallChartState);
-
-            const svRenderChart = () => {
-                if (!svChart) return;
-                const active = Object.keys(svChartData).filter((k) => (svChartData[k]?.timestamps?.length || 0) > 1);
-                if (active.length === 0) {
-                    svChart.innerHTML = "";
-                    svSmallChartState = null;
+                if (typeof uPlot === "undefined") {
+                    svPlotDestroy();
                     svChartEmpty?.classList.remove("ov-hidden");
-                    if (svLegend) svLegend.innerHTML = "";
+                    if (svChartEmpty) svChartEmpty.textContent = "Chart library failed to load — refresh the page.";
+                    return;
+                }
+                if (!svSeries || (svSeries.timestamps || []).length < 2) {
+                    svPlotDestroy();
+                    svHideAnomDetail();
+                    svUplotWrap.innerHTML = "";
+                    svUplotWrap.classList.add("ov-hidden");
+                    svChartEmpty?.classList.remove("ov-hidden");
+                    if (svChartEmpty) {
+                        // Don't dead-end: say when data last existed and offer a
+                        // one-click jump there (device may be offline right now).
+                        const live = ovLiveDevices.find((d) => `${d.source}:${d.device_id}` === svSelectedKey);
+                        const lastTs = live?.timestamp_ms || 0;
+                        const rangeLabel = svRange.mode === "custom" ? "between the selected dates" : `in the last ${svWindow}`;
+                        svChartEmpty.innerHTML = `
+                            <p class="sv-empty-title">No readings ${rangeLabel}.</p>
+                            ${lastTs
+                                ? `<p class="sv-empty-sub">Last data was received ${new Date(lastTs).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}.</p>
+                                   <button class="sv-win-btn sv-empty-jump" data-sv-jump-latest>Show latest available data</button>`
+                                : `<p class="sv-empty-sub">Waiting for the first readings from this device…</p>`}`;
+                        svChartEmpty.querySelector("[data-sv-jump-latest]")?.addEventListener("click", () => {
+                            svRange = { mode: "custom", from_ms: lastTs - 6 * 3600_000, to_ms: lastTs + 60_000 };
+                            svSyncRangeBar();
+                            svSeries = null;
+                            svLastFetchMs = 0;
+                            svIssuesPage = 0;
+                            svExpandedIssues.clear();
+                            svFetchAndRenderChart();
+                        });
+                    }
                     return;
                 }
                 svChartEmpty?.classList.add("ov-hidden");
-                svSmallChartState = svDrawIntoSvg(svChart, svChartData, active, 0, 1);
-                if (svLegend && svSmallChartState) {
-                    const cm = svSmallChartState.colorMap;
-                    svLegend.innerHTML = active.map((k) =>
-                        `<span class="sv-legend-item"><span class="sv-legend-dot" style="background:${cm[k]}"></span>${displayLabel(k)}</span>`
-                    ).join("");
-                }
-            };
+                svUplotWrap.classList.remove("ov-hidden");
 
-            // ── Expanded modal ─────────────────────────────────────────────────
-            let svModal        = null;
-            let svModalVisible = new Set();
-            let svZoomStart    = 0;
-            let svZoomEnd      = 1;
-            let svModalState   = null;
+                const xs  = svSeries.timestamps.map((t) => t / 1000);
+                const avg = svSeries.avg;
+                const data = [xs, avg];
 
-            const svBuildModal = () => {
-                if (svModal) return;
-                svModal = document.createElement("div");
-                svModal.className = "sv-chart-modal";
-                svModal.innerHTML = `
-                    <div class="sv-modal-inner">
-                        <header class="sv-modal-head">
-                            <span class="sv-modal-device-name" data-sv-modal-dev></span>
-                            <span class="sv-modal-window-lbl" data-sv-modal-win-lbl></span>
-                            <div class="sv-modal-line-btns" data-sv-modal-line-btns></div>
-                            <button class="sv-modal-close-btn" data-sv-modal-close>✕</button>
-                        </header>
-                        <div class="sv-modal-chart-area" data-sv-modal-area>
-                            <svg class="sv-modal-svg" data-sv-modal-svg preserveAspectRatio="none"></svg>
-                            <div class="sv-modal-tt" data-sv-modal-tt></div>
-                        </div>
-                        <footer class="sv-modal-foot">
-                            <div class="sv-zoom-ctrls">
-                                <button class="sv-zoom-btn" data-sv-zi>＋</button>
-                                <button class="sv-zoom-btn" data-sv-zo>－</button>
-                                <button class="sv-zoom-reset-btn" data-sv-zr>Reset zoom</button>
-                            </div>
-                            <div class="sv-minimap" data-sv-minimap>
-                                <div class="sv-minimap-full" data-sv-mini-full></div>
-                                <div class="sv-minimap-win"  data-sv-mini-win></div>
-                            </div>
-                        </footer>
-                    </div>`;
-                document.body.appendChild(svModal);
-
-                const modalSvg  = svModal.querySelector("[data-sv-modal-svg]");
-                const modalArea = svModal.querySelector("[data-sv-modal-area]");
-                const modalTt   = svModal.querySelector("[data-sv-modal-tt]");
-                const lineBtns  = svModal.querySelector("[data-sv-modal-line-btns]");
-                const miniWin   = svModal.querySelector("[data-sv-mini-win]");
-                const winLbl    = svModal.querySelector("[data-sv-modal-win-lbl]");
-
-                const redraw = () => {
-                    const vis = [...svModalVisible];
-                    svModalState = svDrawIntoSvg(modalSvg, svChartData, vis, svZoomStart, svZoomEnd);
-                    if (miniWin) {
-                        miniWin.style.left  = `${svZoomStart * 100}%`;
-                        miniWin.style.width = `${(svZoomEnd - svZoomStart) * 100}%`;
-                    }
-                    if (winLbl && svModalState) {
-                        const fmtTs = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-                        const vMin  = svModalState.gMin + svZoomStart * svModalState.gRng;
-                        const vMax  = svModalState.gMin + svZoomEnd   * svModalState.gRng;
-                        winLbl.textContent = `${fmtTs(vMin)} – ${fmtTs(vMax)}`;
-                    }
-                };
-
-                const buildLineBtns = () => {
-                    if (!lineBtns) return;
-                    const active = Object.keys(svChartData).filter((k) => (svChartData[k]?.timestamps?.length || 0) > 1);
-                    svModalVisible = new Set(active);
-                    // Stable color map so buttons always match the chart lines
-                    const cm = {};
-                    Object.keys(svChartData).forEach((k, i) => { cm[k] = SV_COLORS[i % SV_COLORS.length]; });
-                    lineBtns.innerHTML = active.map((k) => {
-                        const c = cm[k];
-                        return `<button class="sv-modal-line-btn is-on" data-mline="${k}"><span class="sv-modal-line-dot" style="background:${c}"></span>${displayLabel(k)}</button>`;
-                    }).join("");
-                    lineBtns.querySelectorAll("[data-mline]").forEach((btn) => {
-                        btn.addEventListener("click", () => {
-                            const k = btn.getAttribute("data-mline");
-                            if (svModalVisible.has(k)) {
-                                if (svModalVisible.size > 1) { svModalVisible.delete(k); btn.classList.remove("is-on"); }
-                            } else { svModalVisible.add(k); btn.classList.add("is-on"); }
-                            redraw();
-                        });
-                    });
-                };
-                svModal._buildLineBtns = buildLineBtns;
-                svModal._redraw        = redraw;
-
-                svAttachHover(modalArea, modalSvg, modalTt, () => svModalState);
-
-                // Mouse wheel zoom
-                modalArea.addEventListener("wheel", (e) => {
-                    e.preventDefault();
-                    const rng = svZoomEnd - svZoomStart;
-                    const factor = e.deltaY > 0 ? 1.3 : 0.77;
-                    const newRng = Math.max(0.05, Math.min(1, rng * factor));
-                    const r      = modalArea.getBoundingClientRect();
-                    const frac   = (e.clientX - r.left) / r.width;
-                    const center = svZoomStart + frac * rng;
-                    svZoomStart = Math.max(0, center - newRng * frac);
-                    svZoomEnd   = Math.min(1, svZoomStart + newRng);
-                    if (svZoomEnd > 1) { svZoomStart = Math.max(0, 1 - newRng); svZoomEnd = 1; }
-                    redraw();
-                }, { passive: false });
-
-                // Drag to pan
-                let dragX = null, dZS = 0, dZE = 1;
-                modalArea.addEventListener("mousedown", (e) => {
-                    if (e.button !== 0) return;
-                    dragX = e.clientX; dZS = svZoomStart; dZE = svZoomEnd;
-                    modalArea.style.cursor = "grabbing";
-                });
-                document.addEventListener("mousemove", (e) => {
-                    if (dragX === null) return;
-                    const r   = modalArea.getBoundingClientRect();
-                    const dx  = (dragX - e.clientX) / r.width;
-                    const rng = dZE - dZS;
-                    let ns = dZS + dx * rng * 3, ne = dZE + dx * rng * 3;
-                    if (ns < 0) { ne += -ns; ns = 0; }
-                    if (ne > 1) { ns -= ne - 1; ne = 1; }
-                    svZoomStart = Math.max(0, ns); svZoomEnd = Math.min(1, ne);
-                    redraw();
-                });
-                document.addEventListener("mouseup", () => { dragX = null; if (modalArea) modalArea.style.cursor = ""; });
-
-                // Minimap click
-                const miniFull = svModal.querySelector("[data-sv-mini-full]");
-                if (miniFull) {
-                    miniFull.parentElement.addEventListener("click", (e) => {
-                        const r    = miniFull.parentElement.getBoundingClientRect();
-                        const frac = (e.clientX - r.left) / r.width;
-                        const rng  = svZoomEnd - svZoomStart;
-                        svZoomStart = Math.max(0, frac - rng / 2);
-                        svZoomEnd   = Math.min(1, svZoomStart + rng);
-                        redraw();
-                    });
+                // Same device+metric+range as the plot already on screen ->
+                // this is just a periodic live refresh, so update the data in
+                // place (preserving any pan/zoom the user has going), instead
+                // of tearing the chart down — exactly how the Monitor tab's
+                // anomaly charts stay live without kicking you out of a zoom.
+                const rangeDesc = svRange.mode === "custom" ? `custom:${svRange.from_ms}:${svRange.to_ms}` : `window:${svWindow}`;
+                const contextKey = `${svSelectedKey}|${metric}|${rangeDesc}`;
+                if (svPlot && svPlotContextKey === contextKey) {
+                    svPlot.setData(data, false);
+                    return;
                 }
 
-                // Zoom buttons
-                svModal.querySelector("[data-sv-zi]")?.addEventListener("click", () => { const c=(svZoomStart+svZoomEnd)/2, r=(svZoomEnd-svZoomStart)*0.65; svZoomStart=Math.max(0,c-r/2); svZoomEnd=Math.min(1,c+r/2); redraw(); });
-                svModal.querySelector("[data-sv-zo]")?.addEventListener("click", () => { const c=(svZoomStart+svZoomEnd)/2, r=Math.min(1,(svZoomEnd-svZoomStart)*1.5); svZoomStart=Math.max(0,c-r/2); svZoomEnd=Math.min(1,c+r/2); redraw(); });
-                svModal.querySelector("[data-sv-zr]")?.addEventListener("click", () => { svZoomStart=0; svZoomEnd=1; redraw(); });
+                svPlotDestroy();
+                svHideAnomDetail();
 
-                // Close
-                svModal.querySelector("[data-sv-modal-close]")?.addEventListener("click", svCloseModal);
-                svModal.addEventListener("click", (e) => { if (e.target === svModal) svCloseModal(); });
-                document.addEventListener("keydown", (e) => { if (e.key === "Escape" && svModal?.classList.contains("is-open")) svCloseModal(); });
-            };
+                const width = svUplotWrap.clientWidth || 700;
+                const opts = {
+                    width,
+                    height: 300,
+                    padding: [10, 12, 0, 0],
+                    cursor: { points: { show: false }, drag: { x: false, y: false } },
+                    legend: { show: false },
+                    scales: { x: { time: true } },
+                    series: [
+                        {},
+                        { stroke: "#39d0c8", width: 2, points: { show: false } },
+                    ],
+                    axes: [
+                        {
+                            stroke: "rgba(157,179,187,0.6)",
+                            grid: { stroke: "rgba(255,255,255,0.05)" },
+                            ticks: { stroke: "rgba(255,255,255,0.08)" },
+                        },
+                        {
+                            stroke: "rgba(157,179,187,0.6)",
+                            grid: { stroke: "rgba(255,255,255,0.05)" },
+                            ticks: { stroke: "rgba(255,255,255,0.08)" },
+                            size: 60,
+                        },
+                    ],
+                    plugins: [svMarkersPlugin(), svPanZoomPlugin(svFullRange)],
+                };
+                svUplotWrap.innerHTML = "";
+                svPlot = new uPlot(opts, data, svUplotWrap);
+                svPlotContextKey = contextKey;
 
-            const svOpenModal = () => {
-                svBuildModal();
-                const device = ovConfigured.find((d) => `${d.source}:${d.device_id}` === svSelectedKey);
-                const devEl  = svModal.querySelector("[data-sv-modal-dev]");
-                if (devEl) devEl.textContent = `${device?.name || svSelectedKey}  ·  ${svWindow}`;
-                svZoomStart = 0; svZoomEnd = 1;
-                svModal._buildLineBtns?.();
-                svModal._redraw?.();
-                svModal.classList.add("is-open");
-                document.body.style.overflow = "hidden";
-            };
-            const svCloseModal = () => {
-                svModal?.classList.remove("is-open");
-                document.body.style.overflow = "";
-            };
-
-            if (svExpandBtn) {
-                svExpandBtn.addEventListener("click", () => {
-                    if (Object.keys(svChartData).length > 0) svOpenModal();
+                // Click a marker -> plain-English detail panel (skip clicks
+                // that are really just the end of a pan drag).
+                svPlot.over.addEventListener("click", (e) => {
+                    if (svPlot.over.__dragged) { svPlot.over.__dragged = false; return; }
+                    const rect = svPlot.over.getBoundingClientRect();
+                    const cx = (e.clientX - rect.left) * (window.devicePixelRatio || 1) + svPlot.bbox.left;
+                    const cy = (e.clientY - rect.top) * (window.devicePixelRatio || 1) + svPlot.bbox.top;
+                    let best = null, bestD = Infinity;
+                    svMarkers.forEach((m) => {
+                        const d = Math.hypot(m.x - cx, m.y - cy);
+                        if (d < bestD) { bestD = d; best = m; }
+                    });
+                    if (best && bestD <= 14 * (window.devicePixelRatio || 1)) {
+                        svShowAnomDetail(best.ev);
+                    }
                 });
-            }
+            };
 
-            // ── Stats strip ────────────────────────────────────────────────────
-            const svRenderStats = () => {
-                if (!svStats) return;
-                const active = Object.keys(svChartData).filter((k) => (svChartData[k]?.timestamps?.length || 0) > 0);
-                if (active.length === 0) { svStats.innerHTML = ""; return; }
+            // Keep the chart fitting its container
+            window.addEventListener("resize", () => {
+                if (svPlot && svUplotWrap) svPlot.setSize({ width: svUplotWrap.clientWidth || 700, height: 300 });
+            });
 
-                // Stable colors: same map used by svDrawIntoSvg
-                const cm = {};
-                Object.keys(svChartData).forEach((k, i) => { cm[k] = SV_COLORS[i % SV_COLORS.length]; });
+            // ── Clicked-anomaly detail panel ─────────────────────────────────────
+            const svHideAnomDetail = () => {
+                svSelectedAnom = null;
+                svAnomDetail?.classList.add("ov-hidden");
+            };
 
-                svStats.innerHTML = active.map((k) => {
-                    const color  = cm[k];
-                    const series = svChartData[k];
-                    const avgs   = series.avg.filter((v) => v !== null);
-                    const mins   = series.min.filter((v) => v !== null);
-                    const maxs   = series.max.filter((v) => v !== null);
-                    const total  = series.count.reduce((a, b) => a + (b || 0), 0);
-                    const avg    = avgs.length ? fmtVal(avgs.reduce((a, b) => a + b, 0) / avgs.length) : "--";
-                    const min    = mins.length ? fmtVal(Math.min(...mins)) : "--";
-                    const max    = maxs.length ? fmtVal(Math.max(...maxs)) : "--";
+            // Shared "what happened" facts block, used both by the chart's own
+            // detail panel and by the inline expand in the issues list below —
+            // must look up the unit for the EVENT's own metric, not whatever is
+            // currently charted, since the issues list spans every metric.
+            const svAnomFactsHtml = (ev) => {
+                const when = new Date(ev.ts_ms).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+                const unit = svUnitForMetric(ev.metric || "");
+                const reading = (ev.value !== null && ev.value !== undefined) ? `${fmtVal(ev.value)}${unit ? " " + unit : ""}` : "—";
+                return `
+                    <div class="sv-anom-facts">
+                        <span><em>When</em>${when}</span>
+                        <span><em>Reading</em>${reading}</span>
+                        <span><em>What kind</em>${ev.category || "—"}</span>
+                    </div>
+                    ${ev.message ? `<p class="sv-anom-advice"><em>What could be wrong:</em> ${ev.message}</p>` : ""}`;
+            };
+
+            const svShowAnomDetail = (ev) => {
+                if (!svAnomDetail) return;
+                svSelectedAnom = svAnomId(ev);
+                const sev = (ev.severity || "Info");
+                svAnomDetail.innerHTML = `
+                    <div class="sv-anom-head">
+                        <span class="ev-rule-sev-pill is-${sev.toLowerCase()}">${sev}</span>
+                        <strong>${ev.headline || ev.category || "Anomaly detected"}</strong>
+                        <button class="sv-anom-close" data-sv-anom-close title="Close">✕</button>
+                    </div>
+                    ${svAnomFactsHtml(ev)}`;
+                svAnomDetail.classList.remove("ov-hidden");
+                svAnomDetail.querySelector("[data-sv-anom-close]")?.addEventListener("click", () => {
+                    svHideAnomDetail();
+                    if (svPlot) svPlot.redraw();
+                });
+                if (svPlot) svPlot.redraw();
+            };
+
+            // ── Detected-issues list (grouped, paginated, jump-to-graph) ────────
+            const SV_ISSUES_PER_PAGE = 6;
+
+            const svRenderIssues = () => {
+                if (!svIssuesList) return;
+                if (svIssuesBadge) svIssuesBadge.textContent = String(svAnoms.length);
+                if (!svAnoms.length) {
+                    svIssuesList.innerHTML = `<p class="ev-rules-empty">Nothing flagged in this time range.</p>`;
+                    svIssuesPager?.classList.add("ov-hidden");
+                    return;
+                }
+
+                // Group repeats of the same finding so the list stays readable
+                const groups = [];
+                svAnoms.forEach((ev) => {
+                    const gKey = `${ev.metric}|${ev.category}|${ev.severity}`;
+                    let g = groups.find((x) => x.key === gKey);
+                    if (!g) {
+                        g = { key: gKey, metric: ev.metric, label: ev.metric_label || displayLabel(ev.metric || ev.alarm_name || ""), category: ev.category, severity: ev.severity, count: 0, latest: ev };
+                        groups.push(g);
+                    }
+                    g.count++;
+                    if (ev.ts_ms > g.latest.ts_ms) g.latest = ev;
+                });
+                groups.sort((a, b) => b.latest.ts_ms - a.latest.ts_ms);
+
+                const pageCount = Math.max(1, Math.ceil(groups.length / SV_ISSUES_PER_PAGE));
+                svIssuesPage = Math.min(svIssuesPage, pageCount - 1);
+                const page = groups.slice(svIssuesPage * SV_ISSUES_PER_PAGE, (svIssuesPage + 1) * SV_ISSUES_PER_PAGE);
+
+                svIssuesList.innerHTML = page.map((g) => {
+                    const sev = (g.severity || "Info").toLowerCase();
+                    const ago = fmtAge((Date.now() - g.latest.ts_ms) / 1000);
+                    const isOpen = svExpandedIssues.has(g.key);
                     return `
-                        <div class="sv-stat-card">
-                            <p class="sv-stat-name">
-                                <span class="sv-stat-color" style="background:${color}"></span>
-                                ${displayLabel(k)}
-                            </p>
-                            <div class="sv-stat-grid">
-                                <div class="sv-stat-item"><span class="sv-stat-label">Avg</span><span class="sv-stat-value">${avg}</span></div>
-                                <div class="sv-stat-item"><span class="sv-stat-label">Min</span><span class="sv-stat-value">${min}</span></div>
-                                <div class="sv-stat-item"><span class="sv-stat-label">Max</span><span class="sv-stat-value">${max}</span></div>
-                                <div class="sv-stat-item"><span class="sv-stat-label">Samples</span><span class="sv-stat-value">${total.toLocaleString()}</span></div>
+                        <div class="sv-issue-row-wrap">
+                            <div class="sv-issue-row" data-sv-issue-toggle="${g.key}" role="button" tabindex="0" aria-expanded="${isOpen}">
+                                <span class="ev-rule-sev-pill is-${sev}">${g.severity}</span>
+                                <div class="sv-issue-text">
+                                    <strong>${g.label}</strong> — ${g.category || "Anomaly"}
+                                    <small>${g.count > 1 ? `${g.count} times · ` : ""}latest ${ago}</small>
+                                </div>
+                                <span class="sv-issue-caret">${isOpen ? "▾" : "▸"}</span>
+                                <button class="ev-add-btn sv-issue-goto" data-sv-goto="${svAnomId(g.latest)}">View on graph →</button>
                             </div>
+                            ${isOpen ? `<div class="sv-issue-detail">${svAnomFactsHtml(g.latest)}</div>` : ""}
                         </div>`;
                 }).join("");
+
+                if (svIssuesPager) {
+                    if (pageCount > 1) {
+                        svIssuesPager.classList.remove("ov-hidden");
+                        svIssuesPager.innerHTML = `
+                            <button class="ev-page-btn" data-sv-ip-prev ${svIssuesPage === 0 ? "disabled" : ""}>← Newer</button>
+                            <span class="ev-page-label">Page ${svIssuesPage + 1} of ${pageCount} · ${groups.length} issues</span>
+                            <button class="ev-page-btn" data-sv-ip-next ${svIssuesPage >= pageCount - 1 ? "disabled" : ""}>Older →</button>`;
+                        svIssuesPager.querySelector("[data-sv-ip-prev]")?.addEventListener("click", () => { svIssuesPage = Math.max(0, svIssuesPage - 1); svRenderIssues(); });
+                        svIssuesPager.querySelector("[data-sv-ip-next]")?.addEventListener("click", () => { svIssuesPage = Math.min(pageCount - 1, svIssuesPage + 1); svRenderIssues(); });
+                    } else {
+                        svIssuesPager.classList.add("ov-hidden");
+                        svIssuesPager.innerHTML = "";
+                    }
+                }
+
+                // "View on graph" jumps to the chart — kept separate from the
+                // row toggle below so a user who doesn't want to leave the list
+                // can just read the answer inline instead.
+                svIssuesList.querySelectorAll("[data-sv-goto]").forEach((btn) => {
+                    btn.addEventListener("click", (e) => {
+                        e.stopPropagation();
+                        const id = btn.getAttribute("data-sv-goto");
+                        const ev = svAnoms.find((x) => svAnomId(x) === id);
+                        if (ev) svFocusAnom(ev);
+                    });
+                });
+
+                svIssuesList.querySelectorAll("[data-sv-issue-toggle]").forEach((row) => {
+                    const toggle = () => {
+                        const key = row.getAttribute("data-sv-issue-toggle");
+                        if (svExpandedIssues.has(key)) svExpandedIssues.delete(key); else svExpandedIssues.add(key);
+                        svRenderIssues();
+                    };
+                    row.addEventListener("click", toggle);
+                    row.addEventListener("keydown", (e) => {
+                        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+                    });
+                });
             };
 
-            // ── Window bar ─────────────────────────────────────────────────────
+            // Jump the chart to one event: select its reading, zoom the view to
+            // ±15 min around the moment, then open its detail panel.
+            const svFocusAnom = async (ev) => {
+                if (ev.metric && ev.metric !== svSelectedMetric()) {
+                    svSetMetric(ev.metric);
+                    svRenderMetricList();
+                }
+                const HALF = 15 * 60 * 1000;
+                svRange = { mode: "custom", from_ms: ev.ts_ms - HALF, to_ms: ev.ts_ms + HALF };
+                svSyncRangeBar();
+                await svFetchAndRenderChart();
+                const match = svAnoms.find((x) => svAnomId(x) === svAnomId(ev)) || ev;
+                svShowAnomDetail(match);
+                svUplotWrap?.scrollIntoView({ behavior: "smooth", block: "center" });
+            };
+
+            // ── Range controls: quick windows + explicit date range ─────────────
+            const svSyncRangeBar = () => {
+                svWindowBar?.querySelectorAll("[data-sv-win]").forEach((b) => {
+                    b.classList.toggle("is-current", svRange.mode === "window" && b.getAttribute("data-sv-win") === svWindow);
+                });
+                if (svRange.mode === "custom" && svDateFrom && svDateTo) {
+                    svDateFrom.value = new Date(svRange.from_ms).toISOString().slice(0, 10);
+                    svDateTo.value = new Date(svRange.to_ms).toISOString().slice(0, 10);
+                }
+            };
+
             if (svWindowBar) {
                 svWindowBar.querySelectorAll("[data-sv-win]").forEach((btn) => {
                     if (btn.getAttribute("data-sv-win") === svWindow) btn.classList.add("is-current");
                     btn.addEventListener("click", () => {
                         svWindow = btn.getAttribute("data-sv-win");
                         localStorage.setItem("metacrust.sv.window", svWindow);
-                        svWindowBar.querySelectorAll("[data-sv-win]").forEach((b) => b.classList.remove("is-current"));
-                        btn.classList.add("is-current");
-                        svChartData   = {};
+                        svRange = { mode: "window" };
+                        svSyncRangeBar();
+                        svSeries = null;
                         svLastFetchMs = 0;
+                        svIssuesPage = 0;
+                        svExpandedIssues.clear();
                         svFetchAndRenderChart();
                     });
                 });
             }
 
-            // ── Export CSV ─────────────────────────────────────────────────────
+            if (svDateApply) {
+                svDateApply.addEventListener("click", () => {
+                    const fromStr = svDateFrom?.value;
+                    const toStr = svDateTo?.value;
+                    if (!fromStr || !toStr) { alert("Pick both dates."); return; }
+                    const from_ms = new Date(`${fromStr}T00:00:00`).getTime();
+                    const to_ms = new Date(`${toStr}T23:59:59`).getTime();
+                    if (!(to_ms > from_ms)) { alert("The end date must be after the start date."); return; }
+                    svRange = { mode: "custom", from_ms, to_ms };
+                    svSyncRangeBar();
+                    svSeries = null;
+                    svLastFetchMs = 0;
+                    svIssuesPage = 0;
+                    svExpandedIssues.clear();
+                    svFetchAndRenderChart();
+                });
+            }
+
+            // ── Export CSV (the charted reading, current time range) ────────────
             if (svExportBtn) {
                 svExportBtn.addEventListener("click", () => {
                     if (!svSelectedKey) return;
-
                     const [src, ...didParts] = svSelectedKey.split(":");
-                    const did    = didParts.join(":");
-                    const device = ovConfigured.find((d) => d.source === src && d.device_id === did);
-
-                    // Export the ON-toggled metrics (or all if none toggled)
-                    const toggledMetrics = (device?.expected_metrics || [])
-                        .filter((m) => svGetToggle(svSelectedKey, m.name))
-                        .map((m) => m.name);
-
-                    const params = new URLSearchParams({
-                        source:    src,
+                    const did = didParts.join(":");
+                    const device = svDevice();
+                    const params = svRangeParams(new URLSearchParams({
+                        source: src,
                         device_id: did,
-                        metrics:   toggledMetrics.length ? toggledMetrics.join(",") : "all",
-                        window:    svWindow,
-                        name:      device?.name || did,
-                    });
-
-                    // Trigger file download — browser handles the rest
+                        metrics: svSelectedMetric() || "all",
+                        name: device?.name || did,
+                    }));
                     const a = document.createElement("a");
                     a.href = `/api/insights/export/csv?${params}`;
                     a.download = "";
@@ -5325,8 +5385,14 @@ document.addEventListener("DOMContentLoaded", () => {
 
                 svUpdateLiveValues();
 
-                // Chart: at most every 60 s
-                if (force || !svLastFetchMs || (Date.now() - svLastFetchMs) > 60_000) {
+                // Chart: at most every 30 s, matching the Monitor tab's own
+                // history refresh — updates land via setData() in place (see
+                // svRenderPlot), so an active pan/zoom survives the refresh.
+                // Never auto-refresh a custom date range; the user is
+                // studying a fixed slice of history.
+                if (svRange.mode === "window" && (force || !svLastFetchMs || (Date.now() - svLastFetchMs) > 30_000)) {
+                    svFetchAndRenderChart();
+                } else if (force && svRange.mode === "custom") {
                     svFetchAndRenderChart();
                 }
 
@@ -5344,6 +5410,22 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
             };
             svRefreshFn = svRefresh;   // expose to outer refresh() loop
+
+            // Jump straight to one device's charts (used by Overview cards).
+            svSelectDevice = (key) => {
+                if (!ovConfigured.some((d) => `${d.source}:${d.device_id}` === key)) return;
+                svSelectedKey = key;
+                localStorage.setItem("metacrust.sv.selectedKey", key);
+                svLastTabKeys = "";   // force the device-tab strip to rebuild with the new selection
+                svSeries = null;
+                svAnoms = [];
+                svLastFetchMs = 0;
+                svStatsData = {};
+                svStatsLastFetch = 0;
+                svTrendsData = [];
+                svTrendsLastFetch = 0;
+                svRenderMetricList();
+            };
         }
 
         // ── Bootstrap ─────────────────────────────────────────────────────
@@ -5382,9 +5464,9 @@ document.addEventListener("DOMContentLoaded", () => {
                         } catch (e) {
                             console.error("[Insights] buildCard failed for", device.name, e);
                             htmlParts.push(`
-                                <article class="ov-card is-error">
-                                    <header class="ov-card-head">
-                                        <div><p class="ov-card-name">${device.name || device.device_id}</p></div>
+                                <article class="ovc-card is-error">
+                                    <header class="ovc-head">
+                                        <div class="ovc-title"><p class="ovc-name">${device.name || device.device_id}</p></div>
                                         <span class="ov-status-badge ov-status-error"><span class="ov-status-pulse"></span><span>Error</span></span>
                                     </header>
                                     <div style="padding:1rem;color:var(--muted);font-size:.84rem">Card render error: ${e.message}</div>
@@ -5393,6 +5475,19 @@ document.addEventListener("DOMContentLoaded", () => {
                     }
                     ovDeviceGrid.innerHTML = htmlParts.join("");
                     ovConfiguredKeys = newKeys;
+
+                    // Whole card = shortcut to that device's charts in Sensors
+                    ovDeviceGrid.querySelectorAll("[data-ov-card]").forEach((card) => {
+                        const open = () => {
+                            const key = card.getAttribute("data-ov-card");
+                            if (svSelectDevice) svSelectDevice(key);
+                            insightsShell.querySelector('[data-ov-tab="sensors"]')?.click();
+                        };
+                        card.addEventListener("click", open);
+                        card.addEventListener("keydown", (e) => {
+                            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+                        });
+                    });
                 }
             }
 

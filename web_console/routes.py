@@ -2022,8 +2022,25 @@ async def insights_history(request: Request) -> JSONResponse:
     metric_names = [m for m in str(params.get("metrics", "")).split(",") if m]
     series = insights_data.history_series(
         storage, params.get("source", ""), params.get("device_id", ""), metric_names, params.get("window", "1h"),
+        from_ms=params.get("from_ms"), to_ms=params.get("to_ms"),
     )
     return JSONResponse({"ok": True, "metrics": series})
+
+
+@router.get("/api/insights/sensor-anomalies")
+async def get_sensor_anomalies(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    storage = _interface_data_storage(request)
+    if storage is None:
+        return JSONResponse({"ok": True, "events": []})
+    params = request.query_params
+    source, device_id = params.get("source", ""), params.get("device_id", "")
+    if not source or not device_id:
+        return JSONResponse({"ok": False, "message": "source and device_id are required."}, status_code=status.HTTP_422_UNPROCESSABLE_ENTITY)
+    start_ms, end_ms = insights_data.resolve_range(params.get("window", "24h"), params.get("from_ms"), params.get("to_ms"))
+    events = storage.sensor_anomaly_events(source_type=source, source_id=device_id, from_ms=start_ms, to_ms=end_ms, limit=2000)
+    return JSONResponse({"ok": True, "events": events})
 
 
 @router.get("/api/insights/events")
@@ -2193,7 +2210,10 @@ async def export_insights_csv(request: Request) -> Response:
     else:
         if requested == ["all"]:
             requested = [m["name"] for m in storage.distinct_reading_names(source, device_id)]
-        rows = insights_data.export_csv_rows(storage, source, device_id, requested, params.get("window", "1h"))
+        rows = insights_data.export_csv_rows(
+            storage, source, device_id, requested, params.get("window", "1h"),
+            from_ms=params.get("from_ms"), to_ms=params.get("to_ms"),
+        )
     filename = f"{params.get('name') or device_id or 'sensor'}-readings.csv".replace(" ", "_")
     return _csv_download(filename, rows, ["timestamp", "source", "device_id", "metric", "value", "unit", "quality"])
 

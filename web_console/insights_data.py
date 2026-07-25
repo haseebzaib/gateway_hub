@@ -95,6 +95,11 @@ def _quality_for(age_ms: float, source_status: str) -> str:
     return "good" if age_ms <= FRESH_MS else "stale"
 
 
+# A source whose last IPC contact of ANY kind is older than this is offline
+# (covers gateway_core itself being down, so no status updates arrive at all).
+OFFLINE_AFTER_MS = 30_000
+
+
 def build_live_devices(devices: list[dict[str, Any]], storage: GatewayInterfacesDataStorage) -> list[dict[str, Any]]:
     now_ms = int(time.time() * 1000)
     sources_by_key = {(s["source_type"], s["source_id"]): s for s in storage.sources()}
@@ -107,6 +112,26 @@ def build_live_devices(devices: list[dict[str, Any]], storage: GatewayInterfaces
             continue  # never seen at all -> no /live entry, page shows "Offline"
 
         latest = storage.latest_readings(*key)
+
+        # IMPORTANT: "disconnected" status messages keep last_seen_ms fresh
+        # (the engine retries every couple of seconds), so a device that is
+        # failing to connect must be judged by its STATUS, never by how
+        # recently we heard about it. last_data_ms below tracks actual
+        # readings instead, so "Updated Xs ago" reflects real data, not
+        # retry chatter.
+        #
+        # last_status/last_error are STICKY: gateway_core only sends a status
+        # message on a transition (disconnect/error), not on every successful
+        # poll, so they can keep reporting a past failure long after the
+        # connection has recovered and good readings are flowing again. Actual
+        # fresh data is the more trustworthy signal, so it wins whenever it
+        # disagrees with the stale status — for both the device-level banner
+        # and each metric's own quality dot.
+        last_status = source_row["last_status"]
+        last_data_ms = max((int(row["ts_ms"]) for row in latest.values()), default=0)
+        data_is_current = bool(last_data_ms) and (now_ms - last_data_ms) <= OFFLINE_AFTER_MS
+        status_for_quality = "connected" if data_is_current else last_status
+
         metrics: dict[str, Any] = {}
         samples: dict[str, list[float]] = {}
         for m in device["expected_metrics"]:
@@ -114,22 +139,28 @@ def build_live_devices(devices: list[dict[str, Any]], storage: GatewayInterfaces
             if row is None:
                 continue
             age_ms = now_ms - int(row["ts_ms"])
-            quality = _quality_for(age_ms, source_row["last_status"])
+            quality = _quality_for(age_ms, status_for_quality)
             metrics[m["name"]] = {"value": row["value"], "unit": row["unit"] or m.get("unit", ""), "quality": quality}
             samples[m["name"]] = storage.recent_values(*key, m["name"], limit=20)
 
-        last_status = source_row["last_status"]
-        if last_status == "error":
+        if data_is_current:
+            status = "ok" if metrics and all(m["quality"] == "good" for m in metrics.values()) else "warning"
+        elif last_status == "disconnected":
+            status = "offline"
+        elif now_ms - int(source_row["last_seen_ms"]) > OFFLINE_AFTER_MS:
+            status = "offline"  # engine itself stopped talking to us
+        elif last_status == "error":
             status = "error"
-        elif metrics and all(m["quality"] == "good" for m in metrics.values()):
-            status = "ok"
         else:
             status = "warning"
-        error = {"type": "source_error", "message": source_row["last_error"]} if last_status == "error" and source_row["last_error"] else None
+
+        error = None
+        if status in ("offline", "error") and source_row["last_error"]:
+            error = {"type": "source_error", "message": source_row["last_error"]}
 
         live.append({
             "source": device["source"], "device_id": device["device_id"],
-            "status": status, "timestamp_ms": source_row["last_seen_ms"],
+            "status": status, "timestamp_ms": last_data_ms or source_row["last_seen_ms"],
             "error": error, "metrics": metrics, "_samples": samples,
         })
 
@@ -154,12 +185,13 @@ def summary(devices: list[dict[str, Any]], live: list[dict[str, Any]]) -> dict[s
         elif device_ok:
             ok_devices += 1
 
+    reporting = sum(1 for d in live if d["status"] != "offline")
     return {
         "ok": True,
         "total_devices": configured_count,
-        "live_devices": len(live),
+        "live_devices": reporting,
         "anomaly_count": anomaly_count,
-        "active_devices": len(live),
+        "active_devices": reporting,
         "configured_devices": configured_count,
         "data_quality": round(good_metrics / max(total_metrics, 1) * 100) if configured_count else 0,
         "health": round(ok_devices / configured_count * 100) if configured_count else 0,
@@ -170,18 +202,29 @@ def summary(devices: list[dict[str, Any]], live: list[dict[str, Any]]) -> dict[s
 # History — SQL-bucketed time series, one series per requested metric.
 # ---------------------------------------------------------------------------
 
+def resolve_range(window: str, from_ms: Any = None, to_ms: Any = None) -> tuple[int, int]:
+    """Explicit from/to (epoch ms) wins over the named window — this is what
+    lets the UI browse any slice of the 31-day retention, not just now-X."""
+    try:
+        f, t = int(from_ms), int(to_ms)
+        if t > f > 0:
+            return f, t
+    except (TypeError, ValueError):
+        pass
+    now_ms = int(time.time() * 1000)
+    return now_ms - WINDOW_MS.get(window, WINDOW_MS["1h"]), now_ms
+
+
 def history_series(
     storage: GatewayInterfacesDataStorage, source_type: str, source_id: str,
-    metric_names: list[str], window: str,
+    metric_names: list[str], window: str, from_ms: Any = None, to_ms: Any = None,
 ) -> dict[str, Any]:
-    window_ms = WINDOW_MS.get(window, WINDOW_MS["1h"])
-    now_ms = int(time.time() * 1000)
-    from_ms = now_ms - window_ms
-    bucket_ms = max(1000, window_ms // TARGET_BUCKETS)
+    start_ms, end_ms = resolve_range(window, from_ms, to_ms)
+    bucket_ms = max(1000, (end_ms - start_ms) // TARGET_BUCKETS)
 
     result: dict[str, Any] = {}
     for name in metric_names:
-        rows = storage.bucketed_readings(source_type, source_id, name, from_ms, now_ms, bucket_ms)
+        rows = storage.bucketed_readings(source_type, source_id, name, start_ms, end_ms, bucket_ms)
         if not rows:
             continue
         result[name] = {
@@ -294,15 +337,13 @@ def compute_trends(
 
 def export_csv_rows(
     storage: GatewayInterfacesDataStorage, source_type: str, source_id: str,
-    metric_names: list[str], window: str,
+    metric_names: list[str], window: str, from_ms: Any = None, to_ms: Any = None,
 ) -> list[dict[str, Any]]:
-    window_ms = WINDOW_MS.get(window, WINDOW_MS["1h"])
-    now_ms = int(time.time() * 1000)
-    from_ms = now_ms - window_ms
+    start_ms, end_ms = resolve_range(window, from_ms, to_ms)
 
     rows_out: list[dict[str, Any]] = []
     for name in metric_names:
-        for r in storage.readings(source_type=source_type, source_id=source_id, name=name, from_ms=from_ms, to_ms=now_ms, limit=50000):
+        for r in storage.readings(source_type=source_type, source_id=source_id, name=name, from_ms=start_ms, to_ms=end_ms, limit=50000):
             rows_out.append({
                 "timestamp": _iso(r["ts_ms"]), "source": source_type, "device_id": source_id,
                 "metric": name, "value": r["value"], "unit": r["unit"],
