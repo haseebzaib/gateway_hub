@@ -7604,152 +7604,6 @@ a.ov-feature-card:hover .ov-feature-eyebrow { color: var(--accent-cool); }
     margin-bottom: 0.4rem;
     word-break: break-all;
 }
-.fw-st-meta {
-    font-size: 0.72rem;
-    color: rgba(157,179,187,0.4);
-}
-.fw-st-meta-chip {
-    margin-left: 0.5rem;
-    color: rgba(98,211,158,0.6);
-}
-.fw-st-error {
-    margin-top: 0.4rem;
-    font-size: 0.72rem;
-    color: rgba(220,100,100,0.85);
-    background: rgba(220,80,80,0.07);
-    border-radius: 4px;
-    padding: 0.3rem 0.5rem;
-}
-.fw-st-error-minor {
-    margin-top: 0.25rem;
-    font-size: 0.7rem;
-    color: rgba(220,100,100,0.6);
-    padding: 0.15rem 0;
-    font-family: var(--mono);
-}
-.fw-st-error-icon { margin-right: 0.3rem; }
-
-/* ── Forwarding downtime banner ─────────────────────────────── */
-.fw-st-downtime {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.6rem;
-    padding: 0.45rem 0.65rem;
-    margin: 0.35rem 0;
-    border-radius: 6px;
-    background: rgba(220,80,80,0.09);
-    border-left: 3px solid rgba(220,80,80,0.45);
-}
-.fw-status-card.is-warn .fw-st-downtime {
-    background: rgba(240,166,75,0.09);
-    border-left-color: rgba(240,166,75,0.45);
-}
-.fw-st-dt-label {
-    font-size: 0.72rem;
-    color: rgba(220,100,100,0.8);
-    font-weight: 600;
-}
-.fw-status-card.is-warn .fw-st-dt-label { color: rgba(240,166,75,0.9); }
-.fw-st-dt-dur {
-    font-size: 0.85rem;
-    font-weight: 700;
-    font-family: var(--font-display);
-    color: rgba(220,80,80,0.95);
-}
-.fw-status-card.is-warn .fw-st-dt-dur { color: rgba(240,166,75,1); }
-.fw-st-dt-since {
-    font-size: 0.72rem;
-    color: rgba(157,179,187,0.65);
-    font-family: var(--mono);
-}
-
-/* ── Error / failure reason row (MQTT + HTTPS) ───────────────── */
-.fw-st-err-row {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.55rem;
-    padding: 0.45rem 0.65rem;
-    margin: 0.2rem 0;
-    border-radius: 6px;
-    background: rgba(220,80,80,0.07);
-    border-left: 3px solid rgba(220,80,80,0.4);
-}
-.fw-status-card.is-warn .fw-st-err-row {
-    background: rgba(240,166,75,0.07);
-    border-left-color: rgba(240,166,75,0.4);
-}
-/* When connection is actually "ok" but last error exists (e.g. HTTP 4xx while "connected") */
-.fw-status-card.is-ok .fw-st-err-row {
-    background: rgba(240,166,75,0.06);
-    border-left-color: rgba(240,166,75,0.35);
-}
-.fw-st-err-icon {
-    flex: 0 0 auto;
-    font-size: 0.8rem;
-    margin-top: 0.15rem;
-    color: rgba(220,80,80,0.8);
-}
-.fw-status-card.is-warn .fw-st-err-icon,
-.fw-status-card.is-ok  .fw-st-err-icon { color: rgba(240,166,75,0.8); }
-.fw-st-err-body {
-    display: flex;
-    flex-direction: column;
-    gap: 0.1rem;
-    min-width: 0;
-}
-.fw-st-err-label {
-    font-size: 0.65rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: rgba(220,80,80,0.65);
-}
-.fw-status-card.is-warn .fw-st-err-label,
-.fw-status-card.is-ok  .fw-st-err-label { color: rgba(240,166,75,0.65); }
-.fw-st-err-msg {
-    font-size: 0.78rem;
-    color: rgba(220,100,100,0.9);
-    line-height: 1.4;
-    word-break: break-word;
-}
-.fw-status-card.is-warn .fw-st-err-msg,
-.fw-status-card.is-ok  .fw-st-err-msg { color: rgba(240,166,75,0.95); }
-.fw-st-err-time {
-    font-size: 0.7rem;
-    color: rgba(157,179,187,0.5);
-    font-family: var(--mono);
-}
-
-.fw-st-time-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 0.45rem;
-    margin: 0.45rem 0;
-    padding: 0.5rem 0.6rem;
-    border-radius: 6px;
-    background: rgba(255,255,255,0.025);
-    border: 1px solid rgba(157,179,187,0.08);
-}
-.fw-st-time-grid div {
-    display: flex;
-    flex-direction: column;
-    gap: 0.12rem;
-    min-width: 0;
-}
-.fw-st-time-grid span {
-    font-size: 0.62rem;
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
-    color: rgba(157,179,187,0.45);
-}
-.fw-st-time-grid strong {
-    font-size: 0.7rem;
-    line-height: 1.25;
-    color: rgba(231,238,241,0.82);
-    font-family: var(--mono);
-    overflow-wrap: anywhere;
-}
 
 /* ── Forwarding runtime stats grid (inside status card) ─────── */
 .fw-st-runtime-grid {
@@ -7796,236 +7650,54 @@ a.ov-feature-card:hover .ov-feature-eyebrow { color: var(--accent-cool); }
     vertical-align: middle;
 }
 
-/* ── Buffer chips row (inside status card) ───────────────────── */
-.fw-st-buf-row {
+.fw-st-runtime-grid-3 { grid-template-columns: repeat(3, 1fr); }
+
+/* ── Connection alert (replaces this server, plain-language) ─── */
+.fw-st-alert {
     display: flex;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-    margin: 0.2rem 0 0.4rem;
+    align-items: flex-start;
+    gap: 0.6rem;
+    padding: 0.65rem 0.8rem;
+    margin: 0.5rem 0;
+    border-radius: 0.7rem;
+    background: rgba(220,80,80,0.08);
+    border: 1px solid rgba(220,80,80,0.22);
 }
+.fw-st-alert-icon { flex: 0 0 auto; font-size: 0.95rem; color: rgba(248,113,113,0.9); margin-top: 0.05rem; }
+.fw-st-alert-body { display: grid; gap: 0.2rem; min-width: 0; }
+.fw-st-alert-body strong { font-size: 0.86rem; color: rgba(248,113,113,0.95); }
+.fw-st-alert-body p { margin: 0; font-size: 0.8rem; color: rgba(220,180,180,0.85); line-height: 1.45; word-break: break-word; }
+.fw-st-alert-time { font-size: 0.7rem; color: rgba(157,179,187,0.55); font-family: var(--mono); }
 
-.fw-st-buf-chip {
-    font-size: 0.76rem;
-    font-weight: 600;
-    padding: 0.2rem 0.65rem;
-    border-radius: 999px;
-    background: rgba(255,255,255,0.06);
-    border: 1px solid rgba(255,255,255,0.1);
-    color: var(--muted);
-}
-
-.fw-st-buf-chip.is-buffering { background: rgba(240,166,75,0.12); border-color: rgba(240,166,75,0.3); color: var(--accent); }
-.fw-st-buf-chip.is-recovered { background: rgba(57,208,200,0.1);  border-color: rgba(57,208,200,0.25); color: var(--accent-cool); }
-.fw-st-buf-chip.is-dropped   { background: rgba(220,80,80,0.1);   border-color: rgba(220,80,80,0.25);  color: #f87171; }
-
-/* ── Buffer section (inside combined profile card) ───────────── */
-.fw-st-buf-section {
-    margin-top: 0.65rem;
-    padding: 0.6rem 0.75rem 0.65rem;
-    border-radius: 6px;
-    background: rgba(255,255,255,0.03);
-    border: 1px solid rgba(255,255,255,0.07);
-    display: grid;
-    gap: 0.5rem;
-}
-.fw-st-buf-section.is-buffering {
-    background: rgba(240,166,75,0.05);
-    border-color: rgba(240,166,75,0.2);
-}
-.fw-st-buf-section.is-evicting {
-    background: rgba(220,80,80,0.05);
-    border-color: rgba(220,80,80,0.2);
-}
-.fw-st-buf-section.is-recovered {
-    background: rgba(57,208,200,0.04);
-    border-color: rgba(57,208,200,0.15);
-}
-
-/* Header row */
-.fw-st-buf-header {
+/* ── Buffer: one quiet line normally, numbers only when relevant ── */
+.fw-st-buf-line {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
-}
-.fw-st-buf-title {
-    font-size: 0.68rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    color: rgba(157,179,187,0.5);
-}
-
-/* Status badge (Healthy / X waiting / X evicted) */
-.fw-st-buf-badge {
-    font-size: 0.72rem;
-    font-weight: 700;
-    padding: 0.15rem 0.55rem;
-    border-radius: 999px;
-    background: rgba(255,255,255,0.06);
-    color: var(--muted);
-}
-.fw-st-buf-badge.is-ok   { background: rgba(98,211,158,0.12);  color: rgba(98,211,158,0.9); }
-.fw-st-buf-badge.is-warn { background: rgba(240,166,75,0.12);  color: rgba(240,166,75,1); }
-.fw-st-buf-badge.is-err  { background: rgba(220,80,80,0.12);   color: rgba(248,113,113,1); }
-
-/* 4-stat grid: Waiting | Oldest | In backoff | Recovered */
-.fw-st-buf-stat-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 0.4rem;
-}
-.fw-st-buf-stat {
-    display: flex;
-    flex-direction: column;
-    gap: 0.1rem;
-}
-.fw-st-buf-stat strong {
-    font-size: 1.1rem;
-    font-weight: 700;
-    font-family: var(--font-display);
-    line-height: 1.1;
-    color: var(--text);
-}
-.fw-st-buf-section.is-buffering .fw-st-buf-stat:first-child strong { color: rgba(240,166,75,1); }
-.fw-st-buf-section.is-evicting  .fw-st-buf-stat:first-child strong { color: rgba(248,113,113,1); }
-.fw-st-buf-stat span {
-    font-size: 0.65rem;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    line-height: 1.2;
-}
-
-/* Explanation line */
-.fw-st-buf-explain {
-    font-size: 0.78rem;
-    color: rgba(157,179,187,0.6);
-    line-height: 1.45;
-    margin: 0;
-}
-.fw-st-buf-section.is-buffering .fw-st-buf-explain { color: rgba(240,166,75,0.75); }
-.fw-st-buf-section.is-evicting  .fw-st-buf-explain { color: rgba(248,113,113,0.75); }
-
-/* ── Pipeline explanation block (inside status card) ────────── */
-.fw-st-pipe-explain {
-    display: grid;
-    gap: 0.35rem;
-    padding: 0.65rem 0;
-    border-top: 1px solid rgba(255,255,255,0.06);
-    border-bottom: 1px solid rgba(255,255,255,0.06);
-    margin: 0.4rem 0;
-}
-
-.fw-st-pipe-line {
-    display: flex;
-    align-items: flex-start;
     gap: 0.5rem;
     font-size: 0.8rem;
-    line-height: 1.45;
-}
-
-.fw-st-pipe-dot {
-    width: 0.5rem;
-    height: 0.5rem;
-    border-radius: 999px;
-    flex: 0 0 auto;
-    margin-top: 0.32rem;
-    background: rgba(255,255,255,0.25);
-}
-
-.fw-st-pipe-line.is-buffering .fw-st-pipe-dot { background: var(--accent); box-shadow: 0 0 6px rgba(240,166,75,0.6); }
-.fw-st-pipe-line.is-recovered .fw-st-pipe-dot { background: var(--accent-cool); box-shadow: 0 0 6px rgba(57,208,200,0.5); }
-.fw-st-pipe-line.is-dropped   .fw-st-pipe-dot { background: #f87171; box-shadow: 0 0 6px rgba(248,113,113,0.5); }
-.fw-st-pipe-line.is-cause     .fw-st-pipe-dot { display: none; }
-
-.fw-st-pipe-dot-arrow { font-size: 0.7rem; color: var(--muted); flex: 0 0 auto; padding-top: 0.05rem; }
-
-.fw-st-pipe-line.is-buffering span:last-child { color: rgba(240,166,75,0.9); }
-.fw-st-pipe-line.is-recovered span:last-child { color: rgba(57,208,200,0.9); }
-.fw-st-pipe-line.is-dropped   span:last-child { color: #fca5a5; }
-.fw-st-pipe-line.is-cause     .fw-st-cause-text { color: var(--muted); font-size: 0.77rem; font-style: italic; }
-
-/* ── Buffer per-profile state lines ─────────────────────────── */
-.fw-buf-state-lines {
-    display: grid;
-    gap: 0.25rem;
-    margin-bottom: 0.4rem;
-}
-
-.fw-buf-state-line {
-    display: block;
-    font-size: 0.77rem;
-    line-height: 1.4;
-    padding: 0.2rem 0;
-    border-bottom: 1px solid rgba(255,255,255,0.04);
-}
-.fw-buf-state-line:last-child { border-bottom: none; }
-.fw-buf-state-line.is-ok   { color: var(--success); }
-.fw-buf-state-line.is-warn { color: var(--accent); }
-.fw-buf-state-line.is-err  { color: #fca5a5; }
-.fw-buf-state-line.is-muted{ color: var(--muted); }
-
-.fw-buf-badge.is-err {
-    background: rgba(220,80,80,0.12);
-    color: #fca5a5;
-    border: 1px solid rgba(220,80,80,0.25);
-}
-
-/* ── Forwarding pipeline stats row (inside status card) ──────── */
-.fw-st-pipeline {
-    display: flex;
-    gap: 0.65rem;
-    flex-wrap: wrap;
-    padding: 0.55rem 0;
-    border-top: 1px solid rgba(255,255,255,0.06);
-    border-bottom: 1px solid rgba(255,255,255,0.06);
-    margin: 0.4rem 0;
-}
-
-.fw-st-pipe-stat {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    padding: 0.3rem 0.7rem;
-    border-radius: 0.6rem;
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.06);
-    min-width: 4.5rem;
-}
-
-.fw-st-pipe-stat strong {
-    font-size: 1.1rem;
-    font-weight: 700;
-    font-family: var(--font-display);
-    line-height: 1.1;
-}
-
-.fw-st-pipe-stat span {
-    font-size: 0.68rem;
     color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.07em;
-    margin-top: 0.1rem;
+    padding: 0.2rem 0;
 }
+.fw-st-buf-dot { width: 0.5rem; height: 0.5rem; border-radius: 999px; flex: 0 0 auto; background: rgba(98,211,158,0.8); }
+.fw-st-buf-line.is-warn { color: rgba(240,166,75,0.9); }
+.fw-st-buf-line.is-warn .fw-st-buf-dot { background: var(--accent); box-shadow: 0 0 6px rgba(240,166,75,0.5); }
+.fw-st-buf-line.is-err { color: rgba(248,113,113,0.9); }
+.fw-st-buf-line.is-err .fw-st-buf-dot { background: #f87171; box-shadow: 0 0 6px rgba(248,113,113,0.5); }
 
-.fw-st-pipe-stat.is-buffering {
-    background: rgba(240,166,75,0.1);
-    border-color: rgba(240,166,75,0.25);
+.fw-st-buf-detail {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.5rem;
+    margin-top: 0.3rem;
+    padding: 0.55rem 0.7rem;
+    border-radius: 0.6rem;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.07);
 }
-.fw-st-pipe-stat.is-buffering strong { color: var(--accent); }
+.fw-st-buf-stat { display: flex; flex-direction: column; gap: 0.1rem; }
+.fw-st-buf-stat strong { font-size: 1.05rem; font-weight: 700; font-family: var(--font-display); color: var(--text); }
+.fw-st-buf-stat span { font-size: 0.65rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
 
-.fw-st-pipe-stat.is-recovered {
-    background: rgba(57,208,200,0.07);
-    border-color: rgba(57,208,200,0.2);
-}
-.fw-st-pipe-stat.is-recovered strong { color: var(--accent-cool); }
-
-.fw-st-pipe-stat.is-dropped {
-    background: rgba(220,80,80,0.1);
-    border-color: rgba(220,80,80,0.25);
-}
-.fw-st-pipe-stat.is-dropped strong { color: #f87171; }
 
 /* ── Pipeline alert banner ───────────────────────────────────── */
 .fw-pipeline-alert {
@@ -8398,8 +8070,9 @@ a.ov-feature-card:hover .ov-feature-eyebrow { color: var(--accent-cool); }
 }
 
 @media (max-width: 760px) {
-    .fw-st-time-grid,
-    .fw-audit-summary {
+    .fw-audit-summary,
+    .fw-st-runtime-grid,
+    .fw-st-buf-detail {
         grid-template-columns: 1fr;
     }
     .fw-audit-row {

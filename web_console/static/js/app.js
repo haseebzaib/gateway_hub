@@ -472,6 +472,33 @@ document.addEventListener("DOMContentLoaded", () => {
             return "is-err";
         };
 
+        // Plain-language category for a raw connector exception, for the
+        // one-line glimpse on the dashboard card — a blind character slice
+        // through something like "[SSL: CERTIFICATE_VERIFY_FAILED]" just cuts
+        // it mid-token ("[SS...") which says nothing useful at a glance.
+        const _fwdErrorGlimpse = (err) => {
+            if (!err) return "Error";
+            const e = String(err);
+            if (/CERTIFICATE_VERIFY_FAILED/i.test(e)) return "Certificate verification failed";
+            if (/certificate required|handshake failure|SSLV3_ALERT_HANDSHAKE/i.test(e)) return "TLS handshake rejected (check mTLS certs)";
+            if (/wrong version number|WRONG_VERSION_NUMBER/i.test(e)) return "TLS mismatch (is the server actually using TLS on this port?)";
+            if (/connection refused/i.test(e)) return "Connection refused";
+            if (/timed out|timeout/i.test(e)) return "Connection timed out";
+            if (/name or service not known|getaddrinfo|nodename nor servname/i.test(e)) return "Can't resolve host";
+            if (/network is unreachable|no route to host/i.test(e)) return "Network unreachable";
+            const http = e.match(/HTTP (\d{3})/);
+            if (http) return `Server returned HTTP ${http[1]}`;
+            if (/not connected/i.test(e)) return "Not connected";
+            // Fallback: truncate on a word boundary, not mid-token.
+            const words = e.split(/\s+/);
+            let out = "";
+            for (const w of words) {
+                if ((out ? out + " " + w : w).length > 50) break;
+                out = out ? `${out} ${w}` : w;
+            }
+            return out || e.slice(0, 50);
+        };
+
         const refreshFwdStrip = async () => {
             try {
                 const r = await fetch("/api/forwarding/status");
@@ -497,9 +524,11 @@ document.addEventListener("DOMContentLoaded", () => {
                 const _fwdName = (x) => (x.profile_id && ovNameMap[x.profile_id]) || x.profile_name || "Profile";
 
                 // ── Update Data Forwarding domain card (always) ───────────────
+                const fwdDevList = document.querySelector("[data-ov-fw-devlist]");
                 if (fwdOverviewItem) {
                     if (allItems.length === 0) {
                         updateItem(fwdOverviewItem, "No profiles", "No forwarding profiles configured", "inactive");
+                        if (fwdDevList) fwdDevList.innerHTML = "";
                         const pipeline = document.querySelector("[data-ov-fw-pipeline]");
                         if (pipeline) pipeline.style.display = "none";
                     } else {
@@ -518,12 +547,28 @@ document.addEventListener("DOMContentLoaded", () => {
                         const fwdState = totalBuf > 0 ? `Active — ${totalBuf.toLocaleString()} buffered`
                                        : okCount === allItems.length ? "Active"
                                        : okCount > 0 ? `${okCount}/${allItems.length} active` : "Error";
-                        const fwdDetail = allItems.map((x) => {
-                            const name = _fwdName(x);
-                            const ok   = ("broker" in x) ? x.state === "connected" : x.tunnel_alive;
-                            return `${name}: ${ok ? "✓" : "✗"}`;
-                        }).join("  ·  ");
-                        updateItem(fwdOverviewItem, fwdState, fwdDetail, fwdTone);
+                        const fwdSummary = errCount === 0
+                            ? `All ${allItems.length} profile${allItems.length > 1 ? "s" : ""} connected`
+                            : `${errCount} profile${errCount > 1 ? "s" : ""} down`;
+                        updateItem(fwdOverviewItem, fwdState, fwdSummary, fwdTone);
+
+                        // Per-profile glimpse — enough to see WHICH server is down and
+                        // why, in one line, without leaving the dashboard; full detail
+                        // (and the outage/error history) lives on the Forwarding page.
+                        if (fwdDevList) {
+                            fwdDevList.innerHTML = allItems.map((x) => {
+                                const name = _fwdName(x);
+                                const ok = ("broker" in x) ? x.state === "connected" : x.tunnel_alive;
+                                const err = x.last_error ? String(x.last_error) : "";
+                                const text = ok ? "Connected" : _fwdErrorGlimpse(err);
+                                return `
+                                    <div class="ov-dsc-sensor-row">
+                                        <span class="ov-dsc-sensor-dot${ok ? "" : " is-err"}"></span>
+                                        <span class="ov-dsc-sensor-name" title="${name}">${name}</span>
+                                        <span class="ov-dsc-sensor-state${ok ? "" : " is-err"}" title="${err}">${text}</span>
+                                    </div>`;
+                            }).join("");
+                        }
 
                         // Pipeline stats counters
                         const pipeline = document.querySelector("[data-ov-fw-pipeline]");
@@ -6882,8 +6927,6 @@ document.addEventListener("DOMContentLoaded", () => {
             return h > 0 ? `${d}d ${h}h` : `${d}d`;
         };
 
-        const _fwDurMs = (ms) => (ms || ms === 0) ? _fwDur(Math.round(ms / 1000)) : "—";
-
         const _fwDateTime = (ms) => {
             if (!ms) return "—";
             return new Date(ms).toLocaleString(undefined, {
@@ -7041,102 +7084,61 @@ document.addEventListener("DOMContentLoaded", () => {
                         const pending  = item.buffer?.pending  ?? 0;
                         const replayed = item.buffer?.replayed ?? 0;
                         const dropped  = item.buffer?.dropped  ?? 0;
-                        const sucRate  = item.buffer?.success_rate ?? 100;
 
-                        // Connection downtime (when not connected)
-                        const downSecs = isMqtt ? item.not_connected_since : item.down_since_ago;
-                        const isDown   = isMqtt ? (item.state !== "connected") : (!item.tunnel_alive);
-                        const openOutage = item.open_outage || null;
-                        const downStartedMs = openOutage?.started_at_ms || (isMqtt ? item.not_connected_since_ms : item.down_since_ms);
+                        // last_error is cleared by the worker the instant a
+                        // (re)connect succeeds, so its mere presence already
+                        // means "currently failing" — no separate down-state
+                        // tracking needed (and none is provided by the API).
                         const lastMsgMs = isMqtt ? item.last_publish_at_ms : item.last_post_at_ms;
-                        const lastErrMs = item.last_error_at_ms;
+                        const httpCode  = !isMqtt ? item.last_status_code : null;
+                        const failReason = item.last_error
+                            ? item.last_error
+                            : (httpCode && httpCode >= 400 ? `Server rejected with HTTP ${httpCode} — check endpoint URL and authentication.` : "");
 
-                        // Session uptime & message rate
-                        const connSecs   = item.connected_since ?? 0;
-                        const sessionStr = connSecs > 0 ? _fwDur(connSecs) : "—";
-                        const ratePerSec = connSecs > 10 && count > 0 ? count / connSecs : 0;
-                        const rateStr = ratePerSec >= 1
-                            ? `${ratePerSec.toFixed(1)}/s`
-                            : ratePerSec > 0 ? `${Math.round(ratePerSec * 60)}/min`
+                        // connected_since is an absolute timestamp (ms since
+                        // epoch), not a duration — it must be measured against
+                        // "now", never formatted directly as an elapsed time.
+                        const uptimeStr = item.connected_since
+                            ? _fwDur(Math.max(0, Math.floor((Date.now() - item.connected_since) / 1000)))
                             : "—";
+                        // last_publish_ago/last_post_ago from the API are
+                        // already-formatted strings ("5m"), not raw seconds —
+                        // compute "ago" ourselves from the raw *_at_ms fields
+                        // instead of double-formatting them.
+                        const lastDeliveryStr = lastMsgMs
+                            ? _fwAgo(Math.max(0, Math.floor((Date.now() - lastMsgMs) / 1000)))
+                            : "never";
 
-                        // Last event line
-                        const lastAgo  = isMqtt ? item.last_publish_ago : item.last_post_ago;
-                        const lastStr  = lastAgo != null ? _fwAgo(lastAgo) : "never";
-                        const httpInfo = !isMqtt && item.last_status_code ? ` · HTTP ${item.last_status_code}` : "";
-                        const restarts = !isMqtt && item.tunnel_restarts > 5 ? ` · ${item.tunnel_restarts} reconnects` : "";
-
-                        // Downtime banner (when connection is down)
-                        const downLabel = isMqtt
-                            ? (item.state === "connecting" ? "Reconnecting…" : "Connection error —")
-                            : "Connection down —";
-                        const downHtml = isDown && downSecs != null
-                            ? `<div class="fw-st-downtime">
-                                <span class="fw-st-dt-label">${downLabel}</span>
-                                <span class="fw-st-dt-dur">down for ${_fwDur(downSecs)}</span>
-                                <span class="fw-st-dt-since">since ${_fwEsc(_fwDateTime(downStartedMs))}</span>
-                               </div>` : "";
-
-                        // ── Error/failure reason row (shown for BOTH MQTT and HTTPS) ──
-                        const httpCode    = item.last_status_code;
-                        const httpIsErr   = httpCode && httpCode >= 400;
-                        // Build the human-readable failure reason
-                        let failReason = "";
-                        if (httpIsErr) {
-                            failReason = `Server rejected with HTTP ${httpCode} — check endpoint URL and authentication.`;
-                        } else if (item.last_error) {
-                            failReason = item.last_error;
-                        }
-                        // Show the error row whenever there's a reason — always, not just when down
-                        const errRowHtml = failReason
-                            ? `<div class="fw-st-err-row">
-                                <span class="fw-st-err-icon">⚠</span>
-                                <div class="fw-st-err-body">
-                                    <span class="fw-st-err-label">${isDown ? "Failure reason" : "Last error"}</span>
-                                    <span class="fw-st-err-msg">${_fwEsc(failReason)}</span>
-                                    ${lastErrMs ? `<span class="fw-st-err-time">${_fwEsc(_fwDateTime(lastErrMs))}</span>` : ""}
+                        const alertHtml = failReason
+                            ? `<div class="fw-st-alert">
+                                <span class="fw-st-alert-icon">⚠</span>
+                                <div class="fw-st-alert-body">
+                                    <strong>Can't reach this server</strong>
+                                    <p>${_fwEsc(failReason)}</p>
+                                    ${item.last_error_at_ms ? `<span class="fw-st-alert-time">Last tried ${_fwEsc(_fwDateTime(item.last_error_at_ms))}</span>` : ""}
                                 </div>
                                </div>` : "";
 
-                        const exactTimeHtml = `
-                            <div class="fw-st-time-grid">
-                                <div><span>Outage started</span><strong>${_fwEsc(_fwDateTime(downStartedMs))}</strong></div>
-                                <div><span>Last message</span><strong>${_fwEsc(_fwDateTime(lastMsgMs))}</strong></div>
-                                <div><span>Last error</span><strong>${_fwEsc(_fwDateTime(lastErrMs))}</strong></div>
-                            </div>`;
-
-                        // Root cause for buffer explain (only when no dedicated error row covers it)
-                        const causeHint = httpIsErr && !failReason ? `HTTP ${httpCode}` : "";
-
-                        // ── Buffer section data ───────────────────────────────
-                        const oldestAge = item.buffer?.oldest_pending_age_s;
-                        const cooling   = item.buffer?.cooling_down ?? 0;
-                        const bufHealthy = pending === 0 && dropped === 0;
-
-                        // Buffer section visual state
-                        const bufSectionCls = dropped > 0 ? "is-evicting"
-                            : pending > 0 ? "is-buffering"
-                            : replayed > 0 ? "is-recovered"
-                            : "is-healthy";
-
-                        // Buffer status badge
-                        const bufBadge = dropped > 0
-                            ? `<span class="fw-st-buf-badge is-err">⚠ ${dropped.toLocaleString()} evicted</span>`
+                        // Buffer: a single quiet line in the common healthy
+                        // case, only expanding to real numbers when there's
+                        // actually something to report (nothing to show for
+                        // "oldest pending age" / "retry backoff count" here —
+                        // the API doesn't provide either, so this sticks to
+                        // the three counters that are real).
+                        const bufCls = dropped > 0 ? "is-err" : pending > 0 ? "is-warn" : "is-ok";
+                        const bufLine = dropped > 0
+                            ? `${dropped.toLocaleString()} message${dropped !== 1 ? "s" : ""} evicted — local buffer was full`
                             : pending > 0
-                            ? `<span class="fw-st-buf-badge is-warn">⬆ ${pending.toLocaleString()} waiting</span>`
+                            ? `${pending.toLocaleString()} message${pending !== 1 ? "s" : ""} waiting to send — will deliver automatically once connected`
                             : replayed > 0
-                            ? `<span class="fw-st-buf-badge is-ok">✓ ${replayed.toLocaleString()} recovered</span>`
-                            : `<span class="fw-st-buf-badge is-ok">✓ Healthy</span>`;
-
-                        // Plain-language explanation line
-                        let bufExplain = "";
-                        if (pending > 0) {
-                            bufExplain = `Saved locally — will send automatically when connection recovers.`;
-                        } else if (replayed > 0 && pending === 0) {
-                            bufExplain = `${replayed.toLocaleString()} message${replayed !== 1 ? "s" : ""} recovered and delivered from buffer this session.`;
-                        } else if (dropped > 0) {
-                            bufExplain = `Buffer was full — oldest messages removed to make room for new data.`;
-                        }
+                            ? `Buffer healthy · ${replayed.toLocaleString()} recovered this session`
+                            : `Buffer healthy`;
+                        const bufDetailHtml = (pending > 0 || dropped > 0)
+                            ? `<div class="fw-st-buf-detail">
+                                <div class="fw-st-buf-stat"><strong>${pending.toLocaleString()}</strong><span>Waiting to send</span></div>
+                                <div class="fw-st-buf-stat"><strong>${dropped.toLocaleString()}</strong><span>Evicted</span></div>
+                                <div class="fw-st-buf-stat"><strong>${replayed.toLocaleString()}</strong><span>Recovered</span></div>
+                               </div>` : "";
 
                         return `
                         <div class="fw-status-card ${stCls}">
@@ -7146,52 +7148,26 @@ document.addEventListener("DOMContentLoaded", () => {
                                 <span class="fw-st-state">${_fwEsc(stLbl)}</span>
                             </div>
                             <div class="fw-st-dest">${_fwEsc(dest)}${tlsNote}</div>
-                            ${downHtml}
-                            ${errRowHtml}
-                            ${exactTimeHtml}
-                            <div class="fw-st-runtime-grid">
+                            ${alertHtml}
+                            <div class="fw-st-runtime-grid fw-st-runtime-grid-3">
                                 <div class="fw-st-runtime-stat">
                                     <strong>${count.toLocaleString()}</strong>
                                     <span>${isMqtt ? "Published" : "Sent"}</span>
                                 </div>
                                 <div class="fw-st-runtime-stat">
-                                    <strong>${rateStr}</strong>
-                                    <span>Avg rate</span>
+                                    <strong>${uptimeStr}</strong>
+                                    <span>Uptime</span>
                                 </div>
                                 <div class="fw-st-runtime-stat">
-                                    <strong>${isDown ? "—" : sessionStr}</strong>
-                                    <span>${isDown ? "Not connected" : "Up for"}</span>
-                                </div>
-                                <div class="fw-st-runtime-stat">
-                                    <strong>${lastStr}</strong>
-                                    <span>Last message${httpInfo}${restarts}</span>
+                                    <strong>${lastDeliveryStr}</strong>
+                                    <span>Last delivery</span>
                                 </div>
                             </div>
-                            <div class="fw-st-buf-section ${bufSectionCls}">
-                                <div class="fw-st-buf-header">
-                                    <span class="fw-st-buf-title">Message Buffer</span>
-                                    ${bufBadge}
-                                </div>
-                                <div class="fw-st-buf-stat-grid">
-                                    <div class="fw-st-buf-stat">
-                                        <strong>${pending.toLocaleString()}</strong>
-                                        <span>Waiting to send</span>
-                                    </div>
-                                    <div class="fw-st-buf-stat">
-                                        <strong>${oldestAge != null ? _fwAgo(oldestAge) : "—"}</strong>
-                                        <span>${item.buffer?.oldest_pending_ms ? _fwDateTime(item.buffer.oldest_pending_ms) : "Oldest message"}</span>
-                                    </div>
-                                    <div class="fw-st-buf-stat">
-                                        <strong>${cooling > 0 ? cooling.toLocaleString() : "—"}</strong>
-                                        <span>In retry backoff</span>
-                                    </div>
-                                    <div class="fw-st-buf-stat">
-                                        <strong>${replayed > 0 ? replayed.toLocaleString() : "—"}</strong>
-                                        <span>Recovered</span>
-                                    </div>
-                                </div>
-                                ${bufExplain ? `<p class="fw-st-buf-explain">${bufExplain}</p>` : ""}
+                            <div class="fw-st-buf-line ${bufCls}">
+                                <span class="fw-st-buf-dot"></span>
+                                <span>${_fwEsc(bufLine)}</span>
                             </div>
+                            ${bufDetailHtml}
                         </div>`;
                     }).join("");
                 }
@@ -7294,6 +7270,59 @@ document.addEventListener("DOMContentLoaded", () => {
         const fwAuditList = fwShell.querySelector("[data-fw-audit-list]");
         const fwAuditEmpty = fwShell.querySelector("[data-fw-audit-empty]");
         const fwAuditWindow = fwShell.querySelector("[data-fw-audit-window]");
+        const fwAuditPager = fwShell.querySelector("[data-fw-audit-pager]");
+
+        const FW_AUDIT_PER_PAGE = 10;
+        let fwAuditEvents = [];
+        let fwAuditPage = 0;
+
+        const fwRenderAuditPage = () => {
+            if (!fwAuditList) return;
+            if (!fwAuditEvents.length) {
+                fwAuditList.innerHTML = "";
+                fwAuditPager?.classList.add("ov-hidden");
+                return;
+            }
+            const pageCount = Math.max(1, Math.ceil(fwAuditEvents.length / FW_AUDIT_PER_PAGE));
+            fwAuditPage = Math.min(fwAuditPage, pageCount - 1);
+            const page = fwAuditEvents.slice(fwAuditPage * FW_AUDIT_PER_PAGE, (fwAuditPage + 1) * FW_AUDIT_PER_PAGE);
+
+            fwAuditList.innerHTML = page.map((event) => {
+                const cls = _fwSeverityClass(event.severity);
+                const profile = event.profile || "Unknown profile";
+                const reason = _fwEventReason(event);
+                return `
+                    <div class="fw-audit-row ${cls}">
+                        <div class="fw-audit-time">
+                            <strong>${_fwEsc(_fwDateTime(event.timestamp))}</strong>
+                        </div>
+                        <div class="fw-audit-main">
+                            <div class="fw-audit-head">
+                                <span class="fw-audit-type">${_fwEsc(_fwEventLabel(event.event))}</span>
+                                <span class="fw-audit-profile">${_fwEsc(profile)}</span>
+                                <span class="fw-audit-sev">${_fwEsc(event.severity || "info")}</span>
+                            </div>
+                            <p class="fw-audit-reason">${_fwEsc(reason)}</p>
+                            <div class="fw-audit-meta">${_fwEsc((event.protocol || "").toUpperCase())}</div>
+                        </div>
+                    </div>`;
+            }).join("");
+
+            if (pageCount > 1) {
+                fwAuditPager?.classList.remove("ov-hidden");
+                if (fwAuditPager) {
+                    fwAuditPager.innerHTML = `
+                        <button class="ev-page-btn" data-fw-ap-prev ${fwAuditPage === 0 ? "disabled" : ""}>← Newer</button>
+                        <span class="ev-page-label">Page ${fwAuditPage + 1} of ${pageCount} · ${fwAuditEvents.length} events</span>
+                        <button class="ev-page-btn" data-fw-ap-next ${fwAuditPage >= pageCount - 1 ? "disabled" : ""}>Older →</button>`;
+                    fwAuditPager.querySelector("[data-fw-ap-prev]")?.addEventListener("click", () => { fwAuditPage = Math.max(0, fwAuditPage - 1); fwRenderAuditPage(); });
+                    fwAuditPager.querySelector("[data-fw-ap-next]")?.addEventListener("click", () => { fwAuditPage = Math.min(pageCount - 1, fwAuditPage + 1); fwRenderAuditPage(); });
+                }
+            } else {
+                fwAuditPager?.classList.add("ov-hidden");
+                if (fwAuditPager) fwAuditPager.innerHTML = "";
+            }
+        };
 
         const fwRefreshAudit = async () => {
             if (!fwAuditPanel || !fwAuditList) return;
@@ -7303,59 +7332,23 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (!r.ok) return;
                 const d = await r.json();
                 if (!d.ok) return;
-                const events = d.events || [];
+                // Keep whatever page the user is currently reading across the
+                // periodic background refresh below — only an explicit window
+                // change (handler further down) jumps back to page 1.
+                fwAuditEvents = d.events || [];
 
-                const outageStarts = events.filter((e) => e.event_type === "outage_started").length;
-                const recovered = events.filter((e) => e.event_type === "outage_recovered").length;
-                const errors = events.filter((e) => e.severity === "error" || e.severity === "critical").length;
-                const longestMs = events.reduce((max, e) => Math.max(max, e.duration_ms || 0), 0);
-
+                const summary = d.summary || {};
                 const setText = (attr, value) => {
                     const el = fwShell.querySelector(`[${attr}]`);
                     if (el) el.textContent = value;
                 };
-                setText("data-fw-audit-outages", outageStarts.toLocaleString());
-                setText("data-fw-audit-recovered", recovered.toLocaleString());
-                setText("data-fw-audit-errors", errors.toLocaleString());
-                setText("data-fw-audit-longest", longestMs ? _fwDurMs(longestMs) : "—");
+                setText("data-fw-audit-outages", (summary.outages || 0).toLocaleString());
+                setText("data-fw-audit-recovered", (summary.recovered || 0).toLocaleString());
+                setText("data-fw-audit-errors", (summary.errors || 0).toLocaleString());
+                setText("data-fw-audit-longest", "—"); // outage-duration pairing isn't tracked yet
 
-                fwAuditEmpty?.classList.toggle("ov-hidden", events.length > 0);
-                if (!events.length) {
-                    fwAuditList.innerHTML = "";
-                    return;
-                }
-
-                fwAuditList.innerHTML = events.slice(0, 80).map((event) => {
-                    const cls = _fwSeverityClass(event.severity);
-                    const profile = event.profile_name || event.profile_id || "Unknown profile";
-                    const reason = _fwEventReason(event);
-                    const duration = event.duration_ms != null ? _fwDurMs(event.duration_ms) : "";
-                    const recoveryLine = event.event_type === "outage_recovered"
-                        ? `<div class="fw-audit-duration">Outage: ${_fwEsc(_fwDateTime(event.started_at_ms))} → ${_fwEsc(_fwDateTime(event.ended_at_ms))} · ${_fwEsc(duration)}</div>`
-                        : event.started_at_ms
-                        ? `<div class="fw-audit-duration">Started: ${_fwEsc(_fwDateTime(event.started_at_ms))}</div>`
-                        : "";
-                    const http = event.http_status ? `HTTP ${event.http_status}` : "";
-                    const pending = event.pending_count != null ? `${event.pending_count} pending` : "";
-                    const metaBits = [event.protocol?.toUpperCase(), event.destination, http, pending].filter(Boolean);
-                    return `
-                        <div class="fw-audit-row ${cls}">
-                            <div class="fw-audit-time">
-                                <strong>${_fwEsc(_fwDateTime(event.timestamp_ms))}</strong>
-                                <span>${_fwEsc(event.timestamp_utc || "")}</span>
-                            </div>
-                            <div class="fw-audit-main">
-                                <div class="fw-audit-head">
-                                    <span class="fw-audit-type">${_fwEsc(_fwEventLabel(event.event_type))}</span>
-                                    <span class="fw-audit-profile">${_fwEsc(profile)}</span>
-                                    <span class="fw-audit-sev">${_fwEsc(event.severity || "info")}</span>
-                                </div>
-                                <p class="fw-audit-reason">${_fwEsc(reason)}</p>
-                                ${recoveryLine}
-                                <div class="fw-audit-meta">${_fwEsc(metaBits.join(" · "))}</div>
-                            </div>
-                        </div>`;
-                }).join("");
+                fwAuditEmpty?.classList.toggle("ov-hidden", fwAuditEvents.length > 0);
+                fwRenderAuditPage();
             } catch (e) {
                 console.warn("[Forwarding] audit fetch failed:", e);
             }
@@ -7363,6 +7356,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         fwAuditWindow?.addEventListener("change", () => {
             _fwRefreshAuditExport();
+            fwAuditPage = 0;
             fwRefreshAudit();
         });
 

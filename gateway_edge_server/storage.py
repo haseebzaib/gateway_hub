@@ -778,6 +778,39 @@ class EdgeServerStorage:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def messages_since(self, last_id: int, limit: int = 200) -> list[dict[str, Any]]:
+        """Cursor-tail accepted messages, oldest-first — used by Data Forwarding
+        to relay what devices sent this server onward. Rejected/malformed
+        traffic (accepted=0) is diagnostic, not real device data, so it's
+        excluded here the same way it's excluded from device_state counts."""
+        self.open()
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, received_at, protocol, device_id, route, payload_type,
+                       payload_json, payload_raw, device_timestamp, sequence
+                FROM messages
+                WHERE id > ? AND accepted = 1
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (int(last_id), int(limit)),
+            ).fetchall()
+            result = []
+            for row in rows:
+                item = dict(row)
+                raw = item.pop("payload_raw", None)
+                if raw is not None and not item.get("payload_json"):
+                    item["payload_raw_hex"] = bytes(raw).hex()
+                result.append(item)
+            return result
+
+    def max_accepted_message_id(self) -> int:
+        self.open()
+        with self._lock:
+            row = self._conn.execute("SELECT MAX(id) AS m FROM messages WHERE accepted = 1").fetchone()
+            return int(row["m"]) if row and row["m"] is not None else 0
+
     def export_messages(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
         self.open()
         where, params = _message_filter_sql(filters)

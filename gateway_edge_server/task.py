@@ -64,6 +64,13 @@ class EdgeServerTask:
         self._mqtt_client_devices: dict[str, set[str]] = {}
         self._mqtt_connect_history: dict[str, deque[float]] = {}
 
+    @property
+    def storage(self) -> EdgeServerStorage:
+        """Read access for other subsystems (Data Forwarding tails accepted
+        messages from here) — the connection handles SQLite vs SQLCipher
+        internally, so callers never need to know which backend is active."""
+        return self._storage
+
     def start(self, config: dict[str, Any]) -> None:
         self._config = deepcopy(config)
         if self._storage_enabled:

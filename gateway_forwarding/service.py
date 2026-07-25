@@ -15,6 +15,7 @@ import json
 import sqlite3
 import time
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,18 @@ from .storage import ForwardingStorage
 SENSOR_BATCH = 200
 TOPIC_PREFIX = "metacrust"
 
+# While a real-time trickle of data arrives, small fast batches keep latency
+# low. But right after a long outage there can be tens of thousands of
+# backlogged rows (state["replay_remaining"] > 0) — pumping those at the same
+# pace would fire a sustained ~1000 msg/s burst at whatever's on the other
+# end, which is exactly the "bombard the server" risk. Backlog catch-up uses
+# smaller batches on a slower cadence instead; live delivery is unaffected.
+REPLAY_BATCH = 40
+REPLAY_PACE_S = 0.5
+LIVE_PACE_S = 0.2
+
+_WINDOW_MS = {"1h": 3_600_000, "6h": 21_600_000, "24h": 86_400_000, "7d": 604_800_000, "30d": 2_592_000_000}
+
 _METRIC_SNAPSHOT_DROP = {"ok", "source", "message_id", "message_type", "received_at", "ipc", "stale_ms"}
 
 
@@ -35,6 +48,7 @@ def topics_for(gid: str) -> dict[str, str]:
         "sensors": f"{TOPIC_PREFIX}/{gid}/sensors/{{type}}/{{id}}",
         "device_metrics": f"{TOPIC_PREFIX}/{gid}/device/metrics",
         "device_anomalies": f"{TOPIC_PREFIX}/{gid}/device/anomalies",
+        "edge_server": f"{TOPIC_PREFIX}/{gid}/edge/{{protocol}}/{{id}}",
     }
 
 
@@ -45,6 +59,7 @@ class ForwardingService:
         *,
         sensor_db_path: Path | str | None = None,
         monitor_db_path: Path | str | None = None,
+        edge_server: Any | None = None,
     ) -> None:
         self.storage = ForwardingStorage()
         self.config = load_config()
@@ -52,6 +67,11 @@ class ForwardingService:
         self.core_ipc = core_ipc
         self.sensor_db_path = Path(sensor_db_path) if sensor_db_path else _default_sensor_db()
         self.monitor_db_path = Path(monitor_db_path) if monitor_db_path else _default_monitor_db()
+        # Edge Server (gateway_edge_server.EdgeServerTask) receives data FROM
+        # devices and stores it; this lets a profile relay that same data
+        # onward, same cursor-tail approach as sensors/anomalies below —
+        # accessed via its own storage so SQLite/SQLCipher stays transparent.
+        self.edge_server = edge_server
         self._workers: dict[str, asyncio.Task[None]] = {}
         self._states: dict[str, dict[str, Any]] = {}
 
@@ -131,7 +151,11 @@ class ForwardingService:
                         self.storage.add_event(pid, "info", "connected", self._destination(profile))
                         backoff = 5.0
                     busy = await self._pump_once(profile, publisher, state)
-                    await asyncio.sleep(0.2 if busy else 1.0)
+                    if state["replay_remaining"] > 0:
+                        pacing = REPLAY_PACE_S
+                    else:
+                        pacing = LIVE_PACE_S if busy else 1.0
+                    await asyncio.sleep(pacing)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -207,6 +231,10 @@ class ForwardingService:
         sources = profile.get("sources") or {}
         topics = topics_for(self.gateway_id)
         busy = False
+        # Smaller batches while a backlog is still being caught up, so a long
+        # outage's worth of stored data doesn't get flushed at full speed the
+        # instant the connection comes back (see REPLAY_BATCH/REPLAY_PACE_S).
+        batch_size = REPLAY_BATCH if state["replay_remaining"] > 0 else SENSOR_BATCH
 
         wanted = sources.get("sensors") or []
         if wanted:
@@ -214,7 +242,7 @@ class ForwardingService:
                 self.sensor_db_path,
                 "SELECT id, ts_ms, source_type, source_id, ok, payload_json FROM sensor_messages WHERE id > ? ORDER BY id LIMIT ?",
                 self.storage.get_cursor(pid, "sensors"),
-                SENSOR_BATCH,
+                batch_size,
             )
             if rows:
                 envelopes = []
@@ -237,7 +265,7 @@ class ForwardingService:
                 " slope_value, warning_limit, critical_limit, alarm_name, headline, message"
                 " FROM anomaly_events WHERE id > ? ORDER BY id LIMIT ?",
                 self.storage.get_cursor(pid, "anomalies"),
-                SENSOR_BATCH,
+                batch_size,
             )
             if rows:
                 envelopes = [self._anomaly_envelope(row) for row in rows]
@@ -245,6 +273,24 @@ class ForwardingService:
                 self.storage.set_cursor(pid, "anomalies", int(rows[-1]["id"]))
                 self._count_delivery(pid, state, len(envelopes))
                 busy = True
+
+        wanted_edge = sources.get("edge_server") or []
+        if wanted_edge and self.edge_server is not None:
+            rows = self.edge_server.storage.messages_since(
+                self.storage.get_cursor(pid, "edge_server"), batch_size,
+            )
+            if rows:
+                envelopes = []
+                for row in rows:
+                    if wanted_edge != "all" and row["device_id"] not in wanted_edge:
+                        continue
+                    envelopes.append(self._edge_server_envelope(row))
+                if envelopes:
+                    await self._deliver(publisher, profile, envelopes, topics, state)
+                self.storage.set_cursor(pid, "edge_server", int(rows[-1]["id"]))
+                if envelopes:
+                    self._count_delivery(pid, state, len(envelopes))
+                    busy = True
 
         if sources.get("device_metrics") and self.core_ipc is not None:
             interval_ms = int(sources.get("metrics_interval_s", 5)) * 1000
@@ -319,6 +365,24 @@ class ForwardingService:
             data,
         )
 
+    def _edge_server_envelope(self, row: dict[str, Any]) -> dict[str, Any]:
+        raw_json = row.get("payload_json")
+        try:
+            data = json.loads(raw_json) if raw_json else {}
+        except (TypeError, ValueError):
+            data = {"raw": raw_json}
+        if row.get("payload_raw_hex"):
+            data.setdefault("raw_hex", row["payload_raw_hex"])
+        for extra in ("route", "payload_type", "device_timestamp", "sequence"):
+            if row.get(extra) is not None:
+                data.setdefault(extra, row[extra])
+        return self._envelope(
+            "edge_server_data",
+            {"type": row.get("protocol") or "edge_server", "id": row["device_id"]},
+            _iso_to_ms(row.get("received_at")),
+            data,
+        )
+
     def _metrics_envelope(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         data = {k: v for k, v in snapshot.items() if k not in _METRIC_SNAPSHOT_DROP}
         return self._envelope(
@@ -337,6 +401,8 @@ class ForwardingService:
             pending += max(0, _max_id(self.sensor_db_path, "sensor_messages") - self.storage.get_cursor(pid, "sensors"))
         if sources.get("device_anomalies"):
             pending += max(0, _max_id(self.monitor_db_path, "anomaly_events") - self.storage.get_cursor(pid, "anomalies"))
+        if sources.get("edge_server") and self.edge_server is not None:
+            pending += max(0, self.edge_server.storage.max_accepted_message_id() - self.storage.get_cursor(pid, "edge_server"))
         return pending
 
     def _destination(self, profile: dict[str, Any]) -> str:
@@ -431,11 +497,12 @@ class ForwardingService:
             "storage": {"db_size_mb": round(db_size_mb, 1), "estimated_capacity_mb": 0, "max_per_profile": 0},
         }
 
-    def events(self, limit: int = 200) -> dict[str, Any]:
+    def events(self, limit: int = 200, window: str | None = None) -> dict[str, Any]:
         names = {p["id"]: (p.get("name", "?"), p.get("protocol", "?")) for p in self.config.get("profiles", [])}
         events = []
         outages = recovered = errors = 0
-        for row in self.storage.recent_events(limit):
+        since_ms = _now_ms() - _WINDOW_MS.get(window or "", _WINDOW_MS["7d"]) if window else None
+        for row in self.storage.recent_events(limit, since_ms=since_ms):
             name, protocol = names.get(row["profile_id"], (row["profile_id"], "?"))
             if row["event"] == "connected":
                 recovered += 1
@@ -490,6 +557,9 @@ def _mqtt_topic(topics: dict[str, str], envelope: dict[str, Any]) -> str:
         return topics["sensors"].format(type=source.get("type", "unknown"), id=source.get("id", "unknown"))
     if kind == "anomaly_event":
         return topics["device_anomalies"]
+    if kind == "edge_server_data":
+        source = envelope.get("source") or {}
+        return topics["edge_server"].format(protocol=source.get("type", "unknown"), id=source.get("id", "unknown"))
     return topics["device_metrics"]
 
 
@@ -520,6 +590,19 @@ def _max_id(db_path: Path, table: str) -> int:
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _iso_to_ms(value: Any) -> int:
+    """Edge Server stores received_at as ISO-8601 text, unlike the sensor/
+    monitor stores' epoch-ms ts_ms columns — the envelope contract requires
+    an int, so this converts once at the boundary rather than downstream."""
+    if not value:
+        return _now_ms()
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return int(dt.timestamp() * 1000)
+    except (TypeError, ValueError):
+        return _now_ms()
 
 
 def _ago(ts_ms: int | None) -> str | None:

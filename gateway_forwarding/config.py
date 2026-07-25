@@ -92,6 +92,7 @@ def _default_sources() -> dict[str, Any]:
         "metrics_interval_s": 5,
         "device_anomalies": False,
         "sensors": [],
+        "edge_server": [],
     }
 
 
@@ -111,6 +112,11 @@ def _normalize_sources(raw: Any) -> dict[str, Any]:
         sources["sensors"] = "all"
     elif isinstance(sensors, list):
         sources["sensors"] = [str(item)[:120] for item in sensors][:64]
+    edge = raw.get("edge_server")
+    if edge == "all":
+        sources["edge_server"] = "all"
+    elif isinstance(edge, list):
+        sources["edge_server"] = [str(item)[:120] for item in edge][:64]
     return sources
 
 

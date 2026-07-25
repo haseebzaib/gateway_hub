@@ -151,12 +151,19 @@ class ForwardingStorage:
             self._conn.execute("DELETE FROM events WHERE ts_ms < ?", (now_ms - EVENT_RETENTION_MS,))
             self._conn.commit()
 
-    def recent_events(self, limit: int = 200) -> list[dict[str, Any]]:
+    def recent_events(self, limit: int = 200, since_ms: int | None = None) -> list[dict[str, Any]]:
         with self._lock:
             self.open()
             assert self._conn is not None
-            rows = self._conn.execute(
-                "SELECT ts_ms, profile_id, severity, event, message FROM events ORDER BY ts_ms DESC LIMIT ?",
-                (int(limit),),
-            ).fetchall()
+            if since_ms is not None:
+                rows = self._conn.execute(
+                    "SELECT ts_ms, profile_id, severity, event, message FROM events"
+                    " WHERE ts_ms >= ? ORDER BY ts_ms DESC LIMIT ?",
+                    (int(since_ms), int(limit)),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT ts_ms, profile_id, severity, event, message FROM events ORDER BY ts_ms DESC LIMIT ?",
+                    (int(limit),),
+                ).fetchall()
         return [dict(row) for row in rows]

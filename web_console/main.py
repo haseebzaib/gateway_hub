@@ -26,7 +26,7 @@ LOGGER = logging.getLogger("edge_server")
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     ipc_task = GatewayCoreIpcTask()
     edge_server_task = EdgeServerTask()
-    forwarding_service = ForwardingService(core_ipc=ipc_task)
+    forwarding_service = ForwardingService(core_ipc=ipc_task, edge_server=edge_server_task)
     app.state.core_ipc = ipc_task
     app.state.edge_server = edge_server_task
     app.state.forwarding = forwarding_service

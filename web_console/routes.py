@@ -589,6 +589,19 @@ def _forwarding_available_sources(request: Request) -> list[dict[str, Any]]:
         return []
 
 
+def _forwarding_available_edge_devices(request: Request) -> list[dict[str, Any]]:
+    """Edge Server devices the user can pick in 'What to send' — devices that
+    have actually pushed data to this gateway's inbound HTTP/MQTT listeners."""
+    edge = getattr(request.app.state, "edge_server", None)
+    if edge is None:
+        return []
+    try:
+        return edge.storage.history_devices()
+    except Exception as exc:
+        LOGGER.warning("forwarding_edge_devices_failed error=%s", exc)
+        return []
+
+
 def _normalise_edge_server_config(payload: dict[str, Any]) -> dict[str, Any]:
     defaults = _default_edge_server_config()
     raw_listeners = dict(payload.get("listeners") or {})
@@ -1629,6 +1642,7 @@ async def get_forwarding_config(request: Request) -> JSONResponse:
         "gateway_id": gid,
         "topics": forwarding_topics_for(gid),
         "available_sources": _forwarding_available_sources(request),
+        "available_edge_devices": _forwarding_available_edge_devices(request),
         "metric_interval_choices": list(METRIC_INTERVAL_CHOICES),
         "default_graphql_query": DEFAULT_GRAPHQL_QUERY,
     })
@@ -1678,8 +1692,9 @@ async def get_forwarding_events(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     service = getattr(request.app.state, "forwarding", None)
+    window = request.query_params.get("window", "7d")
     if service is not None:
-        return JSONResponse(service.events())
+        return JSONResponse(service.events(limit=500, window=window))
     return JSONResponse({"ok": True, "events": [], "summary": {"outages": 0, "recovered": 0, "errors": 0}})
 
 
@@ -1689,8 +1704,9 @@ async def export_forwarding_events_csv(request: Request) -> PlainTextResponse:
         return PlainTextResponse("Authentication required.", status_code=status.HTTP_401_UNAUTHORIZED)
     lines = ["timestamp,profile,protocol,event,severity,message"]
     service = getattr(request.app.state, "forwarding", None)
+    window = request.query_params.get("window", "30d")
     if service is not None:
-        for event in service.events(limit=1000).get("events", []):
+        for event in service.events(limit=2000, window=window).get("events", []):
             stamp = datetime.fromtimestamp(event["timestamp"] / 1000, UTC).isoformat()
             message = str(event.get("message", "")).replace('"', "'")
             lines.append(
