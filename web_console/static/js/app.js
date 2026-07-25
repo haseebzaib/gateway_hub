@@ -342,24 +342,110 @@ document.addEventListener("DOMContentLoaded", () => {
         window.setInterval(refreshOverviewState, 5000);
 
         // ── Insights summary for overview domain card ──────────────────────
+        // Per-device breakdown (not just one aggregate number) so a problem
+        // sensor is visible from the main dashboard, before ever opening
+        // Insights — this reuses the same three endpoints the Insights page
+        // itself is built on, so the numbers always agree with what's shown
+        // there (no separate "anomaly_count" definition to drift out of sync).
+        const DSC_DEVROWS_LIMIT = 5;
         const refreshInsightsSummary = async () => {
+            const devEl   = document.querySelector("[data-ov-insights-devices]");
+            const flagEl  = document.querySelector("[data-ov-insights-anomalies]");
+            const flagTile = document.querySelector("[data-ov-insights-flags-tile]");
+            const listEl  = document.querySelector("[data-ov-insights-devlist]");
+            const subEl   = document.querySelector("[data-ov-insights-sub]");
             try {
-                const r = await fetch("/api/insights/summary");
-                if (!r.ok) return;
-                const d = await r.json();
-                const devEl  = document.querySelector("[data-ov-insights-devices]");
-                const anEl   = document.querySelector("[data-ov-insights-anomalies]");
-                const subEl  = document.querySelector("[data-ov-insights-sub]");
-                const total  = d.total_devices  ?? 0;
-                const live   = d.live_devices   ?? 0;
-                const anoms  = d.anomaly_count  ?? 0;
-                if (devEl) devEl.textContent = String(live);
-                if (anEl)  anEl.textContent  = String(anoms);
+                const [cfgRes, liveRes, evRes] = await Promise.all([
+                    fetch("/api/insights/configured"),
+                    fetch("/api/insights/live"),
+                    fetch("/api/insights/events?window=24h"),
+                ]);
+                const cfg  = await cfgRes.json();
+                const live = await liveRes.json();
+                const ev   = await evRes.json();
+                if (!cfg.ok) return;
+
+                const configured = cfg.devices || [];
+                const liveByKey  = {};
+                (live.devices || []).forEach((d) => { liveByKey[`${d.source}:${d.device_id}`] = d; });
+
+                // Sum real anomaly-engine flags per device over the last 24h
+                // (same event stream + same "anomaly:" prefix the Insights
+                // Overview KPI uses) — status-only events (online/offline
+                // transitions) don't count as a "flag" here.
+                const flagsByKey = {};
+                let totalFlags = 0;
+                (ev.events || []).forEach((e) => {
+                    if (!String(e.event_type || "").startsWith("anomaly:")) return;
+                    const key = `${e.source}:${e.device_id}`;
+                    const n = e._count || 1;
+                    flagsByKey[key] = (flagsByKey[key] || 0) + n;
+                    totalFlags += n;
+                });
+
+                const total = configured.length;
+                const rows = configured.map((d) => {
+                    const key = `${d.source}:${d.device_id}`;
+                    const l = liveByKey[key];
+                    const status = l?.status || "offline";
+                    const flags = flagsByKey[key] || 0;
+                    // Rank for sorting + dot color: unreachable right now is
+                    // the most urgent thing to surface, then recent flags,
+                    // then a plain healthy device.
+                    let rank, dot, text, textCls;
+                    if (status === "offline" || status === "error") {
+                        rank = 0; dot = "is-err";
+                        text = status === "offline" ? "Offline" : "Error"; textCls = "is-err";
+                    } else if (flags > 0) {
+                        rank = 1; dot = "is-warn";
+                        text = `${flags} flag${flags > 1 ? "s" : ""}`; textCls = "is-warn";
+                    } else {
+                        rank = 2; dot = "";
+                        text = "OK"; textCls = "";
+                    }
+                    return { name: d.name || d.device_id, rank, flags, dot, text, textCls };
+                });
+                rows.sort((a, b) => a.rank - b.rank || b.flags - a.flags);
+
+                if (listEl) {
+                    if (!rows.length) {
+                        listEl.innerHTML = `<p class="ov-dsc-detail-text">No sensors configured yet.</p>`;
+                    } else {
+                        const shown = rows.slice(0, DSC_DEVROWS_LIMIT);
+                        const hidden = rows.slice(DSC_DEVROWS_LIMIT);
+                        const extra = hidden.length;
+                        // Sorting already put every problem device ahead of a
+                        // healthy one, so the visible rows always surface the
+                        // worst offenders first regardless of fleet size — but
+                        // a fleet large enough to overflow the cap could still
+                        // have MORE problems hiding past it, so say so rather
+                        // than a bare "+N more" that reads as "N more, fine".
+                        const hiddenBad = hidden.filter((r) => r.rank < 2).length;
+                        const moreLine = extra > 0
+                            ? `<p class="ov-dsc-detail-text${hiddenBad > 0 ? " is-warn" : ""}">+${extra} more sensor${extra > 1 ? "s" : ""}${hiddenBad > 0 ? ` (${hiddenBad} also flagged)` : ", all nominal"}</p>`
+                            : "";
+                        listEl.innerHTML = shown.map((r) => `
+                            <div class="ov-dsc-sensor-row">
+                                <span class="ov-dsc-sensor-dot ${r.dot}"></span>
+                                <span class="ov-dsc-sensor-name" title="${r.name}">${r.name}</span>
+                                <span class="ov-dsc-sensor-state ${r.textCls}">${r.text}</span>
+                            </div>`).join("") + moreLine;
+                    }
+                }
+
+                const activeCount = (live.devices || []).filter((d) => d.status !== "offline").length;
+                if (devEl) devEl.textContent = `${activeCount}/${total}`;
+                if (flagEl) flagEl.textContent = String(totalFlags);
+                flagTile?.classList.toggle("is-warn", totalFlags > 0);
+
+                const badCount = rows.filter((r) => r.rank === 0).length;
                 if (subEl) {
-                    subEl.textContent = anoms > 0
-                        ? `${anoms} anomal${anoms > 1 ? "ies" : "y"} detected`
-                        : live > 0 ? "All readings nominal" : `${total} configured, none live`;
-                    subEl.style.color = anoms > 0 ? "var(--accent)" : "";
+                    subEl.textContent = badCount > 0
+                        ? `${badCount} device${badCount > 1 ? "s" : ""} unreachable right now`
+                        : totalFlags > 0
+                            ? `${totalFlags} flag${totalFlags > 1 ? "s" : ""} in the last 24 h`
+                            : total > 0 ? `All ${total} device${total > 1 ? "s" : ""} nominal` : "No sensors configured yet";
+                    subEl.style.color = badCount > 0 ? "#ff8e8e" : totalFlags > 0 ? "var(--accent)" : "";
                 }
             } catch (e) {
                 console.warn("[Overview] insights summary failed:", e);

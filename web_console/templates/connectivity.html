@@ -720,6 +720,7 @@
                         <span>Stable seconds before switch</span>
                         <input type="number" name="uplink_stable_seconds_before_switch" value="{{ net.uplink.stable_seconds_before_switch }}" min="0" step="1">
                     </label>
+                    <p class="ad-field-hint">How long a new uplink must stay ready before the switch is actually made. <strong>0 means switch instantly</strong> — a single brief network blip can bounce you back and forth. 10+ seconds rides out short blips without flapping.</p>
 
                     <label class="field checkbox-field">
                         <span>Require connectivity check</span>
@@ -735,6 +736,7 @@
                         <span>Recover count threshold</span>
                         <input type="number" name="uplink_recover_count_threshold" value="{{ net.uplink.recover_count_threshold }}" min="1" step="1">
                     </label>
+                    <p class="ad-field-hint">How many checks in a row (about 2 seconds apart) must fail before an uplink is dropped, and how many must succeed before it's trusted again. <strong>Both set to 1 means a single missed ping can flip your active uplink</strong> — 3 or more on each is a safer default on a link with any packet loss.</p>
 
                     <label class="field settings-grid-span-3">
                         <span>Connectivity targets</span>

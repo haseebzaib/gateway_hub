@@ -8771,6 +8771,7 @@ a.ov-feature-card:hover .ov-feature-eyebrow { color: var(--accent-cool); }
     color: var(--muted);
     line-height: 1.5;
 }
+.ov-dsc-detail-text.is-warn { color: var(--accent); }
 
 .ov-dsc-footer {
     margin: 0;
@@ -8780,6 +8781,33 @@ a.ov-feature-card:hover .ov-feature-eyebrow { color: var(--accent-cool); }
     padding-top: 0.65rem;
     border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
+
+.ov-dsc-sensor-list { display: flex; flex-direction: column; gap: 0.4rem; }
+.ov-dsc-sensor-row {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    font-size: 0.8rem;
+    color: var(--text);
+}
+.ov-dsc-sensor-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--accent-cool);
+    flex-shrink: 0;
+}
+.ov-dsc-sensor-dot.is-warn { background: var(--accent); }
+.ov-dsc-sensor-dot.is-err  { background: #ff6b6b; }
+.ov-dsc-sensor-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ov-dsc-sensor-state { font-size: 0.74rem; color: var(--muted); flex-shrink: 0; }
+.ov-dsc-sensor-state.is-warn { color: var(--accent); font-weight: 600; }
+.ov-dsc-sensor-state.is-err  { color: #ff8e8e; font-weight: 600; }
 
 /* ═══════════════════════════════════════════════════════════════════
    Monitor — Network Uplink Stats section
