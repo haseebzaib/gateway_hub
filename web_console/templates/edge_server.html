@@ -3,6 +3,11 @@
 {% block page_eyebrow %}Inbound Services{% endblock %}
 {% block page_title %}Edge Server{% endblock %}
 
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', path='css/uPlot.min.css') }}">
+<script src="{{ url_for('static', path='js/uPlot.min.js') }}" defer></script>
+{% endblock %}
+
 {% block console_content %}
 <section class="es-shell" data-edge-server-shell>
 
@@ -327,6 +332,7 @@
                     <input class="fw-input" type="number" min="1" max="65535" data-es-port="http">
                 </label>
                 <p class="es-listener-note">Plain HTTP for trusted local networks or testing.</p>
+                <p class="es-listener-error" data-es-listener-error="http" hidden></p>
             </div>
 
             <div class="es-listener-card" data-es-listener="https">
@@ -345,6 +351,7 @@
                     </label>
                 </div>
                 <p class="es-listener-note">Without mTLS, HTTPS encrypts traffic and devices authenticate by token/header. With mTLS, devices must also present a trusted client certificate.</p>
+                <p class="es-listener-error" data-es-listener-error="https" hidden></p>
             </div>
 
             <div class="es-listener-card" data-es-listener="mqtt">
@@ -363,6 +370,7 @@
                     </label>
                 </div>
                 <p class="es-listener-note">Plain MQTT listener. Disable anonymous clients when devices use credentials.</p>
+                <p class="es-listener-error" data-es-listener-error="mqtt" hidden></p>
             </div>
 
             <div class="es-listener-card" data-es-listener="mqtts">
@@ -381,6 +389,7 @@
                     </label>
                 </div>
                 <p class="es-listener-note">MQTT over TLS. Without mTLS, clients use encrypted transport plus MQTT credentials. With mTLS, client certificates are required.</p>
+                <p class="es-listener-error" data-es-listener-error="mqtts" hidden></p>
             </div>
         </div>
 
@@ -1100,6 +1109,7 @@
                     <input class="fw-input" type="number" min="5120" max="1048576" step="128" data-es-max-size>
                     <small>MB</small>
                 </label>
+                <p class="es-storage-note">These are targets, not yet enforced — nothing automatically deletes old records or caps store size today. Watch "Store usage" below and manage disk space manually until automatic cleanup ships.</p>
             </div>
 
             <div class="es-storage-card">
@@ -1108,8 +1118,8 @@
                     <span data-es-storage-percent>0%</span>
                 </div>
                 <div class="es-storage-usage-head">
-                    <strong data-es-storage-used>0 MiB</strong>
-                    <span>/ <span data-es-storage-limit>5,120 MiB</span></span>
+                    <strong data-es-storage-used>0 MB</strong>
+                    <span>/ <span data-es-storage-limit>5,120 MB</span></span>
                 </div>
                 <div class="es-storage-meter" aria-hidden="true">
                     <span data-es-storage-used-bar></span>
@@ -1145,7 +1155,7 @@
                 <strong>Data forwarding profile</strong>
                 <a class="es-forwarding-link" href="/forwarding">Configure forwarding</a>
             </div>
-            <p class="es-muted-copy">No forwarding profile selected by default. Records stay local and remain available for anomaly timelines, exports, and device history.</p>
+            <p class="es-muted-copy">Every accepted message is stored and anomaly-checked automatically, whether or not it's ever forwarded. Forwarding is optional and configured per profile, not here — to relay this device's data onward, pick it under "Edge Server devices" in a Data Forwarding profile.</p>
         </div>
     </div>
 </section>

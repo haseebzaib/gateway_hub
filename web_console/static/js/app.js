@@ -7987,11 +7987,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const esFormatStoreBytes = (value) => {
             const num = Number(value);
-            if (!Number.isFinite(num) || num <= 0) return "0 MiB";
+            if (!Number.isFinite(num) || num <= 0) return "0 MB";
             const mib = num / (1024 * 1024);
-            if (mib < 1024) return `${mib < 10 ? mib.toFixed(1) : Math.round(mib).toLocaleString()} MiB`;
+            if (mib < 1024) return `${mib < 10 ? mib.toFixed(1) : Math.round(mib).toLocaleString()} MB`;
             const gib = mib / 1024;
-            return `${gib < 10 ? gib.toFixed(2) : gib.toFixed(1)} GiB`;
+            return `${gib < 10 ? gib.toFixed(2) : gib.toFixed(1)} GB`;
         };
 
         const esEventTitle = (type) => ({
@@ -8170,7 +8170,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const esLineCharts = new Map(); // selector -> {plot, contextKey, seriesCount}
 
         let esTooltipEl = null;
-        const esTooltip = () => {
+        const esChartTooltip = () => {
             if (!esTooltipEl) {
                 esTooltipEl = document.createElement("div");
                 esTooltipEl.className = "es-chart-tooltip";
@@ -8179,7 +8179,7 @@ document.addEventListener("DOMContentLoaded", () => {
             return esTooltipEl;
         };
         const esShowTooltip = (clientX, clientY, html) => {
-            const el = esTooltip();
+            const el = esChartTooltip();
             el.innerHTML = html;
             el.style.left = `${clientX + 14}px`;
             el.style.top = `${clientY + 14}px`;
@@ -9592,7 +9592,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             esSetText("[data-es-storage-mode]", info.configured_enabled === false ? "Storage disabled" : mode);
             esSetText("[data-es-storage-used]", esFormatStoreBytes(usedBytes));
-            esSetText("[data-es-storage-limit]", `${configuredMb.toLocaleString()} MiB`);
+            esSetText("[data-es-storage-limit]", `${configuredMb.toLocaleString()} MB`);
             esSetText("[data-es-storage-percent]", `${pct.toFixed(pct < 10 && pct > 0 ? 1 : 0)}%`);
             esSetText("[data-es-storage-records]", records.toLocaleString());
             esSetText("[data-es-storage-oldest]", info.oldest_record_at ? esFullTime(info.oldest_record_at) : "No records");
@@ -9644,6 +9644,17 @@ document.addEventListener("DOMContentLoaded", () => {
                 const listenerErrors = Object.entries(listenerMap)
                     .filter(([, item]) => item && item.error)
                     .map(([name, item]) => `${name.toUpperCase()}: ${item.error}`);
+                ["http", "https", "mqtt", "mqtts"].forEach((name) => {
+                    const errEl = edgeShell.querySelector(`[data-es-listener-error="${name}"]`);
+                    if (!errEl) return;
+                    const err = listenerMap[name]?.error;
+                    if (err) {
+                        errEl.textContent = err;
+                        errEl.hidden = false;
+                    } else {
+                        errEl.hidden = true;
+                    }
+                });
                 const buffer = status.buffer || {};
                 const audit = status.audit || {};
                 const devices = status.devices || [];
