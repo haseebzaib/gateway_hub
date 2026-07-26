@@ -849,10 +849,6 @@
                         <span class="fw-label">Device ID Key</span>
                         <input class="fw-input" data-es-http-device-key maxlength="80" placeholder="device_id">
                     </label>
-                    <label class="fw-field">
-                        <span class="fw-label">Pipeline</span>
-                        <select class="fw-select" data-es-http-forwarding></select>
-                    </label>
                 </div>
                 <div class="es-field-help">
                     <span><strong>Protocol</strong> selects the listener. HTTPS uses TLS and requires the HTTPS listener to be enabled; mTLS can additionally verify device certificates.</span>
@@ -860,9 +856,9 @@
                     <span><strong>Path</strong> is one URL route for this endpoint. Add another endpoint later when another path is needed.</span>
                     <span><strong>Payload</strong> JSON is parsed into fields, raw is stored as bytes/text, form reads key-value fields.</span>
                     <span><strong>Device ID source</strong> chooses where the gateway gets the device identity: payload field, header, path segment, or fixed value.</span>
-                    <span><strong>Pipeline</strong> stores first, runs anomaly detection, then forwards only when a Data Forwarding profile is selected.</span>
                 </div>
-                <a class="es-forwarding-link" href="/forwarding">Configure Data Forwarding profiles</a>
+                <p class="es-forwarding-note">Every accepted message is stored and anomaly-checked automatically. To relay this device's data onward too, pick it under "Edge Server devices" in a Data Forwarding profile.</p>
+                <a class="es-forwarding-link" href="/forwarding">Configure Data Forwarding profiles →</a>
                 <div class="es-form-actions">
                     <button type="button" class="fw-btn-cancel" data-es-cancel-http>Cancel</button>
                     <button type="button" class="fw-btn-save" data-es-save-http>Save Endpoint</button>
@@ -928,10 +924,6 @@
                         <span class="fw-label">Device ID Key</span>
                         <input class="fw-input" data-es-mqtt-device-key maxlength="80" placeholder="1">
                     </label>
-                    <label class="fw-field">
-                        <span class="fw-label">Pipeline</span>
-                        <select class="fw-select" data-es-mqtt-forwarding></select>
-                    </label>
                 </div>
                 <div class="es-field-help">
                     <span><strong>Protocol</strong> MQTT is plain broker traffic. MQTTS uses TLS and requires the MQTTS listener to be enabled.</span>
@@ -939,9 +931,9 @@
                     <span><strong>QoS</strong> controls MQTT delivery guarantee from device to gateway.</span>
                     <span><strong>Payload</strong> JSON is parsed into fields; raw stores the original payload.</span>
                     <span><strong>Device ID source</strong> maps messages using a topic segment, payload field, client ID, or fixed value.</span>
-                    <span><strong>Pipeline</strong> stores first, runs anomaly detection, then forwards only when a Data Forwarding profile is selected.</span>
                 </div>
-                <a class="es-forwarding-link" href="/forwarding">Configure Data Forwarding profiles</a>
+                <p class="es-forwarding-note">Every accepted message is stored and anomaly-checked automatically. To relay this topic's data onward too, pick its devices under "Edge Server devices" in a Data Forwarding profile.</p>
+                <a class="es-forwarding-link" href="/forwarding">Configure Data Forwarding profiles →</a>
                 <div class="es-form-actions">
                     <button type="button" class="fw-btn-cancel" data-es-cancel-mqtt>Cancel</button>
                     <button type="button" class="fw-btn-save" data-es-save-mqtt>Save Topic</button>
@@ -1072,6 +1064,7 @@
                 <span>measured values with exact date and time</span>
             </div>
             <div class="es-audit-list" data-es-alert-list></div>
+            <div class="ev-pager ov-hidden" data-es-alert-pager></div>
             <div class="es-empty-line" data-es-alert-empty>No alerts recorded.</div>
         </div>
     </div>

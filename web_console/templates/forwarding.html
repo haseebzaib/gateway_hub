@@ -401,6 +401,16 @@ Content-Type: application/json
                         <p class="fw-hint">No sensors have reported yet — configure them on the Interfaces page.</p>
                     </div>
                 </div>
+                <div class="fw-send-sensors">
+                    <p class="fw-label" style="margin-bottom:0.35rem">Edge Server devices <span class="fw-hint">data received from devices pushing to this gateway's inbound HTTP/MQTT listeners</span></p>
+                    <label class="fw-send-row">
+                        <input type="checkbox" data-fw-f-src-all-edge>
+                        <span class="fw-send-text"><strong>All Edge Server devices</strong> — including ones seen for the first time</span>
+                    </label>
+                    <div class="fw-send-sensor-list" data-fw-f-src-edge>
+                        <p class="fw-hint">No devices have connected to Edge Server yet.</p>
+                    </div>
+                </div>
             </div>
 
         </div>

@@ -651,7 +651,6 @@ def _normalise_edge_server_config(payload: dict[str, Any]) -> dict[str, Any]:
         endpoint["payload_type"] = str(endpoint.get("payload_type") or "json")
         endpoint["device_id_source"] = str(endpoint.get("device_id_source") or "payload")
         endpoint["device_id_key"] = str(endpoint.get("device_id_key") or "device_id")[:80]
-        endpoint["forwarding_profile"] = str(endpoint.get("forwarding_profile") or "store_only")
         http_endpoints.append(endpoint)
 
     mqtt_topics = []
@@ -670,7 +669,6 @@ def _normalise_edge_server_config(payload: dict[str, Any]) -> dict[str, Any]:
         topic["payload_type"] = str(topic.get("payload_type") or "json")
         topic["device_id_source"] = str(topic.get("device_id_source") or "topic_segment")
         topic["device_id_key"] = str(topic.get("device_id_key") or "1")[:80]
-        topic["forwarding_profile"] = str(topic.get("forwarding_profile") or "store_only")
         mqtt_topics.append(topic)
 
     raw_storage = dict(payload.get("storage") or {})
@@ -911,9 +909,29 @@ def _apply_edge_server_funnel(config: dict[str, Any]) -> None:
         )
 
 
+_EDGE_TLS_FALLBACK_DIR = Path.home() / ".metacrust" / "secrets" / "edge_server"
+
+
+def _writable_dir_parent(path: Path) -> bool:
+    for candidate in (path, *path.parents):
+        if candidate.exists():
+            return os.access(candidate, os.W_OK)
+    return False
+
+
+def _edge_server_tls_dir(config: dict[str, Any]) -> Path:
+    """The configured secrets dir (default /opt/metacrust/secrets/edge_server)
+    falls back to a per-user path when unwritable — same pattern already used
+    for forwarding/edge-server storage — instead of failing every save with an
+    opaque "Certificate save failed." on any non-root dev environment."""
+    tls = dict((_normalise_edge_server_config(config)).get("tls") or {})
+    configured = Path(str(tls.get("secrets_dir") or "/opt/metacrust/secrets/edge_server"))
+    return configured if _writable_dir_parent(configured) else _EDGE_TLS_FALLBACK_DIR
+
+
 def _edge_server_tls_paths(config: dict[str, Any]) -> dict[str, Path]:
     tls = dict((_normalise_edge_server_config(config)).get("tls") or {})
-    cert_dir = Path(str(tls.get("secrets_dir") or "/opt/metacrust/secrets/edge_server"))
+    cert_dir = _edge_server_tls_dir(config)
     return {
         "server_cert": cert_dir / str(tls.get("server_cert") or "server.crt"),
         "server_key": cert_dir / str(tls.get("server_key") or "server.key"),
@@ -947,12 +965,19 @@ def _validate_pem(name: str, value: str) -> str:
 
 def _save_edge_server_tls(payload: dict[str, Any], config: dict[str, Any]) -> dict[str, bool]:
     paths = _edge_server_tls_paths(config)
+    # Validate every field BEFORE writing anything: the old code wrote each
+    # field to disk as it validated it, so a bad PEM in the 2nd or 3rd field
+    # still left the 1st one durably saved even though the whole request came
+    # back as one failure — the UI had no way to know a partial save happened
+    # short of a full page reload. Fail fast instead: either all provided
+    # fields are valid and get written, or none of them do.
+    validated = {name: _validate_pem(name, str(payload.get(name) or "")) for name in paths}
     paths["server_cert"].parent.mkdir(parents=True, exist_ok=True)
     paths["server_cert"].parent.chmod(0o700)
-    for name, path in paths.items():
-        pem = _validate_pem(name, str(payload.get(name) or ""))
+    for name, pem in validated.items():
         if not pem:
             continue
+        path = paths[name]
         tmp_path = path.with_suffix(path.suffix + ".tmp")
         tmp_path.write_text(pem, encoding="utf-8")
         tmp_path.chmod(0o600)
@@ -1729,10 +1754,6 @@ async def get_edge_server_config(request: Request) -> JSONResponse:
             LOGGER.info("api_config_load applied_saved_config=true")
     payload = _edge_server_public_config(CONFIGS["edge_server"])
     payload["ok"] = True
-    payload["forwarding_profiles"] = [
-        {"id": profile.get("id"), "name": profile.get("name"), "protocol": profile.get("protocol")}
-        for profile in CONFIGS["forwarding"].get("profiles", [])
-    ]
     return JSONResponse(payload)
 
 

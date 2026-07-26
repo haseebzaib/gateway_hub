@@ -441,6 +441,22 @@ body::after {
     stroke-width: 1;
 }
 
+.es-chart-tooltip {
+    display: none;
+    position: fixed;
+    z-index: 200;
+    max-width: 20rem;
+    padding: 0.55rem 0.75rem;
+    border-radius: 0.7rem;
+    background: var(--surface-strong, #0c1a20);
+    border: 1px solid rgba(255,255,255,0.12);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+    font-size: 0.78rem;
+    line-height: 1.5;
+    color: var(--text);
+    pointer-events: none;
+}
+
 .es-chart-line-http {
     fill: none;
     stroke: var(--accent-cool);
@@ -1501,9 +1517,16 @@ body::after {
     color: var(--accent-cool);
 }
 
+.es-forwarding-note {
+    margin: 0.6rem 0 0;
+    font-size: 0.8rem;
+    color: var(--muted);
+    line-height: 1.45;
+}
+
 .es-forwarding-link {
     display: inline-flex;
-    margin-top: 0.75rem;
+    margin-top: 0.35rem;
     color: var(--accent-cool);
     font-size: 0.84rem;
     text-decoration: none;

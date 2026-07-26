@@ -6346,10 +6346,13 @@ document.addEventListener("DOMContentLoaded", () => {
         const fwFSrcAnoms      = fwShell.querySelector("[data-fw-f-src-anomalies]");
         const fwFSrcAllSensors = fwShell.querySelector("[data-fw-f-src-all-sensors]");
         const fwFSrcSensorList = fwShell.querySelector("[data-fw-f-src-sensors]");
+        const fwFSrcAllEdge    = fwShell.querySelector("[data-fw-f-src-all-edge]");
+        const fwFSrcEdgeList   = fwShell.querySelector("[data-fw-f-src-edge]");
 
         // ── State ────────────────────────────────────────────────────────────
         let fwProfiles   = [];
         let fwAvailableSources = [];
+        let fwAvailableEdgeDevices = [];
         let fwDefaultGql = "mutation Ingest($events: [JSON!]!) { ingestGatewayData(events: $events) }";
         let fwEditId     = null;
         let fwEnabledVal = false;
@@ -6531,6 +6534,27 @@ document.addEventListener("DOMContentLoaded", () => {
             fwFSrcSensorList?.classList.toggle("fw-send-dim", !!fwFSrcAllSensors.checked);
         });
 
+        // ── What-to-send: Edge Server device checklist ───────────────────────
+        const fwRenderEdgeDeviceList = (selected) => {
+            if (!fwFSrcEdgeList) return;
+            if (!fwAvailableEdgeDevices.length) {
+                fwFSrcEdgeList.innerHTML =
+                    '<p class="fw-hint">No devices have connected to Edge Server yet.</p>';
+                return;
+            }
+            const chosen = new Set(Array.isArray(selected) ? selected : []);
+            fwFSrcEdgeList.innerHTML = fwAvailableEdgeDevices.map((d) =>
+                `<label class="fw-send-row fw-send-sensor">` +
+                `<input type="checkbox" data-fw-edge-key="${d.device_id}"${chosen.has(d.device_id) ? " checked" : ""}>` +
+                `<span class="fw-send-text"><code>${d.device_id}</code> <span class="fw-hint">(${d.protocol || "?"})</span></span>` +
+                `<span class="fw-send-live${d.online ? " is-live" : ""}">${d.online ? "online" : "seen"}</span>` +
+                `</label>`
+            ).join("");
+        };
+        fwFSrcAllEdge?.addEventListener("change", () => {
+            fwFSrcEdgeList?.classList.toggle("fw-send-dim", !!fwFSrcAllEdge.checked);
+        });
+
         // ── Panel toggles (MQTT topics + HTTPS endpoint reference) ──────────
         const fwInitPanelToggle = (toggleAttr, bodyAttr, arrowAttr) => {
             fwShell.querySelectorAll(`[${toggleAttr}]`).forEach((btn) => {
@@ -6569,6 +6593,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 const d = await r.json();
                 fwProfiles = d.profiles || [];
                 fwAvailableSources = d.available_sources || [];
+                fwAvailableEdgeDevices = d.available_edge_devices || [];
                 if (d.default_graphql_query) fwDefaultGql = d.default_graphql_query;
                 fwApplyGatewayId(d.gateway_id || "");
             } catch (e) {
@@ -6586,6 +6611,10 @@ document.addEventListener("DOMContentLoaded", () => {
                 ? "all"
                 : Array.from(fwFSrcSensorList?.querySelectorAll("[data-fw-sensor-key]:checked") || [])
                     .map((el) => el.getAttribute("data-fw-sensor-key"));
+            const edgeSel = fwFSrcAllEdge?.checked
+                ? "all"
+                : Array.from(fwFSrcEdgeList?.querySelectorAll("[data-fw-edge-key]:checked") || [])
+                    .map((el) => el.getAttribute("data-fw-edge-key"));
             const profile = {
                 id:       fwEditId || "",
                 name:     fwFName?.value.trim() || "Unnamed Profile",
@@ -6596,6 +6625,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     metrics_interval_s: Number(fwFSrcMetricsInt?.value) || 5,
                     device_anomalies:   !!fwFSrcAnoms?.checked,
                     sensors:            sensorsSel,
+                    edge_server:        edgeSel,
                 },
             };
 
@@ -6727,6 +6757,11 @@ document.addEventListener("DOMContentLoaded", () => {
             if (fwFSrcAllSensors) fwFSrcAllSensors.checked = allSensors;
             fwRenderSensorList(allSensors ? [] : src.sensors);
             fwFSrcSensorList?.classList.toggle("fw-send-dim", allSensors);
+
+            const allEdge = src.edge_server === "all";
+            if (fwFSrcAllEdge) fwFSrcAllEdge.checked = allEdge;
+            fwRenderEdgeDeviceList(allEdge ? [] : src.edge_server);
+            fwFSrcEdgeList?.classList.toggle("fw-send-dim", allEdge);
 
             if (proto === "mqtt") {
                 const m = profile?.mqtt || {};
@@ -7403,7 +7438,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const edgeShell = document.querySelector("[data-edge-server-shell]");
     if (edgeShell) {
         let esConfig = null;
-        let esForwardingProfiles = [];
         let esEditingHttpId = null;
         let esEditingMqttId = null;
         let esHttpMetricsCache = null;
@@ -7446,31 +7480,6 @@ document.addEventListener("DOMContentLoaded", () => {
             btn.textContent = enabled ? "ON" : "OFF";
             btn.classList.toggle("is-on", Boolean(enabled));
             btn.classList.toggle("is-active", Boolean(enabled));
-        };
-
-        const esFillForwardingSelect = (select, selected) => {
-            if (!select) return;
-            const storeOnlyLabel = esForwardingProfiles.length
-                ? "Store + anomaly detection only"
-                : "Store + anomaly detection only (no forwarding profile configured)";
-            const options = [
-                `<option value="store_only">${storeOnlyLabel}</option>`,
-                ...esForwardingProfiles.map((profile) =>
-                    `<option value="${esEsc(profile.id)}">Store + anomaly + forward to ${esEsc(profile.name || profile.id)}</option>`
-                ),
-            ];
-            select.innerHTML = options.join("");
-            select.value = selected || "store_only";
-        };
-
-        const esGetForwardingLabel = (id) => {
-            if (!id || id === "store_only") {
-                return esForwardingProfiles.length
-                    ? "Store + anomaly detection only"
-                    : "Store + anomaly detection only (no forwarding profile configured)";
-            }
-            const profile = esForwardingProfiles.find((item) => String(item.id) === String(id));
-            return profile ? `Store + anomaly + forward to ${profile.name || profile.id}` : id;
         };
 
         const esApplyCertStatus = () => {
@@ -7665,7 +7674,6 @@ document.addEventListener("DOMContentLoaded", () => {
             edgeShell.querySelector("[data-es-http-payload]").value = endpoint?.payload_type || "json";
             edgeShell.querySelector("[data-es-http-device-source]").value = endpoint?.device_id_source || "payload";
             edgeShell.querySelector("[data-es-http-device-key]").value = endpoint?.device_id_key || "device_id";
-            esFillForwardingSelect(edgeShell.querySelector("[data-es-http-forwarding]"), endpoint?.forwarding_profile);
         };
 
         const esHideHttpForm = () => {
@@ -7683,7 +7691,6 @@ document.addEventListener("DOMContentLoaded", () => {
             edgeShell.querySelector("[data-es-mqtt-payload]").value = topic?.payload_type || "json";
             edgeShell.querySelector("[data-es-mqtt-device-source]").value = topic?.device_id_source || "topic_segment";
             edgeShell.querySelector("[data-es-mqtt-device-key]").value = topic?.device_id_key || "1";
-            esFillForwardingSelect(edgeShell.querySelector("[data-es-mqtt-forwarding]"), topic?.forwarding_profile);
         };
 
         const esHideMqttForm = () => {
@@ -7706,7 +7713,6 @@ document.addEventListener("DOMContentLoaded", () => {
                         </div>
                         <code>${esEsc(item.method || "POST")} ${esEsc(item.path)}</code>
                         <p>${esEsc((item.protocol || "http").toUpperCase())} · ${esEsc(item.auth || "none")} auth · ${esEsc(item.payload_type || "json")} · device: ${esEsc(item.device_id_source)}:${esEsc(item.device_id_key)}</p>
-                        <small>Pipeline: ${esEsc(esGetForwardingLabel(item.forwarding_profile))}</small>
                     </div>
                     <div class="es-item-actions">
                         <button type="button" class="ghost-action" data-es-toggle-http="${esEsc(item.id)}">${item.enabled ? "Disable" : "Enable"}</button>
@@ -7732,7 +7738,6 @@ document.addEventListener("DOMContentLoaded", () => {
                         </div>
                         <code>${esEsc(item.topic_filter)}</code>
                         <p>${esEsc((item.protocol || "mqtt").toUpperCase())} · QoS ${esEsc(item.qos ?? 0)} · ${esEsc(item.payload_type || "json")} · device: ${esEsc(item.device_id_source)}:${esEsc(item.device_id_key)}</p>
-                        <small>Pipeline: ${esEsc(esGetForwardingLabel(item.forwarding_profile))}</small>
                     </div>
                     <div class="es-item-actions">
                         <button type="button" class="ghost-action" data-es-toggle-mqtt="${esEsc(item.id)}">${item.enabled ? "Disable" : "Enable"}</button>
@@ -7749,8 +7754,6 @@ document.addEventListener("DOMContentLoaded", () => {
                 esApplyStorage();
                 esApplyCertStatus();
                 esApplyFunnelConfig();
-                esFillForwardingSelect(edgeShell.querySelector("[data-es-http-forwarding]"));
-                esFillForwardingSelect(edgeShell.querySelector("[data-es-mqtt-forwarding]"));
                 esRenderHttp();
                 esRenderMqtt();
                 esRefreshOverviewVisuals();
@@ -7770,7 +7773,6 @@ document.addEventListener("DOMContentLoaded", () => {
             payload_type: edgeShell.querySelector("[data-es-http-payload]")?.value || "json",
             device_id_source: edgeShell.querySelector("[data-es-http-device-source]")?.value || "payload",
             device_id_key: edgeShell.querySelector("[data-es-http-device-key]")?.value || "device_id",
-            forwarding_profile: edgeShell.querySelector("[data-es-http-forwarding]")?.value || "store_only",
         });
 
         const esReadMqttForm = () => ({
@@ -7783,7 +7785,6 @@ document.addEventListener("DOMContentLoaded", () => {
             payload_type: edgeShell.querySelector("[data-es-mqtt-payload]")?.value || "json",
             device_id_source: edgeShell.querySelector("[data-es-mqtt-device-source]")?.value || "topic_segment",
             device_id_key: edgeShell.querySelector("[data-es-mqtt-device-key]")?.value || "1",
-            forwarding_profile: edgeShell.querySelector("[data-es-mqtt-forwarding]")?.value || "store_only",
         });
 
         const esSaveConfig = async () => {
@@ -7857,9 +7858,7 @@ document.addEventListener("DOMContentLoaded", () => {
             try {
                 const response = await fetch("/api/edge-server/config");
                 const payload = await response.json();
-                esForwardingProfiles = payload.forwarding_profiles || [];
                 delete payload.ok;
-                delete payload.forwarding_profiles;
                 esConfig = payload;
             } catch (error) {
                 console.warn("[Edge Server] config fetch failed:", error);
@@ -8166,7 +8165,193 @@ document.addEventListener("DOMContentLoaded", () => {
                 .sort((a, b) => a.ms - b.ms);
         };
 
-        const esSvgPointPath = (points) => points.map((point, idx) => `${idx ? "L" : "M"} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(" ");
+        // ── uPlot-based line chart (real zoom/pan, same feel as Insights/Monitor) ──
+        const ES_LINE_COLORS = { "es-chart-line-http": "#39d0c8", "es-chart-line-mqtt": "#60a5fa", "es-chart-line-secondary": "#60a5fa" };
+        const esLineCharts = new Map(); // selector -> {plot, contextKey, seriesCount}
+
+        let esTooltipEl = null;
+        const esTooltip = () => {
+            if (!esTooltipEl) {
+                esTooltipEl = document.createElement("div");
+                esTooltipEl.className = "es-chart-tooltip";
+                document.body.appendChild(esTooltipEl);
+            }
+            return esTooltipEl;
+        };
+        const esShowTooltip = (clientX, clientY, html) => {
+            const el = esTooltip();
+            el.innerHTML = html;
+            el.style.left = `${clientX + 14}px`;
+            el.style.top = `${clientY + 14}px`;
+            el.style.display = "block";
+        };
+        const esHideTooltip = () => { if (esTooltipEl) esTooltipEl.style.display = "none"; };
+
+        // Pure client-side pan/zoom over whatever's loaded — same approach as
+        // the Insights Sensors tab (wheel = zoom on cursor, drag = pan,
+        // dblclick = reset), clamped to the chart's own full window so it
+        // can't run past real data or fail to reset.
+        const esPanZoomPlugin = (getFull) => ({
+            hooks: {
+                ready: (u) => {
+                    const over = u.over;
+                    over.style.cursor = "grab";
+                    const clampToFull = (nMin, nMax) => {
+                        const full = getFull();
+                        if (!full) return [nMin, nMax];
+                        const range = nMax - nMin;
+                        if (range >= full[1] - full[0]) return [full[0], full[1]];
+                        if (nMin < full[0]) { nMin = full[0]; nMax = nMin + range; }
+                        if (nMax > full[1]) { nMax = full[1]; nMin = nMax - range; }
+                        return [nMin, nMax];
+                    };
+                    over.addEventListener("wheel", (e) => {
+                        e.preventDefault();
+                        const rect = over.getBoundingClientRect();
+                        const curMin = u.scales.x.min, curMax = u.scales.x.max;
+                        const range = curMax - curMin;
+                        const cursorVal = u.posToVal(e.clientX - rect.left, "x");
+                        const leftPct = (cursorVal - curMin) / range;
+                        const factor = e.deltaY < 0 ? 0.8 : 1.25;
+                        const newRange = range * factor;
+                        const [nMin, nMax] = clampToFull(cursorVal - leftPct * newRange, cursorVal - leftPct * newRange + newRange);
+                        u.setScale("x", { min: nMin, max: nMax });
+                    }, { passive: false });
+                    over.addEventListener("mousedown", (e) => {
+                        if (e.button !== 0) return;
+                        const rect = over.getBoundingClientRect();
+                        const startX = e.clientX;
+                        const min0 = u.scales.x.min, max0 = u.scales.x.max;
+                        const perPx = (max0 - min0) / rect.width;
+                        over.__dragged = false;
+                        over.style.cursor = "grabbing";
+                        const move = (e2) => {
+                            const dx = e2.clientX - startX;
+                            if (Math.abs(dx) > 3) over.__dragged = true;
+                            const d = dx * perPx;
+                            const [nMin, nMax] = clampToFull(min0 - d, max0 - d);
+                            u.setScale("x", { min: nMin, max: nMax });
+                        };
+                        const up = () => {
+                            over.style.cursor = "grab";
+                            document.removeEventListener("mousemove", move);
+                            document.removeEventListener("mouseup", up);
+                        };
+                        document.addEventListener("mousemove", move);
+                        document.addEventListener("mouseup", up);
+                    });
+                    over.addEventListener("dblclick", () => {
+                        const full = getFull();
+                        if (full) u.setScale("x", { min: full[0], max: full[1] });
+                    });
+                },
+            },
+        });
+
+        // Draws grouped alert markers (bucketed the same width as the data)
+        // and shows a plain-language tooltip on hover — replaces the old
+        // SVG version's per-pixel collision-spreading with real zoom: if two
+        // markers overlap, the user can just zoom in to separate them.
+        const esAlertMarkersPlugin = (getEvents, getBucketMs, getPrimaryRows) => {
+            let markers = [];
+            return {
+                hooks: {
+                    draw: (u) => {
+                        markers = [];
+                        const events = getEvents() || [];
+                        if (!events.length) return;
+                        const bucketMs = Math.max(1000, getBucketMs() || 60000);
+                        const grouped = new Map();
+                        events.forEach((event) => {
+                            const ms = esEventMs(event);
+                            const key = Math.floor(ms / bucketMs) * bucketMs;
+                            const bucket = grouped.get(key) || { ms: key, count: 0, events: [], types: new Set() };
+                            bucket.count += 1;
+                            bucket.events.push(event);
+                            bucket.types.add(esEventTitle(event.event_type || event.type));
+                            grouped.set(key, bucket);
+                        });
+                        const primaryRows = getPrimaryRows() || [];
+                        const nearestValue = (ms) => {
+                            if (!primaryRows.length) return null;
+                            const nearest = primaryRows.reduce((best, row) =>
+                                !best || Math.abs(row.ms - ms) < Math.abs(best.ms - ms) ? row : best, null);
+                            return nearest ? nearest.value : null;
+                        };
+                        const ctx = u.ctx;
+                        const [xMin, xMax] = u.scales.x ? [u.scales.x.min, u.scales.x.max] : [null, null];
+                        ctx.save();
+                        grouped.forEach((bucket) => {
+                            const tsSec = bucket.ms / 1000;
+                            if (xMin !== null && (tsSec < xMin || tsSec > xMax)) return;
+                            const val = nearestValue(bucket.ms);
+                            const x = u.valToPos(tsSec, "x", true);
+                            let y;
+                            if (val !== null && u.scales.y.min != null) {
+                                const clamped = Math.max(u.scales.y.min, Math.min(u.scales.y.max, val));
+                                y = u.valToPos(clamped, "y", true);
+                            } else {
+                                y = u.bbox.top + 14;
+                            }
+                            const r = 5;
+                            const pad = r + 6;
+                            const cx = Math.max(u.bbox.left + pad, Math.min(u.bbox.left + u.bbox.width - pad, x));
+                            const cy = Math.max(u.bbox.top + pad, Math.min(u.bbox.top + u.bbox.height - pad, y));
+                            ctx.beginPath();
+                            ctx.fillStyle = "#f8717140";
+                            ctx.arc(cx, cy, r + 5, 0, Math.PI * 2);
+                            ctx.fill();
+                            ctx.beginPath();
+                            ctx.fillStyle = "#f87171";
+                            ctx.arc(cx, cy, r, 0, Math.PI * 2);
+                            ctx.fill();
+                            ctx.lineWidth = 1.1;
+                            ctx.strokeStyle = "rgba(10,20,24,0.85)";
+                            ctx.stroke();
+                            if (bucket.count > 1) {
+                                ctx.fillStyle = "#fff";
+                                ctx.font = "600 9px sans-serif";
+                                ctx.textAlign = "center";
+                                ctx.fillText(bucket.count > 99 ? "99+" : String(bucket.count), cx, cy - r - 4);
+                            }
+                            markers.push({ x: cx, y: cy, bucket });
+                        });
+                        ctx.restore();
+                    },
+                    ready: (u) => {
+                        u.over.addEventListener("mousemove", (e) => {
+                            if (u.over.__dragged) return;
+                            const rect = u.over.getBoundingClientRect();
+                            const dpr = window.devicePixelRatio || 1;
+                            const cx = (e.clientX - rect.left) * dpr + u.bbox.left;
+                            const cy = (e.clientY - rect.top) * dpr + u.bbox.top;
+                            let best = null, bestD = Infinity;
+                            markers.forEach((m) => {
+                                const d = Math.hypot(m.x - cx, m.y - cy);
+                                if (d < bestD) { bestD = d; best = m; }
+                            });
+                            if (best && bestD <= 14 * dpr) {
+                                const b = best.bucket;
+                                const typeList = [...b.types].slice(0, 3).join(", ");
+                                const first = b.events[0] || {};
+                                const detail = esEventDetails(first) || first.message || "";
+                                const html = `<strong>${esEsc(`${b.count} alert${b.count === 1 ? "" : "s"}`)}</strong>` +
+                                    (typeList ? `<br>${esEsc(typeList)}${b.types.size > 3 ? ", ..." : ""}` : "") +
+                                    `<br>${esEsc(esFullTime(b.ms))}` +
+                                    (first.device_id || first.source ? `<br>device ${esEsc(first.device_id || first.source)}` : "") +
+                                    (detail ? `<br>${esEsc(detail)}` : "");
+                                esShowTooltip(e.clientX, e.clientY, html);
+                                u.over.style.cursor = "help";
+                            } else {
+                                esHideTooltip();
+                                u.over.style.cursor = "grab";
+                            }
+                        });
+                        u.over.addEventListener("mouseleave", esHideTooltip);
+                    },
+                },
+            };
+        };
 
         const esRenderLineChart = (selector, emptySelector, seriesItems, options = {}) => {
             const wrap = edgeShell.querySelector(selector);
@@ -8218,178 +8403,100 @@ document.addEventListener("DOMContentLoaded", () => {
             const hasData = series.some((item) => item.rows.some((row) => row.value > 0)) || chartEvents.length > 0;
             if (empty) empty.classList.toggle("es-hidden", hasData);
             if (!hasData) {
+                const stale = esLineCharts.get(selector);
+                if (stale) { try { stale.plot.destroy(); } catch {} esLineCharts.delete(selector); }
                 wrap.innerHTML = "";
                 return;
             }
 
-            const width = 920;
-            const height = options.height || 240;
-            const pad = { left: 58, right: 18, top: 18, bottom: 42 };
-            const plotW = width - pad.left - pad.right;
-            const plotH = height - pad.top - pad.bottom;
             const allRows = series.flatMap((item) => item.rows);
             const dataMinMs = Math.min(...allRows.map((row) => row.ms || Date.now()));
             const dataMaxMs = Math.max(...allRows.map((row) => row.ms || Date.now()), dataMinMs + 60000);
             let minMs = hasFixedMin ? Number(options.minMs) : dataMinMs;
             let maxMs = hasFixedMax ? Math.max(Number(options.maxMs), minMs + 60000) : dataMaxMs;
-            if (options.focusDataDomain && hasFixedMin && hasFixedMax) {
-                const bucketMs = Math.max(60000, Number(options.bucketMs || 60000));
-                const eventTimes = (Array.isArray(options.events) ? options.events : [])
-                    .map((event) => esEventMs(event))
-                    .filter((ms) => ms >= fixedMinMs && ms <= fixedMaxMs);
-                const dataTimes = allRows
-                    .filter((row) => Number(row.value || 0) > 0 && row.ms >= fixedMinMs && row.ms <= fixedMaxMs)
-                    .map((row) => row.ms);
-                const focusTimes = [...dataTimes, ...eventTimes];
-                if (focusTimes.length) {
-                    const focusMin = Math.min(...focusTimes);
-                    const focusMax = Math.max(...focusTimes);
-                    const selectedSpan = Math.max(60000, fixedMaxMs - fixedMinMs);
-                    const focusSpan = Math.max(bucketMs, focusMax - focusMin);
-                    if (focusSpan < selectedSpan * 0.45) {
-                        const padMs = Math.max(bucketMs * 2, focusSpan * 0.25);
-                        minMs = Math.max(fixedMinMs, focusMin - padMs);
-                        maxMs = Math.min(fixedMaxMs, focusMax + padMs);
-                        if (maxMs - minMs < bucketMs * 6) {
-                            const center = focusMin + ((focusMax - focusMin) / 2);
-                            minMs = Math.max(fixedMinMs, center - (bucketMs * 3));
-                            maxMs = Math.min(fixedMaxMs, center + (bucketMs * 3));
-                        }
-                    }
-                }
-            }
+            // Real drag/scroll zoom (added below) replaces the old auto-focus
+            // heuristic that tried to guess the "interesting" sub-range —
+            // with genuine interactivity the user can just zoom in themselves.
             const chartSeries = series
                 .map((item) => ({ ...item, rows: item.rows.filter((row) => row.ms >= minMs && row.ms <= maxMs) }))
                 .filter((item) => item.rows.length);
-            const chartRows = chartSeries.flatMap((item) => item.rows);
-            const dataMaxValue = Math.max(1, ...chartRows.map((row) => row.value));
-            const baselineValue = Number(options.baseline || 0);
-            const showBaseline = baselineValue > 0 && baselineValue <= dataMaxValue * 3;
-            const maxValue = Math.max(dataMaxValue, showBaseline ? baselineValue : 0);
-            const x = (ms) => pad.left + (((ms - minMs) / Math.max(1, maxMs - minMs)) * plotW);
-            const y = (value) => pad.top + plotH - ((value / maxValue) * plotH);
-            const yTicks = [0, 0.25, 0.5, 0.75, 1].map((ratio) => Math.round(maxValue * ratio));
-            const xTicks = [0, 0.25, 0.5, 0.75, 1].map((ratio) => minMs + ((maxMs - minMs) * ratio));
             const primaryRows = chartSeries[0]?.rows || [];
-            const nearestPrimaryRow = (ms) => primaryRows.reduce(
-                (best, row) => !best || Math.abs(row.ms - ms) < Math.abs(best.ms - ms) ? row : best,
-                null,
-            );
-            const lines = yTicks.map((tick) => {
-                const yy = y(tick);
-                return `<line class="es-chart-grid" x1="${pad.left}" y1="${yy.toFixed(1)}" x2="${width - pad.right}" y2="${yy.toFixed(1)}"></line>
-                    <text class="es-chart-axis" x="${pad.left - 10}" y="${(yy + 4).toFixed(1)}" text-anchor="end">${tick}</text>`;
-            }).join("");
-            const xLabels = xTicks.map((tick, idx) => {
-                const label = esChartTickLabel(tick, options.exactTimeAxis ? "datetime" : (options.timeMode || "time"));
-                return `<text class="es-chart-axis" x="${x(tick).toFixed(1)}" y="${height - 12}" text-anchor="${idx === 0 ? "start" : idx === xTicks.length - 1 ? "end" : "middle"}">${esEsc(label)}</text>`;
-            }).join("");
-            const baseline = showBaseline
-                ? `<path class="es-chart-line-baseline" d="M ${pad.left} ${y(baselineValue).toFixed(1)} L ${width - pad.right} ${y(baselineValue).toFixed(1)}"></path>`
-                : "";
-            const paths = chartSeries.map((item) => {
-                const points = item.rows.map((row) => ({ x: x(row.ms), y: y(row.value), row }));
-                const cls = item.className || "es-chart-line-http";
-                return `<path class="${cls}" d="${esSvgPointPath(points)}"></path>`;
-            }).join("");
-            const pointDots = chartSeries.map((item) => {
-                const cls = `${item.className || "es-chart-line-http"}-dot`;
-                return item.rows
-                    .filter((row) => row.value > 0 && row.ms >= minMs && row.ms <= maxMs)
-                    .map((row) => `<circle class="es-chart-point ${cls}" cx="${x(row.ms).toFixed(1)}" cy="${y(row.value).toFixed(1)}" r="${item.rows.length === 1 ? 5 : 3}" data-es-tooltip="${esEsc(`${Number(row.value || 0).toLocaleString()} messages · ${esFullTime(row.ms)}`)}">
-                        <title>${Number(row.value || 0).toLocaleString()} · ${esEsc(esFullTime(row.ms))}</title>
-                    </circle>`)
-                    .join("");
-            }).join("");
-            const alertBucketMs = Math.max(1000, Number(options.eventBucketMs || options.bucketMs || 60000));
-            const groupedEvents = new Map();
-            chartEvents
-                .map((event) => ({ event, ms: esEventMs(event) }))
-                .filter((item) => item.ms >= minMs && item.ms <= maxMs)
-                .forEach((item) => {
-                    const keyMs = Math.floor(item.ms / alertBucketMs) * alertBucketMs;
-                    const key = String(keyMs);
-                    const bucket = groupedEvents.get(key) || { ms: item.ms, count: 0, events: [], severities: new Set(), types: new Set(), firstMs: item.ms, lastMs: item.ms };
-                    bucket.count += 1;
-                    bucket.events.push(item.event);
-                    bucket.severities.add(esSeverityTone(item.event.severity));
-                    bucket.types.add(esEventTitle(item.event.event_type || item.event.type));
-                    bucket.firstMs = Math.min(bucket.firstMs, item.ms);
-                    bucket.lastMs = Math.max(bucket.lastMs, item.ms);
-                    bucket.ms = Math.min(bucket.ms, item.ms);
-                    groupedEvents.set(key, bucket);
-                });
-            const alertBucketForMs = (ms) => groupedEvents.get(String(Math.floor(ms / alertBucketMs) * alertBucketMs));
-            const alertSummaryText = (bucket) => {
-                if (!bucket || !bucket.count) return "0 alerts";
-                const typeList = [...bucket.types].slice(0, 3).join(", ");
-                return `${bucket.count.toLocaleString()} alert${bucket.count === 1 ? "" : "s"}${typeList ? ` · ${typeList}${bucket.types.size > 3 ? ", ..." : ""}` : ""}`;
-            };
-            const bucketHoverTargets = primaryRows
-                .filter((row) => row.ms >= minMs && row.ms <= maxMs)
-                .map((row) => {
-                    const bucket = alertBucketForMs(row.ms);
-                    const messages = Number(row.value || 0);
-                    const bandWidth = Math.max(8, Math.min(42, (Number(options.bucketMs || alertBucketMs) / Math.max(1, maxMs - minMs)) * plotW));
-                    const cx = x(row.ms);
-                    const title = [
-                        `time ${esFullTime(row.ms)}`,
-                        `${messages.toLocaleString()} message${messages === 1 ? "" : "s"}`,
-                        alertSummaryText(bucket),
-                    ].join(" · ");
-                    return `<rect class="es-chart-hover-bucket" x="${Math.max(pad.left, cx - (bandWidth / 2)).toFixed(1)}" y="${pad.top}" width="${bandWidth.toFixed(1)}" height="${plotH.toFixed(1)}" data-es-tooltip="${esEsc(title)}">
-                        <title>${esEsc(title)}</title>
-                    </rect>`;
-                }).join("");
-            const visibleEvents = [...groupedEvents.values()].sort((a, b) => a.ms - b.ms);
-            const eventCollisionCounts = new Map();
-            visibleEvents.forEach((item) => {
-                const key = Math.round(x(item.ms) / 12);
-                eventCollisionCounts.set(key, (eventCollisionCounts.get(key) || 0) + 1);
-            });
-            const eventCollisionSeen = new Map();
-            const alertDots = visibleEvents.map((bucket) => {
-                const ms = bucket.ms;
-                const collisionKey = Math.round(x(ms) / 12);
-                const collisionIndex = eventCollisionSeen.get(collisionKey) || 0;
-                eventCollisionSeen.set(collisionKey, collisionIndex + 1);
-                const collisionTotal = eventCollisionCounts.get(collisionKey) || 1;
-                const cx = Math.max(pad.left + 4, Math.min(width - pad.right - 4, x(ms) + ((collisionIndex - ((collisionTotal - 1) / 2)) * 10)));
-                const rowAtAlert = nearestPrimaryRow(ms);
-                const messagesAtAlert = Number(rowAtAlert?.value || 0);
-                const yy = messagesAtAlert > 0 ? y(messagesAtAlert) : Math.max(pad.top + 8, y(0) - 10);
-                const firstEvent = bucket.events[0] || {};
-                const detail = esEventDetails(firstEvent) || firstEvent.message || "";
-                const typeList = [...bucket.types].slice(0, 3).join(", ");
-                const title = [
-                    `${bucket.count.toLocaleString()} alert${bucket.count === 1 ? "" : "s"}`,
-                    `${messagesAtAlert.toLocaleString()} message${messagesAtAlert === 1 ? "" : "s"} in this bucket`,
-                    typeList ? `type ${typeList}${bucket.types.size > 3 ? ", ..." : ""}` : "",
-                    bucket.firstMs === bucket.lastMs ? `time ${esFullTime(bucket.firstMs)}` : `time ${esFullTime(bucket.firstMs)} - ${esFullTime(bucket.lastMs)}`,
-                    `device ${firstEvent.device_id || firstEvent.source || "unknown"}`,
-                    firstEvent.route ? `route ${firstEvent.route}` : "",
-                    bucket.severities.size ? `severity ${[...bucket.severities].join("/")}` : "",
-                    detail ? `sample measured ${detail}` : "",
-                ].filter(Boolean).join(" · ");
-                return `<g class="es-chart-alert-marker" data-es-tooltip="${esEsc(title)}">
-                    <circle class="es-chart-alert-dot" cx="${cx.toFixed(1)}" cy="${yy.toFixed(1)}" r="4.8">
-                        <title>${esEsc(title)}</title>
-                    </circle>
-                    ${bucket.count > 1 ? `<text class="es-chart-alert-count" x="${cx.toFixed(1)}" y="${(yy - 7).toFixed(1)}" text-anchor="middle">${bucket.count > 99 ? "99+" : bucket.count}</text>` : ""}
-                </g>`;
-            }).join("");
+            const baselineValue = Number(options.baseline || 0);
 
-            wrap.innerHTML = `<svg class="es-chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esEsc(options.title || "time series chart")}">
-                ${lines}
-                ${baseline}
-                ${paths}
-                ${bucketHoverTargets}
-                ${pointDots}
-                ${alertDots}
-                ${xLabels}
-                <text class="es-chart-axis-title" x="${pad.left + plotW / 2}" y="${height - 2}" text-anchor="middle">${esEsc(options.xTitle || "time")}</text>
-                <text class="es-chart-axis-title" transform="translate(14 ${pad.top + plotH / 2}) rotate(-90)" text-anchor="middle">${esEsc(options.yTitle || "messages / min")}</text>
-            </svg>`;
+            if (typeof uPlot === "undefined") {
+                wrap.innerHTML = "";
+                if (empty) { empty.textContent = "Chart library failed to load — refresh the page."; empty.classList.remove("es-hidden"); }
+                return;
+            }
+
+            // uPlot needs one shared x-axis; reindex every series onto the
+            // union of all their timestamps, null-filling gaps so a missing
+            // point breaks the line instead of silently interpolating across it.
+            const allMs = new Set();
+            chartSeries.forEach((item) => item.rows.forEach((row) => allMs.add(row.ms)));
+            const xsMs = Array.from(allMs).sort((a, b) => a - b);
+            const xs = xsMs.map((ms) => ms / 1000);
+            const data = [xs, ...chartSeries.map((item) => {
+                const byMs = new Map(item.rows.map((row) => [row.ms, row.value]));
+                return xsMs.map((ms) => (byMs.has(ms) ? byMs.get(ms) : null));
+            })];
+
+            const width = wrap.clientWidth || 880;
+            const height = options.height || 240;
+            const fullMin = minMs / 1000, fullMax = maxMs / 1000;
+            const contextKey = `${selector}|${minMs}|${maxMs}|${chartSeries.map((s) => s.className).join(",")}`;
+            const existing = esLineCharts.get(selector);
+
+            if (existing && existing.contextKey === contextKey) {
+                existing.plot.setData(data, false);
+                existing.plot.redraw();
+                return;
+            }
+            if (existing) { try { existing.plot.destroy(); } catch {} }
+
+            const opts = {
+                width, height,
+                padding: [10, 12, 0, 0],
+                cursor: { points: { show: false }, drag: { x: false, y: false } },
+                legend: { show: false },
+                scales: { x: { time: true } },
+                series: [
+                    {},
+                    ...chartSeries.map((item) => ({
+                        stroke: ES_LINE_COLORS[item.className] || "#39d0c8",
+                        width: 2,
+                        dash: item.className === "es-chart-line-mqtt" ? [6, 4] : undefined,
+                        points: { show: false },
+                    })),
+                ],
+                axes: [
+                    { stroke: "rgba(157,179,187,0.6)", grid: { stroke: "rgba(255,255,255,0.05)" }, ticks: { stroke: "rgba(255,255,255,0.08)" } },
+                    { stroke: "rgba(157,179,187,0.6)", grid: { stroke: "rgba(255,255,255,0.05)" }, ticks: { stroke: "rgba(255,255,255,0.08)" }, size: 52 },
+                ],
+                hooks: baselineValue > 0 ? {
+                    draw: [(u) => {
+                        if (baselineValue < u.scales.y.min || baselineValue > u.scales.y.max) return;
+                        const y = u.valToPos(baselineValue, "y", true);
+                        const ctx = u.ctx;
+                        ctx.save();
+                        ctx.strokeStyle = "rgba(255,255,255,0.36)";
+                        ctx.lineWidth = 1.4;
+                        ctx.setLineDash([5, 5]);
+                        ctx.beginPath();
+                        ctx.moveTo(u.bbox.left, y);
+                        ctx.lineTo(u.bbox.left + u.bbox.width, y);
+                        ctx.stroke();
+                        ctx.restore();
+                    }],
+                } : {},
+                plugins: [
+                    esAlertMarkersPlugin(() => chartEvents, () => options.eventBucketMs || options.bucketMs, () => primaryRows),
+                    esPanZoomPlugin(() => [fullMin, fullMax]),
+                ],
+            };
+            wrap.innerHTML = "";
+            const plot = new uPlot(opts, data, wrap);
+            esLineCharts.set(selector, { plot, contextKey });
             } catch (error) {
                 console.warn("[Edge Server] line chart render failed:", error);
                 wrap.innerHTML = "";
@@ -8774,13 +8881,50 @@ document.addEventListener("DOMContentLoaded", () => {
             wrap.innerHTML = items.map(esRenderAlertCard).join("");
         };
 
+        const ES_ALERTS_PER_PAGE = 10;
+        let esAlertsPage = 0;
+
         const esRenderAlertEvents = (selector, emptySelector, rows) => {
             const wrap = edgeShell.querySelector(selector);
             const empty = edgeShell.querySelector(emptySelector);
+            const pager = edgeShell.querySelector("[data-es-alert-pager]");
             const items = Array.isArray(rows) ? rows : [];
             if (empty) empty.classList.toggle("es-hidden", items.length > 0);
             if (!wrap) return;
-            wrap.innerHTML = items.map((event, index) => esRenderAlertCard(event, false, index)).join("");
+            if (!items.length) {
+                wrap.innerHTML = "";
+                pager?.classList.add("ov-hidden");
+                return;
+            }
+            const pageCount = Math.max(1, Math.ceil(items.length / ES_ALERTS_PER_PAGE));
+            esAlertsPage = Math.min(esAlertsPage, pageCount - 1);
+            const startIdx = esAlertsPage * ES_ALERTS_PER_PAGE;
+            // `rows` is always the full, unfiltered esAlertEventsCache (both call
+            // sites pass it directly) — index must stay absolute into that array
+            // since esSelectedAlertIndex looks events up by it directly.
+            const pageItems = items.slice(startIdx, startIdx + ES_ALERTS_PER_PAGE);
+            wrap.innerHTML = pageItems.map((event, i) => esRenderAlertCard(event, false, startIdx + i)).join("");
+
+            if (pager) {
+                if (pageCount > 1) {
+                    pager.classList.remove("ov-hidden");
+                    pager.innerHTML = `
+                        <button class="ev-page-btn" data-es-ap-prev ${esAlertsPage === 0 ? "disabled" : ""}>← Newer</button>
+                        <span class="ev-page-label">Page ${esAlertsPage + 1} of ${pageCount} · ${items.length} alerts</span>
+                        <button class="ev-page-btn" data-es-ap-next ${esAlertsPage >= pageCount - 1 ? "disabled" : ""}>Older →</button>`;
+                    pager.querySelector("[data-es-ap-prev]")?.addEventListener("click", () => {
+                        esAlertsPage = Math.max(0, esAlertsPage - 1);
+                        esRenderAlertEvents(selector, emptySelector, rows);
+                    });
+                    pager.querySelector("[data-es-ap-next]")?.addEventListener("click", () => {
+                        esAlertsPage = Math.min(pageCount - 1, esAlertsPage + 1);
+                        esRenderAlertEvents(selector, emptySelector, rows);
+                    });
+                } else {
+                    pager.classList.add("ov-hidden");
+                    pager.innerHTML = "";
+                }
+            }
         };
 
         const esRenderSelectedAlert = () => {
@@ -9422,6 +9566,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const esRefreshAlertsResetSelection = async () => {
             esSelectedAlertIndex = -1;
+            esAlertsPage = 0;
             await esRefreshAlerts();
         };
 
