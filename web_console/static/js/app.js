@@ -390,13 +390,17 @@ document.addEventListener("DOMContentLoaded", () => {
                     const m = Math.floor((ms || 0) / 60000);
                     return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
                 };
+                // Each row deep-links to the incident's own detail, which in turn
+                // offers the subsystem page where it can actually be acted on —
+                // a forwarding failure is not fixed from the Insights page.
                 list.innerHTML = open.slice(0, 4).map((i) => `
-                    <div class="ov-incident-row">
+                    <a class="ov-incident-row" href="/insights?incident=${encodeURIComponent(i.ref)}">
                         <span class="inc-ref">${esc(i.ref)}</span>
-                        <span style="flex:1">${esc(i.title)}</span>
+                        <span class="ov-incident-title">${esc(i.title)}</span>
                         <span class="inc-domain-pill ${i.domain !== "unknown" ? "is-known" : "is-unknown"}">${esc(i.domain_label)}</span>
-                        <span style="color:var(--muted)">${dur(i.duration_ms)}</span>
-                    </div>`).join("");
+                        <span class="ov-incident-age">${dur(i.duration_ms)}</span>
+                        <span class="ov-incident-go">→</span>
+                    </a>`).join("");
             } catch (e) {
                 console.warn("Failed to refresh overview incidents", e);
             }
@@ -5921,6 +5925,17 @@ document.addEventListener("DOMContentLoaded", () => {
                 uplink: "Uplink/Internet", destination: "Destination/Server", unknown: "Unknown",
             };
 
+            // Where the operator actually acts on each kind of failure. An
+            // incident is diagnosed here but fixed on the owning page, so the
+            // detail always offers a route to it.
+            const INC_DOMAIN_PAGE = {
+                destination:   { href: "/forwarding",   label: "Open Data Forwarding" },
+                uplink:        { href: "/connectivity", label: "Open Connectivity" },
+                local_network: { href: "/connectivity", label: "Open Connectivity" },
+                gateway:       { href: "/monitor",      label: "Open System Monitor" },
+                source:        { href: "/interfaces",   label: "Open Interfaces" },
+            };
+
             const incLoad = async () => {
                 const params = new URLSearchParams({ window: incWindow });
                 if (incStatus) params.set("status", incStatus);
@@ -6032,6 +6047,9 @@ document.addEventListener("DOMContentLoaded", () => {
                         <div class="inc-verdict-note">${known
                             ? `Determined with ${incEsc(inc.domain_conf)} confidence from the checks below.`
                             : "Not enough evidence to attribute this reliably — the checks below show what could not be verified."}</div>
+                        ${INC_DOMAIN_PAGE[inc.domain]
+                            ? `<a class="inc-goto" href="${INC_DOMAIN_PAGE[inc.domain].href}">${incEsc(INC_DOMAIN_PAGE[inc.domain].label)} →</a>`
+                            : ""}
                     </div>
 
                     <div class="inc-d-section">
@@ -6137,6 +6155,15 @@ document.addEventListener("DOMContentLoaded", () => {
             };
 
             evRefreshFn = evRefresh;
+
+            // Deep link from the Overview band: /insights?incident=MC-1001 lands
+            // on the Events tab with that incident already open, so the operator
+            // reaches the evidence in one click instead of hunting for it.
+            const incDeepLink = new URLSearchParams(window.location.search).get("incident");
+            if (incDeepLink) {
+                insightsShell.querySelector('[data-ov-tab="events"]')?.click();
+                incLoad().then(() => incOpenDrawer(incDeepLink));
+            }
         }
 
         // ══════════════════════════════════════════════════════════════════════

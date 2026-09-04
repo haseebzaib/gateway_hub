@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 from .correlator import (
+    DESTINATION as DESTINATION_LAYER,
     DOMAIN_LABELS,
     GATEWAY as GATEWAY_LAYER,
     LOCAL_NETWORK as LOCAL_NETWORK_LAYER,
@@ -21,6 +22,7 @@ from .correlator import (
     collect_signals,
     evidence_rows,
     replay_faults,
+    retire_vanished,
 )
 from .storage import IncidentStorage
 
@@ -95,6 +97,9 @@ class IncidentTask:
             to_ms=now_ms,
         )
         open_faults, cleared = replay_faults(signals)
+        # Anything that has left the configuration can never report recovery, so
+        # retire it here rather than leaving its incident open indefinitely.
+        cleared.update(retire_vanished(open_faults, self._live_scopes(), now_ms))
         network_state = self._network_state()
         source_total = self._source_total()
         continuity = self._continuity()
@@ -145,9 +150,15 @@ class IncidentTask:
             if existing is None:
                 return
             restored = existing.get("restored_ms") or self._latest_clear(cleared) or now_ms
-            if now_ms - int(restored) >= STABILITY_WINDOW_MS:
+            # Nothing to wait for when the subject itself is gone: there is no
+            # link left that could flap, so it closes at once and says why.
+            retired = any(f.retired for f in cleared.values())
+            if retired or now_ms - int(restored) >= STABILITY_WINDOW_MS:
                 timeline = list(existing.get("timeline") or [])
-                timeline.append({"ts_ms": now_ms, "label": "Closed after stable recovery"})
+                timeline.append({
+                    "ts_ms": now_ms,
+                    "label": "Closed — no longer configured" if retired else "Closed after stable recovery",
+                })
                 self.storage.update_incident(existing["id"], {
                     "status": "resolved", "restored_ms": int(restored), "closed_ms": now_ms,
                     "continuity_json": {**existing.get("continuity", {}), **continuity,
@@ -262,6 +273,24 @@ class IncidentTask:
         if domain in ("gateway", "uplink"):
             return "critical"
         return "warning"
+
+    def _live_scopes(self) -> dict[str, set[str]]:
+        """Scopes that still exist in configuration, per layer.
+
+        Only layers listed here are subject to retirement; a layer that is
+        absent is left alone, so an unlisted layer can never be retired by
+        accident.
+        """
+        scopes: dict[str, set[str]] = {}
+        if self.forwarding is not None:
+            try:
+                profiles = self.forwarding.config.get("profiles") or []
+                scopes[DESTINATION_LAYER] = {
+                    str(p.get("id")) for p in profiles if p.get("enabled", True)
+                }
+            except Exception:
+                pass
+        return scopes
 
     def _network_state(self) -> dict[str, Any] | None:
         if self.network_runtime is None:

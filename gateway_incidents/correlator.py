@@ -76,6 +76,33 @@ class Fault:
     since_ms: int
     detail: str
     cleared_ms: int | None = None
+    # Ended because the thing it was about stopped existing (profile disabled or
+    # deleted, device removed) rather than because it recovered.
+    retired: bool = False
+
+
+def retire_vanished(
+    open_faults: dict[tuple[str, str], Fault],
+    live_scopes: dict[str, set[str]],
+    now_ms: int,
+) -> dict[tuple[str, str], Fault]:
+    """Clear faults whose subject is no longer configured.
+
+    A fault only clears when its subsystem reports recovery — but a disabled or
+    deleted forwarding profile stops reporting anything at all, so its incident
+    would stay open forever with no event that could ever close it. Anything
+    that has left the configuration is retired here instead.
+    """
+    retired: dict[tuple[str, str], Fault] = {}
+    for key, fault in list(open_faults.items()):
+        allowed = live_scopes.get(fault.layer)
+        if allowed is None or fault.scope in allowed:
+            continue
+        fault.cleared_ms = now_ms
+        fault.retired = True
+        retired[key] = fault
+        open_faults.pop(key, None)
+    return retired
 
 
 @dataclass
