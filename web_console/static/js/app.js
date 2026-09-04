@@ -7276,11 +7276,10 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (storageInfoEl && d.storage) {
                     const s = d.storage;
                     const usedMb = s.db_size_mb ?? 0;
-                    const capMb  = s.estimated_capacity_mb ?? 0;
-                    const maxMsg = (s.max_per_profile ?? 0).toLocaleString();
+                    const days   = s.retention_days ?? 31;
                     storageInfoEl.textContent = usedMb > 0
-                        ? `SQLite on disk · ${usedMb} MB used · capacity: ~${capMb} MB (${maxMsg} msgs/profile) · survives restarts`
-                        : `SQLite on disk · capacity: ~${capMb} MB per profile (${maxMsg} msgs) · survives restarts`;
+                        ? `SQLite on disk · ${usedMb} MB used · backlog bounded by ${days}-day retention · survives restarts`
+                        : `SQLite on disk · backlog bounded by ${days}-day retention · survives restarts`;
                 }
 
                 if (fwBufPending)  fwBufPending.textContent  = totalPending.toLocaleString();

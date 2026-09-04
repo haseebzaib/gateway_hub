@@ -1458,7 +1458,7 @@ async def get_monitor_anomaly_config(request: Request) -> JSONResponse:
 
 
 @router.get("/api/monitor/timeseries")
-async def get_monitor_timeseries(request: Request) -> JSONResponse:
+def get_monitor_timeseries(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     metric = request.query_params.get("metric") or ""
@@ -1491,7 +1491,7 @@ async def get_monitor_timeseries(request: Request) -> JSONResponse:
 
 
 @router.get("/api/monitor/anomalies/recent")
-async def get_monitor_recent_anomalies(request: Request) -> JSONResponse:
+def get_monitor_recent_anomalies(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     now = _now_ms()
@@ -1510,7 +1510,7 @@ async def get_monitor_recent_anomalies(request: Request) -> JSONResponse:
 
 
 @router.get("/api/monitor/anomalies/grouped")
-async def get_monitor_grouped_anomalies(request: Request) -> JSONResponse:
+def get_monitor_grouped_anomalies(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     now = _now_ms()
@@ -1597,7 +1597,7 @@ def _interface_data_storage(request: Request) -> object | None:
 
 
 @router.get("/api/interfaces/data/sources")
-async def get_interface_data_sources(request: Request) -> JSONResponse:
+def get_interface_data_sources(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     storage = _interface_data_storage(request)
@@ -1607,7 +1607,7 @@ async def get_interface_data_sources(request: Request) -> JSONResponse:
 
 
 @router.get("/api/interfaces/data/messages")
-async def get_interface_sensor_messages(request: Request) -> JSONResponse:
+def get_interface_sensor_messages(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     storage = _interface_data_storage(request)
@@ -1624,7 +1624,7 @@ async def get_interface_sensor_messages(request: Request) -> JSONResponse:
 
 
 @router.get("/api/interfaces/data/readings")
-async def get_interface_sensor_readings(request: Request) -> JSONResponse:
+def get_interface_sensor_readings(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     storage = _interface_data_storage(request)
@@ -1708,7 +1708,7 @@ async def get_forwarding_buffer_stats(request: Request) -> JSONResponse:
     return JSONResponse({
         "ok": True, "total_pending": 0, "total_replayed": 0, "total_dropped": 0,
         "success_rate": 100, "profiles": [],
-        "storage": {"db_size_mb": 0, "estimated_capacity_mb": 0, "max_per_profile": 0},
+        "storage": {"db_size_mb": 0, "retention_days": 31},
     })
 
 
@@ -1861,7 +1861,7 @@ async def get_edge_server_events(request: Request) -> JSONResponse:
 
 
 @router.get("/api/edge-server/http/metrics")
-async def get_edge_server_http_metrics(request: Request) -> JSONResponse:
+def get_edge_server_http_metrics(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     minutes = _edge_server_window_minutes(request)
@@ -1872,7 +1872,7 @@ async def get_edge_server_http_metrics(request: Request) -> JSONResponse:
 
 
 @router.get("/api/edge-server/mqtt/metrics")
-async def get_edge_server_mqtt_metrics(request: Request) -> JSONResponse:
+def get_edge_server_mqtt_metrics(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     minutes = _edge_server_window_minutes(request)
@@ -1909,7 +1909,7 @@ async def get_edge_server_alerts(request: Request) -> JSONResponse:
 
 
 @router.get("/api/edge-server/history/devices")
-async def get_edge_server_history_devices(request: Request) -> JSONResponse:
+def get_edge_server_history_devices(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     edge_server = getattr(request.app.state, "edge_server", None)
@@ -1919,7 +1919,7 @@ async def get_edge_server_history_devices(request: Request) -> JSONResponse:
 
 
 @router.get("/api/edge-server/history/device")
-async def get_edge_server_device_history_query(request: Request) -> JSONResponse:
+def get_edge_server_device_history_query(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     device_id = request.query_params.get("device_id") or ""
@@ -1937,7 +1937,7 @@ async def get_edge_server_device_history_query(request: Request) -> JSONResponse
 
 
 @router.get("/api/edge-server/history/device/{device_id}")
-async def get_edge_server_device_history(request: Request, device_id: str) -> JSONResponse:
+def get_edge_server_device_history(request: Request, device_id: str) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     edge_server = getattr(request.app.state, "edge_server", None)
@@ -2037,7 +2037,7 @@ async def insights_configured(request: Request) -> JSONResponse:
 
 
 @router.get("/api/insights/live")
-async def insights_live(request: Request) -> JSONResponse:
+def insights_live(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     storage = _interface_data_storage(request)
@@ -2049,7 +2049,7 @@ async def insights_live(request: Request) -> JSONResponse:
 
 
 @router.get("/api/insights/history")
-async def insights_history(request: Request) -> JSONResponse:
+def insights_history(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     storage = _interface_data_storage(request)
@@ -2065,7 +2065,7 @@ async def insights_history(request: Request) -> JSONResponse:
 
 
 @router.get("/api/insights/sensor-anomalies")
-async def get_sensor_anomalies(request: Request) -> JSONResponse:
+def get_sensor_anomalies(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     storage = _interface_data_storage(request)
@@ -2081,7 +2081,7 @@ async def get_sensor_anomalies(request: Request) -> JSONResponse:
 
 
 @router.get("/api/insights/events")
-async def insights_events(request: Request) -> JSONResponse:
+def insights_events(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     storage = _interface_data_storage(request)
@@ -2101,7 +2101,7 @@ async def insights_events(request: Request) -> JSONResponse:
 
 
 @router.get("/api/insights/detection-config")
-async def get_detection_config(request: Request) -> JSONResponse:
+def get_detection_config(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     params = request.query_params
@@ -2191,7 +2191,7 @@ async def delete_multi_condition_rule(request: Request, rule_id: int) -> JSONRes
 
 
 @router.get("/api/insights/summary")
-async def insights_summary(request: Request) -> JSONResponse:
+def insights_summary(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     storage = _interface_data_storage(request)
@@ -2201,7 +2201,7 @@ async def insights_summary(request: Request) -> JSONResponse:
 
 
 @router.get("/api/insights/stats")
-async def insights_stats(request: Request) -> JSONResponse:
+def insights_stats(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     storage = _interface_data_storage(request)
@@ -2218,7 +2218,7 @@ async def insights_stats(request: Request) -> JSONResponse:
 
 
 @router.get("/api/insights/trends")
-async def insights_trends(request: Request) -> JSONResponse:
+def insights_trends(request: Request) -> JSONResponse:
     if auth := _json_auth_required(request):
         return auth
     storage = _interface_data_storage(request)
@@ -2235,7 +2235,7 @@ async def insights_trends(request: Request) -> JSONResponse:
 
 
 @router.get("/api/insights/export/csv")
-async def export_insights_csv(request: Request) -> Response:
+def export_insights_csv(request: Request) -> Response:
     if not _is_authenticated(request):
         return PlainTextResponse("Authentication required.", status_code=status.HTTP_401_UNAUTHORIZED)
     storage = _interface_data_storage(request)

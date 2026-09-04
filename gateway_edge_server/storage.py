@@ -36,6 +36,13 @@ ANOMALY_EVENT_TYPES = (
     "route_missing",
 )
 
+# Size-cap trimming deletes in batches and re-measures, so a single maintenance
+# pass cannot stall the gateway for long no matter how far over the cap it is;
+# the remainder is trimmed on the next pass.
+PRUNE_BATCH_ROWS = 5_000
+PRUNE_MAX_PASSES = 20
+VACUUM_FREE_BYTES = 64 * 1024 * 1024
+
 
 def _parse_iso_datetime(value: str) -> datetime | None:
     if not value:
@@ -407,6 +414,74 @@ class EdgeServerStorage:
             "oldest_record_at": message_row["oldest_record_at"] if message_row else None,
             "newest_record_at": message_row["newest_record_at"] if message_row else None,
         }
+
+    def prune(self, *, retention_days: int, max_size_mb: int) -> dict[str, int]:
+        """Enforce the retention window and size ceiling the config advertises.
+
+        Age alone cannot bound this database — a burst of inbound traffic fills
+        it well inside the window — so once the live (non-free) page count is
+        over the ceiling the oldest messages are trimmed until it is back under.
+        Sizing off live pages rather than the file size means this converges
+        even though SQLite never shrinks the file on its own.
+        """
+        self.open()
+        cutoff = (
+            (datetime.now(UTC) - timedelta(days=max(1, int(retention_days))))
+            .replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        )
+        removed_messages = 0
+        removed_events = 0
+        limit_bytes = max(1, int(max_size_mb)) * 1024 * 1024
+        with self._lock:
+            removed_messages += max(0, self._conn.execute(
+                "DELETE FROM messages WHERE received_at < ?", (cutoff,)
+            ).rowcount)
+            removed_events += max(0, self._conn.execute(
+                "DELETE FROM events WHERE created_at < ?", (cutoff,)
+            ).rowcount)
+            self._conn.commit()
+
+            for _ in range(PRUNE_MAX_PASSES):
+                if self._live_bytes_locked() <= limit_bytes:
+                    break
+                trimmed = self._conn.execute(
+                    "DELETE FROM messages WHERE id IN (SELECT id FROM messages ORDER BY id LIMIT ?)",
+                    (PRUNE_BATCH_ROWS,),
+                ).rowcount
+                self._conn.commit()
+                if trimmed <= 0:
+                    break
+                removed_messages += trimmed
+
+            reclaimed = self._vacuum_if_bloated_locked()
+        if removed_messages or removed_events or reclaimed:
+            LOGGER.info(
+                "storage_prune messages=%d events=%d reclaimed_bytes=%d cutoff=%s",
+                removed_messages, removed_events, reclaimed, cutoff,
+            )
+        return {"messages": removed_messages, "events": removed_events, "reclaimed_bytes": reclaimed}
+
+    def _live_bytes_locked(self) -> int:
+        page_size = int(self._conn.execute("PRAGMA page_size").fetchone()[0])
+        page_count = int(self._conn.execute("PRAGMA page_count").fetchone()[0])
+        free_pages = int(self._conn.execute("PRAGMA freelist_count").fetchone()[0])
+        return max(0, page_count - free_pages) * page_size
+
+    def _vacuum_if_bloated_locked(self) -> int:
+        """Return freed pages to the filesystem once enough have accumulated.
+
+        Deletes only mark pages free; without this the file keeps its high-water
+        mark forever, so one traffic burst permanently costs that disk space.
+        VACUUM rewrites the whole database, so it is gated on a threshold rather
+        than run after every prune.
+        """
+        page_size = int(self._conn.execute("PRAGMA page_size").fetchone()[0])
+        free_bytes = int(self._conn.execute("PRAGMA freelist_count").fetchone()[0]) * page_size
+        if free_bytes < VACUUM_FREE_BYTES:
+            return 0
+        self._conn.commit()
+        self._conn.execute("VACUUM")
+        return free_bytes
 
     def recent_devices(self, limit: int = 30) -> list[dict[str, Any]]:
         self.open()

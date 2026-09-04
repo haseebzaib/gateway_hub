@@ -11,6 +11,23 @@ from typing import Any
 
 DEFAULT_DB_PATH = Path("/opt/metacrust/data/gateway_interfaces/gateway_interfaces.db")
 DEFAULT_RETENTION_DAYS = 31
+VACUUM_FREE_BYTES = 64 * 1024 * 1024
+
+
+def _vacuum_if_bloated(conn: sqlite3.Connection) -> None:
+    """Hand freed pages back to the filesystem once enough have accumulated.
+
+    Deleting rows only marks pages free, so without this the file keeps its
+    high-water mark forever and one traffic burst costs that disk space
+    permanently. VACUUM rewrites the entire database, so it is gated on a
+    threshold instead of running after every prune.
+    """
+    page_size = int(conn.execute("PRAGMA page_size").fetchone()[0])
+    free_bytes = int(conn.execute("PRAGMA freelist_count").fetchone()[0]) * page_size
+    if free_bytes < VACUUM_FREE_BYTES:
+        return
+    conn.commit()
+    conn.execute("VACUUM")
 
 
 class GatewayInterfacesDataStorage:
@@ -21,7 +38,6 @@ class GatewayInterfacesDataStorage:
         self.retention_days = max(1, int(os.environ.get("METACRUST_INTERFACES_RETENTION_DAYS", DEFAULT_RETENTION_DAYS)))
         self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = None
-        self._last_maintenance_ms = 0
 
     def open(self) -> None:
         with self._lock:
@@ -58,6 +74,10 @@ class GatewayInterfacesDataStorage:
             );
             CREATE INDEX IF NOT EXISTS idx_sensor_messages_source_time
                 ON sensor_messages (source_type, source_id, ts_ms);
+            -- Retention prunes by ts_ms alone; the composite index above leads with
+            -- source_type so it cannot serve that scan.
+            CREATE INDEX IF NOT EXISTS idx_sensor_messages_time
+                ON sensor_messages (ts_ms);
 
             CREATE TABLE IF NOT EXISTS sensor_readings (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,6 +92,12 @@ class GatewayInterfacesDataStorage:
             );
             CREATE INDEX IF NOT EXISTS idx_sensor_readings_series
                 ON sensor_readings (source_type, source_id, name, ts_ms);
+            -- Required by the ON DELETE CASCADE from sensor_messages: without an
+            -- index on the child key, SQLite full-scans sensor_readings once per
+            -- deleted parent row, so retention pruning degrades to O(parents x
+            -- readings) and pegs a core for hours instead of finishing in under a second.
+            CREATE INDEX IF NOT EXISTS idx_sensor_readings_message
+                ON sensor_readings (message_id);
 
             CREATE TABLE IF NOT EXISTS rs232_sniffer_frames (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,6 +111,8 @@ class GatewayInterfacesDataStorage:
             );
             CREATE INDEX IF NOT EXISTS idx_sniffer_port_time
                 ON rs232_sniffer_frames (port, ts_ms);
+            CREATE INDEX IF NOT EXISTS idx_sniffer_time
+                ON rs232_sniffer_frames (ts_ms);
 
             CREATE TABLE IF NOT EXISTS sensor_status_events (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,6 +124,8 @@ class GatewayInterfacesDataStorage:
             );
             CREATE INDEX IF NOT EXISTS idx_sensor_status_source_time
                 ON sensor_status_events (source_type, source_id, ts_ms);
+            CREATE INDEX IF NOT EXISTS idx_sensor_status_time
+                ON sensor_status_events (ts_ms);
 
             CREATE TABLE IF NOT EXISTS sensor_sources (
                 source_type TEXT NOT NULL,
@@ -132,6 +162,8 @@ class GatewayInterfacesDataStorage:
             );
             CREATE INDEX IF NOT EXISTS idx_sensor_anomaly_source_time
                 ON sensor_anomaly_events (source_type, source_id, ts_ms);
+            CREATE INDEX IF NOT EXISTS idx_sensor_anomaly_time
+                ON sensor_anomaly_events (ts_ms);
             """
         )
         self._conn.commit()
@@ -168,7 +200,6 @@ class GatewayInterfacesDataStorage:
                 )
             self._upsert_source_locked(source_type, source_id, ts_ms, "online" if ok else "error", _first_error(errors), 1)
             self._conn.commit()
-            self._maybe_maintain_locked(ts_ms)
             return message_id
 
     def add_sniffer_frame(self, data: dict[str, Any]) -> int:
@@ -188,10 +219,20 @@ class GatewayInterfacesDataStorage:
             )
             self._upsert_source_locked("rs232Sniffer", port, ts_ms, "online", None, 1)
             self._conn.commit()
-            self._maybe_maintain_locked(ts_ms)
             return int(cursor.lastrowid)
 
     def add_status(self, data: dict[str, Any]) -> int:
+        """Record a status *transition*; repeats of the current state are dropped.
+
+        gateway_core reports every source's status on each poll, so an
+        unreachable device restated "disconnected" once a second forever. That
+        buried the only two interesting facts — when it went down and when it
+        came back — under millions of identical rows and wore the card out
+        saying nothing new. The live view reads sensor_sources, which is
+        upserted every time regardless, so "last seen" stays current.
+
+        Returns the new row id, or 0 when the status was unchanged.
+        """
         ts_ms = _timestamp_ms(data)
         source_type, source_id = _source(data)
         status = str(data.get("status") or "unknown")
@@ -199,14 +240,20 @@ class GatewayInterfacesDataStorage:
         with self._lock:
             self.open()
             assert self._conn is not None
-            cursor = self._conn.execute(
-                "INSERT INTO sensor_status_events (ts_ms, source_type, source_id, status, error) VALUES (?, ?, ?, ?, ?)",
-                (ts_ms, source_type, source_id, status, error),
-            )
+            previous = self._conn.execute(
+                """SELECT status, error FROM sensor_status_events
+                   WHERE source_type = ? AND source_id = ? ORDER BY id DESC LIMIT 1""",
+                (source_type, source_id),
+            ).fetchone()
+            row_id = 0
+            if previous is None or previous["status"] != status or (previous["error"] or None) != error:
+                row_id = int(self._conn.execute(
+                    "INSERT INTO sensor_status_events (ts_ms, source_type, source_id, status, error) VALUES (?, ?, ?, ?, ?)",
+                    (ts_ms, source_type, source_id, status, error),
+                ).lastrowid)
             self._upsert_source_locked(source_type, source_id, ts_ms, status, error, 0)
             self._conn.commit()
-            self._maybe_maintain_locked(ts_ms)
-            return int(cursor.lastrowid)
+            return row_id
 
     def sources(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -384,7 +431,6 @@ class GatewayInterfacesDataStorage:
                 ],
             )
             self._conn.commit()
-            self._maybe_maintain_locked(int(events[-1].get("timestamp_ms") or 0))
 
     def sensor_anomaly_events(
         self, *, source_type: str | None = None, source_id: str | None = None,
@@ -510,17 +556,30 @@ class GatewayInterfacesDataStorage:
             (source_type, source_id, ts_ms, ts_ms, status, error, message_increment),
         )
 
-    def _maybe_maintain_locked(self, now_ms: int) -> None:
-        if now_ms - self._last_maintenance_ms < 600_000:
-            return
-        self._last_maintenance_ms = now_ms
-        assert self._conn is not None
-        cutoff = now_ms - self.retention_days * 86_400_000
-        self._conn.execute("DELETE FROM sensor_messages WHERE ts_ms < ?", (cutoff,))
-        self._conn.execute("DELETE FROM rs232_sniffer_frames WHERE ts_ms < ?", (cutoff,))
-        self._conn.execute("DELETE FROM sensor_status_events WHERE ts_ms < ?", (cutoff,))
-        self._conn.execute("DELETE FROM sensor_anomaly_events WHERE ts_ms < ?", (cutoff,))
-        self._conn.commit()
+    def maintain(self) -> None:
+        """Prune expired rows and return freed space to the filesystem.
+
+        Call this from a worker thread on a timer — never from the per-message
+        write path. Pruning is unbounded disk work, and every subsystem in this
+        process shares a single event loop thread, so doing it inline froze the
+        whole gateway (IPC, web console and forwarding together) rather than
+        just slowing one write.
+
+        The cutoff is taken from the local clock rather than from the incoming
+        message timestamp: device-supplied time drove both the schedule and the
+        delete boundary before, so one bad timestamp could wipe the history or
+        park maintenance until wall-clock caught up.
+        """
+        with self._lock:
+            self.open()
+            assert self._conn is not None
+            cutoff = int(time.time() * 1000) - self.retention_days * 86_400_000
+            self._conn.execute("DELETE FROM sensor_messages WHERE ts_ms < ?", (cutoff,))
+            self._conn.execute("DELETE FROM rs232_sniffer_frames WHERE ts_ms < ?", (cutoff,))
+            self._conn.execute("DELETE FROM sensor_status_events WHERE ts_ms < ?", (cutoff,))
+            self._conn.execute("DELETE FROM sensor_anomaly_events WHERE ts_ms < ?", (cutoff,))
+            self._conn.commit()
+            _vacuum_if_bloated(self._conn)
 
 
 def _timestamp_ms(data: dict[str, Any]) -> int:

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
 import time
 from collections import deque
@@ -128,6 +129,8 @@ class ForwardingService:
             "last_status_code": None,
             "replay_remaining": 0,
             "last_metrics_ms": 0,
+            "outage_signature": None,
+            "outage_repeats": 0,
             "pending_history": deque([0, 0, 0, 0, 0], maxlen=5),
         }
         self._workers[pid] = asyncio.create_task(self._worker(profile), name=f"forwarding-{pid}")
@@ -144,13 +147,24 @@ class ForwardingService:
                     if publisher is None:
                         state["state"] = "connecting"
                         publisher = await asyncio.to_thread(self._build_publisher, profile)
-                        state["state"] = "connected"
-                        state["connected_since"] = _now_ms()
-                        state["last_error"] = None
-                        state["replay_remaining"] = self._pending(profile)
-                        self.storage.add_event(pid, "info", "connected", self._destination(profile))
-                        backoff = 5.0
+                    # Building an HTTPS publisher performs no network I/O — the
+                    # endpoint is first contacted by the POST inside _pump_once —
+                    # so reaching "connected" has to wait for a pump that did not
+                    # raise. Announcing it at build time logged a connect for a
+                    # link that was never up.
                     busy = await self._pump_once(profile, publisher, state)
+                    # A pump with nothing queued performs no HTTPS request, so
+                    # it proves nothing about reachability — treating it as a
+                    # successful connect logged "connected" for an endpoint that
+                    # was refusing, immediately followed by "disconnected" once
+                    # real traffic hit it. MQTT is exempt: its publisher opened a
+                    # genuine broker connection during _build_publisher.
+                    if busy or profile["protocol"] == "mqtt":
+                        self._mark_online(pid, profile, state)
+                    # Only a cycle that actually completed clears the backoff;
+                    # resetting it merely for constructing a publisher pinned a
+                    # dead endpoint at one retry every 5 s indefinitely.
+                    backoff = 5.0
                     if state["replay_remaining"] > 0:
                         pacing = REPLAY_PACE_S
                     else:
@@ -159,14 +173,7 @@ class ForwardingService:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    was_connected = state["state"] == "connected"
-                    state["state"] = "error"
-                    state["last_error"] = str(exc)
-                    state["last_error_at_ms"] = _now_ms()
-                    state["failed_count"] += 1
-                    self.storage.add_event(
-                        pid, "error", "disconnected" if was_connected else "connect_failed", str(exc)
-                    )
+                    self._mark_offline(pid, state, exc)
                     if publisher is not None:
                         await asyncio.to_thread(publisher.close)
                         publisher = None
@@ -175,6 +182,43 @@ class ForwardingService:
         finally:
             if publisher is not None:
                 await asyncio.to_thread(publisher.close)
+
+    def _mark_online(self, pid: str, profile: dict[str, Any], state: dict[str, Any]) -> None:
+        """Record a recovery, once, on the edge back into service."""
+        if state["state"] == "connected":
+            return
+        state["state"] = "connected"
+        state["connected_since"] = _now_ms()
+        state["last_error"] = None
+        state["outage_signature"] = None
+        state["outage_repeats"] = 0
+        state["replay_remaining"] = self._pending(profile)
+        self.storage.add_event(pid, "info", "connected", self._destination(profile))
+
+    def _mark_offline(self, pid: str, state: dict[str, Any], exc: Exception) -> None:
+        """Record an outage once, not once per retry.
+
+        A destination that stays unreachable re-raises the same error on every
+        cycle. Writing a row each time buried the two facts that matter — when
+        it broke and when it recovered — under thousands of identical rows, and
+        burned SD-card writes to say nothing new. Repeats are counted in memory
+        and surfaced in live status; a *different* error still gets its own row,
+        because that is a genuinely new failure mode.
+        """
+        message = str(exc)
+        was_connected = state["state"] == "connected"
+        state["state"] = "error"
+        state["last_error"] = message
+        state["last_error_at_ms"] = _now_ms()
+        state["failed_count"] += 1
+        if was_connected or state.get("outage_signature") != message:
+            state["outage_signature"] = message
+            state["outage_repeats"] = 0
+            self.storage.add_event(
+                pid, "error", "disconnected" if was_connected else "connect_failed", message
+            )
+            return
+        state["outage_repeats"] = int(state.get("outage_repeats") or 0) + 1
 
     def _build_publisher(self, profile: dict[str, Any]) -> MqttPublisher | HttpsPublisher:
         pid = profile["id"]
@@ -433,6 +477,10 @@ class ForwardingService:
                 "connected_since": state.get("connected_since", 0),
                 "last_error": state.get("last_error"),
                 "last_error_at_ms": state.get("last_error_at_ms"),
+                # Retries that repeated the current error are counted rather
+                # than written to the audit log, so live status still shows the
+                # link is being worked without one row per attempt on disk.
+                "retry_attempts": int(state.get("outage_repeats") or 0),
                 "buffer": buffer,
             }
             if profile["protocol"] == "mqtt":
@@ -494,7 +542,13 @@ class ForwardingService:
             "total_dropped": total_dropped,
             "success_rate": round(sum(rates) / len(rates)) if rates else 100,
             "profiles": profiles,
-            "storage": {"db_size_mb": round(db_size_mb, 1), "estimated_capacity_mb": 0, "max_per_profile": 0},
+            # There is no separate outbound buffer to size: forwarding tails the
+            # sensor/monitor tables by cursor, so the backlog ceiling is however
+            # much history those tables retain.
+            "storage": {
+                "db_size_mb": round(db_size_mb, 1),
+                "retention_days": max(1, int(os.environ.get("METACRUST_INTERFACES_RETENTION_DAYS", 31))),
+            },
         }
 
     def events(self, limit: int = 200, window: str | None = None) -> dict[str, Any]:

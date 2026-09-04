@@ -27,6 +27,12 @@ if not LOGGER.handlers:
     LOGGER.addHandler(_handler)
 LOGGER.propagate = False
 
+STORAGE_PRUNE_INTERVAL_S = 600.0
+# A device or MQTT client that has not been heard from in this long is dropped
+# from the in-memory tracking dictionaries; its history remains in the database.
+TRACKING_RETENTION_DAYS = 7
+RECONNECT_HISTORY_TTL_S = 3600.0
+
 
 @dataclass
 class ListenerState:
@@ -63,6 +69,8 @@ class EdgeServerTask:
         self._mqtt_sessions: dict[str, dict[str, Any]] = {}
         self._mqtt_client_devices: dict[str, set[str]] = {}
         self._mqtt_connect_history: dict[str, deque[float]] = {}
+        self._last_prune_at = 0.0
+        self._audit_signatures: dict[str, str] = {}
 
     @property
     def storage(self) -> EdgeServerStorage:
@@ -136,6 +144,7 @@ class EdgeServerTask:
         audit_events = list(self._events)[-20:]
         config = self._config or {}
         storage_config = dict(config.get("storage") or {})
+        retention_days, max_size_mb = self._storage_limits()
         stored_records = len(self._records)
         devices = list(self._devices.values())[-30:]
         memory_oldest = self._records[0]["received_at"] if self._records else None
@@ -165,8 +174,8 @@ class EdgeServerTask:
         storage_status.update(
             {
                 "configured_enabled": bool(storage_config.get("enabled", True)),
-                "retention_days": int(storage_config.get("retention_days") or 30),
-                "max_size_mb": max(5120, int(storage_config.get("max_size_mb") or 5120)),
+                "retention_days": retention_days,
+                "max_size_mb": max_size_mb,
             }
         )
         active_devices = sum(
@@ -355,14 +364,83 @@ class EdgeServerTask:
                 async with self._lock:
                     await self._reconcile_locked()
                     self._detect_silent_devices_locked()
+                    self._evict_stale_tracking_locked()
+                self._resolve_audit("reconcile")
+                await self._maintain_storage()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._audit("error", "edge-server", f"reconcile failed: {exc}")
+                self._audit("error", "edge-server", f"reconcile failed: {exc}", dedupe_key="reconcile")
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=5.0)
             except TimeoutError:
                 continue
+
+    def _storage_limits(self) -> tuple[int, int]:
+        storage_config = dict((self._config or {}).get("storage") or {})
+        return (
+            int(storage_config.get("retention_days") or 30),
+            max(5120, int(storage_config.get("max_size_mb") or 5120)),
+        )
+
+    async def _maintain_storage(self) -> None:
+        """Apply the configured retention window and size ceiling.
+
+        Runs on a worker thread: pruning (and the occasional VACUUM behind it)
+        is unbounded disk work, and everything in this process — inbound
+        listeners, the web console, IPC — shares one event loop thread.
+        Scheduled off time.monotonic() so a system clock jump cannot postpone
+        maintenance indefinitely.
+        """
+        if not self._storage_enabled:
+            return
+        now = time.monotonic()
+        if now - self._last_prune_at < STORAGE_PRUNE_INTERVAL_S:
+            return
+        self._last_prune_at = now
+        retention_days, max_size_mb = self._storage_limits()
+        try:
+            await asyncio.to_thread(
+                self._storage.prune, retention_days=retention_days, max_size_mb=max_size_mb
+            )
+        except Exception as exc:
+            LOGGER.error("storage_prune_failed error=%s", exc)
+
+    def _resolve_audit(self, dedupe_key: str) -> None:
+        """Clear a deduped condition so its next occurrence is recorded again."""
+        self._audit_signatures.pop(dedupe_key, None)
+
+    def _evict_stale_tracking_locked(self) -> None:
+        """Bound the per-device/per-client dictionaries.
+
+        Their keys come from the network (device IDs, MQTT client IDs), and
+        disconnecting only flags an entry rather than removing it. Clients that
+        reconnect under a fresh random client ID would otherwise add an entry
+        that is never reclaimed for the life of the process.
+        """
+        cutoff = _iso_ago(TRACKING_RETENTION_DAYS)
+        for device_id, device in list(self._devices.items()):
+            if device.get("online"):
+                continue
+            last_seen = str(device.get("last_seen") or device.get("last_disconnected_at") or "")
+            if last_seen and last_seen < cutoff:
+                self._devices.pop(device_id, None)
+        for client_id, session in list(self._mqtt_sessions.items()):
+            if session.get("status") != "disconnected":
+                continue
+            disconnected_at = str(session.get("disconnected_at") or "")
+            if disconnected_at and disconnected_at < cutoff:
+                self._mqtt_sessions.pop(client_id, None)
+                self._mqtt_client_devices.pop(client_id, None)
+                self._mqtt_connect_history.pop(client_id, None)
+        # Reconnect history is keyed independently of sessions, so drop entries
+        # whose newest connect is older than the storm-detection window.
+        history_cutoff = time.monotonic() - RECONNECT_HISTORY_TTL_S
+        for client_id, history in list(self._mqtt_connect_history.items()):
+            if client_id in self._mqtt_sessions:
+                continue
+            if not history or history[-1] < history_cutoff:
+                self._mqtt_connect_history.pop(client_id, None)
 
     async def _reconcile_locked(self) -> None:
         self._interface_state = _interfaces()
@@ -430,11 +508,15 @@ class EdgeServerTask:
             state.error = str(exc)
             self._failed_keys[server_id] = key
             state.state = "running" if any(item.startswith(f"{name}@") for item in self._servers) else "error"
-            self._audit("error", name, f"listener failed on {host}:{port}: {exc}")
+            self._audit(
+                "error", name, f"listener failed on {host}:{port}: {exc}",
+                dedupe_key=f"listener:{server_id}",
+            )
             return
         self._servers[server_id] = server
         self._server_keys[server_id] = key
         self._failed_keys.pop(server_id, None)
+        self._resolve_audit(f"listener:{server_id}")
         state.state = "running"
         LOGGER.info("listener_started listener=%s host=%s port=%d", name, host, port)
 
@@ -446,7 +528,7 @@ class EdgeServerTask:
         client_ca = cert_dir / str(tls.get("client_ca") or "client-ca.crt")
         if not cert.exists() or not key.exists():
             message = "TLS listener requested but server certificate/key are not installed"
-            self._audit("error", "tls", message)
+            self._audit("error", "tls", message, dedupe_key=f"tls:{listener_name}")
             self._listeners[listener_name].error = message
             return None
         context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
@@ -454,11 +536,13 @@ class EdgeServerTask:
         if mtls_required:
             if not client_ca.exists():
                 message = "mTLS requested but client CA is not installed"
-                self._audit("error", "mtls", message)
+                self._audit("error", "mtls", message, dedupe_key=f"mtls:{listener_name}")
                 self._listeners[listener_name].error = message
                 return None
             context.verify_mode = ssl.CERT_REQUIRED
             context.load_verify_locations(cafile=str(client_ca))
+            self._resolve_audit(f"mtls:{listener_name}")
+        self._resolve_audit(f"tls:{listener_name}")
         return context
 
     async def _stop_all(self) -> None:
@@ -775,7 +859,19 @@ class EdgeServerTask:
             "health_label": "Connected" if is_mqtt else "Receiving data",
         }
 
-    def _audit(self, event_type: str, source: str, message: str) -> None:
+    def _audit(self, event_type: str, source: str, message: str, *, dedupe_key: str | None = None) -> None:
+        """Record an audit event.
+
+        Callers on the 5-second reconcile path pass a dedupe_key: a listener
+        that cannot bind, or a missing certificate, restates the same failure
+        on every tick, and writing each one buried the moment it started under
+        thousands of copies. The condition is logged once and again only when
+        it changes or after _resolve_audit() marks it cleared.
+        """
+        if dedupe_key is not None:
+            if self._audit_signatures.get(dedupe_key) == message:
+                return
+            self._audit_signatures[dedupe_key] = message
         event = {
             "type": event_type,
             "source": source,
@@ -1598,3 +1694,8 @@ def _now_ms() -> int:
 
 def _utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _iso_ago(days: int) -> str:
+    """Same wire format as _utc_now(), so the two compare lexicographically."""
+    return (datetime.now(UTC) - timedelta(days=days)).replace(microsecond=0).isoformat().replace("+00:00", "Z")

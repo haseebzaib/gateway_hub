@@ -27,6 +27,15 @@ from gateway_interfaces import GatewayInterfacesDataStorage
 EPISODE_GAP_MS = 20_000
 _SEVERITY_RANK = {"Info": 1, "Warning": 2, "Critical": 3}
 
+# High-frequency telemetry (deviceData ~1/s forever, sensorData/rs232SnifferFrame
+# at each device's poll interval, heartBeat) is never console-logged: printing the
+# raw payload for every one of these with flush=True is a blocking write on the
+# same thread as the asyncio event loop, and a slow/stalled terminal (SSH lag,
+# scrollback paused) turns that into a full app freeze, not just noisy output.
+_QUIET_RX_TYPES = {"deviceData", "heartBeat", "sensorData", "rs232SnifferFrame"}
+_CONSOLE_PREVIEW_CHARS = 1000
+MAINTENANCE_INTERVAL_S = 600.0
+
 
 @dataclass
 class IpcStatus:
@@ -75,6 +84,7 @@ class GatewayCoreIpcTask:
         # two sensors sharing a metric name don't share an episode slot.
         self._sensor_anomaly_episodes: dict[tuple[Any, Any, Any, Any], dict[str, Any]] = {}
         self._task: asyncio.Task[None] | None = None
+        self._maintenance_task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
         self._pending_acks: dict[str, asyncio.Future[dict[str, Any]]] = {}
         # Fired every time the IPC connection is (re)established — not just once at hub
@@ -100,13 +110,19 @@ class GatewayCoreIpcTask:
             self.status.state = "starting"
             _console(f"starting client {self.config.host}:{self.config.port} framing={self.config.framing}")
             self._task = asyncio.create_task(self._run(), name="gateway-core-ipc")
+        if self._maintenance_task is None or self._maintenance_task.done():
+            self._maintenance_task = asyncio.create_task(
+                self._run_maintenance(), name="gateway-core-ipc-maintenance"
+            )
 
     async def stop(self) -> None:
         self._stop_event.set()
-        if self._task is not None:
-            self._task.cancel()
+        for task in (self._task, self._maintenance_task):
+            if task is None:
+                continue
+            task.cancel()
             try:
-                await self._task
+                await task
             except asyncio.CancelledError:
                 pass
         await self.client.close()
@@ -124,7 +140,8 @@ class GatewayCoreIpcTask:
     async def send_text(self, message: str) -> None:
         await self.client.send_text(message)
         self.status.tx_count += 1
-        _console(f"TX ipc_payload={message}")
+        preview = message if len(message) <= _CONSOLE_PREVIEW_CHARS else message[:_CONSOLE_PREVIEW_CHARS] + "...(truncated)"
+        _console(f"TX ipc_payload={preview}")
 
     async def send_message(self, message: dict[str, Any]) -> dict[str, Any] | None:
         """Send one protocol message and, when requested, await its ACK/NACK."""
@@ -137,10 +154,13 @@ class GatewayCoreIpcTask:
         if message_id in self._pending_acks:
             raise ValueError(f"IPC message is already awaiting ACK: {message_id}")
 
+        # Encode before registering the pending ACK: an encode failure here used
+        # to leave the future in _pending_acks forever, since the cleanup lives
+        # in the finally below.
+        encoded = json.dumps(message, separators=(",", ":"), ensure_ascii=False)
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
         self._pending_acks[message_id] = future
-        encoded = json.dumps(message, separators=(",", ":"), ensure_ascii=False)
         try:
             attempts = max(1, self.config.ack_retries + 1)
             for attempt in range(attempts):
@@ -219,8 +239,9 @@ class GatewayCoreIpcTask:
                 async for payload in self.client.read_messages():
                     self.status.rx_count += 1
                     self.status.last_rx_text = _decode_preview(payload)
-                    self._handle_rx_payload(payload)
-                    _console(f"RX {self.status.last_rx_text}")
+                    message_type = self._handle_rx_payload(payload)
+                    if message_type not in _QUIET_RX_TYPES:
+                        _console(f"RX {self.status.last_rx_text}")
                     if self._stop_event.is_set():
                         break
             except asyncio.CancelledError:
@@ -241,7 +262,29 @@ class GatewayCoreIpcTask:
             except TimeoutError:
                 continue
 
-    def _handle_rx_payload(self, payload: bytes) -> None:
+    async def _run_maintenance(self) -> None:
+        """Prune both IPC-owned databases on a timer, on a worker thread.
+
+        These used to be pruned inline from the message handler, which put an
+        unbounded DELETE (and now a VACUUM) on the event loop shared by IPC,
+        the web console and forwarding — one slow prune froze all of them.
+        """
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=MAINTENANCE_INTERVAL_S)
+                return
+            except TimeoutError:
+                pass
+            for name, storage in (("monitor", self.storage), ("interfaces", self.interface_storage)):
+                try:
+                    await asyncio.to_thread(storage.maintain)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    self.status.last_error = f"{name} maintenance failed: {exc}"
+                    _console(f"{name} maintenance failed: {exc}")
+
+    def _handle_rx_payload(self, payload: bytes) -> str | None:
         try:
             message = decode_inbound_message(payload)
             message_type = inbound_message_type(message)
@@ -277,10 +320,12 @@ class GatewayCoreIpcTask:
                     key = (str(data.get("source_type") or ""), str(data.get("source_id") or ""))
                     self._sensor_status[key] = dict(data)
                     self._store_sensor_status(data)
+            return message_type
         except json.JSONDecodeError as exc:
             self.status.last_error = f"invalid IPC JSON: {exc}"
         except Exception as exc:
             self.status.last_error = f"IPC message parse failed: {exc}"
+        return None
 
     def _store_sensor_data(self, data: dict[str, Any]) -> None:
         try:

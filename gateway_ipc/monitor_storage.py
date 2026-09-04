@@ -50,6 +50,19 @@ ANOMALY_RETENTION_MS = 31 * 86_400_000    # keep anomaly events 31 days
 # be 86k+, so those ranges get the 5-minute tier instead).
 FINE_QUERY_MAX_MS = 6 * 3_600_000
 
+VACUUM_FREE_BYTES = 64 * 1024 * 1024
+
+
+def _vacuum_if_bloated(conn: sqlite3.Connection) -> None:
+    """Hand freed pages back to the filesystem once enough have accumulated;
+    deletes alone only mark pages free, so the file never shrinks otherwise."""
+    page_size = int(conn.execute("PRAGMA page_size").fetchone()[0])
+    free_bytes = int(conn.execute("PRAGMA freelist_count").fetchone()[0]) * page_size
+    if free_bytes < VACUUM_FREE_BYTES:
+        return
+    conn.commit()
+    conn.execute("VACUUM")
+
 # The metrics that get their own chart. Keys match the C++ metricName strings
 # so anomaly events overlay straight onto the matching chart.
 CHART_METRICS = (
@@ -88,7 +101,6 @@ class MonitorStorage:
         self._conn: sqlite3.Connection | None = None
         # bucket_ms -> {metric -> _Bucket}; usually holds a single open bucket.
         self._pending: dict[int, dict[str, _Bucket]] = {}
-        self._last_maintenance_ms = 0
 
     # ── lifecycle ────────────────────────────────────────────────────────
     def open(self) -> None:
@@ -128,6 +140,12 @@ class MonitorStorage:
             );
             CREATE INDEX IF NOT EXISTS idx_metric_rollup_query
                 ON metric_rollup (metric, tier, bucket_ms);
+            -- Retention prunes by (tier, bucket_ms); the index above and the
+            -- primary key both lead with `metric`, so neither can serve that
+            -- scan. Without this the 10-minute prune full-scans the fine tier
+            -- (~518k rows at 6 metrics x 1 Hz x 1 day) on the event loop.
+            CREATE INDEX IF NOT EXISTS idx_metric_rollup_tier_bucket
+                ON metric_rollup (tier, bucket_ms);
 
             CREATE TABLE IF NOT EXISTS anomaly_events (
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -190,7 +208,6 @@ class MonitorStorage:
             # Flush any bucket that is now in the past so disk writes stay small
             # and one open bucket is held in memory at a time.
             self._flush_ready_buckets_locked(flush_all=False)
-            self._maybe_maintain_locked(timestamp_ms)
 
     def add_anomaly_events(self, events: list[dict[str, Any]]) -> None:
         """Persist a batch of normalized anomaly events (see message_protocol)."""
@@ -263,13 +280,23 @@ class MonitorStorage:
         self._conn.commit()
 
     # ── maintenance: downsample + prune ──────────────────────────────────
-    def _maybe_maintain_locked(self, now_ms: int) -> None:
-        # Run at most once per 10 minutes.
-        if now_ms - self._last_maintenance_ms < 600_000:
-            return
-        self._last_maintenance_ms = now_ms
-        self._downsample_locked(now_ms)
-        self._prune_locked(now_ms)
+    def maintain(self) -> None:
+        """Roll fine samples up into coarse buckets, prune, reclaim space.
+
+        Call from a worker thread on a timer, never from the per-sample write
+        path: this is unbounded disk work and the whole process shares one
+        event loop thread. The window is taken from the local clock rather than
+        the incoming sample's timestamp, so a bad device timestamp can neither
+        delete live data nor stall maintenance indefinitely.
+        """
+        with self._lock:
+            if self._conn is None:
+                self.open()
+            assert self._conn is not None
+            now_ms = int(time.time() * 1000)
+            self._downsample_locked(now_ms)
+            self._prune_locked(now_ms)
+            _vacuum_if_bloated(self._conn)
 
     def _downsample_locked(self, now_ms: int) -> None:
         assert self._conn is not None
