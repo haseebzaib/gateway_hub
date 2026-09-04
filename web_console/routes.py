@@ -172,7 +172,7 @@ def _primary_sections(active_label: str) -> list[dict[str, object]]:
     items = [
         ("Overview", "Over", "/dashboard"),
         ("Monitor", "Mon", "/monitor"),
-        ("Insights", "Info", "/insights"),
+        ("Sensor Insights", "Sens", "/insights"),
         ("Interfaces", "I/O", "/interfaces"),
         ("Data Forwarding", "Fwd", "/forwarding"),
         ("Edge Server", "Srv", "/edge-server"),
@@ -1300,7 +1300,7 @@ async def edge_server_page(request: Request) -> HTMLResponse:
 async def insights_page(request: Request) -> HTMLResponse:
     if not _is_authenticated(request):
         return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
-    return templates.TemplateResponse(request, "insights.html", _template_context("Insights", "Insights"))
+    return templates.TemplateResponse(request, "insights.html", _template_context("Sensor Insights", "Sensor Insights"))
 
 
 @router.post("/api/system/access")
@@ -2106,17 +2106,44 @@ def _incident_store(request: Request):
     return getattr(task, "storage", None) if task is not None else None
 
 
+# Which incidents belong to which page. Each page shows the incidents it can
+# actually act on; only the Overview shows everything.
+INCIDENT_SCOPES = {
+    "sensors": lambda inc: inc.get("scope_kind") == "source" or inc.get("domain") == "source",
+    "forwarding": lambda inc: inc.get("domain") == "destination",
+    "network": lambda inc: inc.get("domain") in ("uplink", "local_network"),
+    "gateway": lambda inc: inc.get("domain") == "gateway",
+}
+
+
+def _incident_resolution(incident: dict[str, Any], duration_ms: int) -> str:
+    """One line saying how an incident ended, for the resolved list."""
+    if incident.get("status") != "resolved":
+        return ""
+    labels = [str(entry.get("label") or "") for entry in incident.get("timeline") or []]
+    closing = labels[-1] if labels else ""
+    if "no longer configured" in closing:
+        return "Ended because the failing item was removed from configuration"
+    minutes = max(1, round(duration_ms / 60000))
+    recovered = int((incident.get("continuity") or {}).get("replayed") or 0)
+    if recovered:
+        return f"Recovered after {minutes} min · {recovered:,} buffered messages delivered"
+    return f"Recovered after {minutes} min · service returned to normal"
+
+
 def _incident_view(incident: dict[str, Any]) -> dict[str, Any]:
     """Shape one incident for the UI, with the derived timings it renders."""
     started = int(incident.get("started_ms") or 0)
     restored = incident.get("restored_ms")
     closed = incident.get("closed_ms")
     ended = int(restored or closed or 0)
+    duration_ms = max(0, (ended or _now_ms()) - started)
     return {
         **incident,
         "domain_label": INCIDENT_DOMAIN_LABELS.get(incident.get("domain", ""), "Unknown"),
-        "duration_ms": max(0, (ended or _now_ms()) - started),
+        "duration_ms": duration_ms,
         "ongoing": incident.get("status") != "resolved",
+        "resolution": _incident_resolution(incident, duration_ms),
     }
 
 
@@ -2143,11 +2170,20 @@ def insights_incidents(request: Request) -> JSONResponse:
         if row["id"] not in seen:
             rows.append(row)
     rows.sort(key=lambda r: int(r.get("started_ms") or 0), reverse=True)
-    return JSONResponse({
-        "ok": True,
-        "incidents": [_incident_view(row) for row in rows],
-        "summary": store.summary(since_ms),
-    })
+
+    # Each page asks for the incidents it owns; the Overview asks for all.
+    scope = params.get("scope") or ""
+    predicate = INCIDENT_SCOPES.get(scope)
+    if predicate is not None:
+        rows = [row for row in rows if predicate(row)]
+
+    views = [_incident_view(row) for row in rows]
+    summary = store.summary(since_ms) if predicate is None else {
+        "open_count": sum(1 for v in views if v["ongoing"]),
+        "window_count": len(views),
+        "by_domain": {},
+    }
+    return JSONResponse({"ok": True, "incidents": views, "summary": summary})
 
 
 @router.get("/api/insights/incidents/{ref}")

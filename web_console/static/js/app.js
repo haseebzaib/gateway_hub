@@ -377,30 +377,76 @@ document.addEventListener("DOMContentLoaded", () => {
             const band = document.querySelector("[data-ov-incidents]");
             const list = document.querySelector("[data-ov-incidents-list]");
             if (!band || !list) return;
+            const counts = document.querySelector("[data-ov-inc-counts]");
             try {
-                const r = await fetch("/api/insights/incidents?window=24h&status=open");
+                const r = await fetch("/api/insights/incidents?window=24h");
                 if (!r.ok) return;
                 const d = await r.json();
-                const open = (d.incidents || []).filter((i) => i.ongoing);
-                if (!open.length) { band.classList.add("ov-hidden"); return; }
-                band.classList.remove("ov-hidden");
+                const all = d.incidents || [];
+                const open = all.filter((i) => i.ongoing);
+                const done = all.filter((i) => !i.ongoing);
+
+                // A clean gateway says so in one line rather than hiding the
+                // section, so the absence of trouble is itself visible.
+                if (!all.length) {
+                    band.classList.remove("is-alert");
+                    if (counts) counts.innerHTML = "";
+                    list.innerHTML = `<p class="ov-inc-clear">No incidents in the last 24 hours.</p>`;
+                    return;
+                }
+                band.classList.toggle("is-alert", open.length > 0);
+
                 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => (
                     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
                 const dur = (ms) => {
                     const m = Math.floor((ms || 0) / 60000);
                     return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
                 };
+
+                if (counts) {
+                    counts.innerHTML = `
+                        <span class="ov-inc-count ${open.length ? "is-alert" : "is-clear"}">${open.length} ongoing</span>
+                        <span class="ov-inc-count">${done.length} resolved · 24 h</span>`;
+                }
+
                 // Each row deep-links to the incident's own detail, which in turn
                 // offers the subsystem page where it can actually be acted on —
                 // a forwarding failure is not fixed from the Insights page.
-                list.innerHTML = open.slice(0, 4).map((i) => `
-                    <a class="ov-incident-row" href="/insights?incident=${encodeURIComponent(i.ref)}">
+                const row = (i, resolved) => `
+                    <a class="ov-incident-row${resolved ? " is-resolved" : ""}" href="/insights?incident=${encodeURIComponent(i.ref)}">
                         <span class="inc-ref">${esc(i.ref)}</span>
-                        <span class="ov-incident-title">${esc(i.title)}</span>
+                        <span class="ov-incident-main">
+                            <span class="ov-incident-title">${esc(i.title)}</span>
+                            ${resolved && i.resolution ? `<span class="ov-incident-note">${esc(i.resolution)}</span>` : ""}
+                        </span>
                         <span class="inc-domain-pill ${i.domain !== "unknown" ? "is-known" : "is-unknown"}">${esc(i.domain_label)}</span>
                         <span class="ov-incident-age">${dur(i.duration_ms)}</span>
                         <span class="ov-incident-go">→</span>
-                    </a>`).join("");
+                    </a>`;
+
+                const OV_INC_MAX_OPEN = 3;
+                const OV_INC_MAX_DONE = 2;
+                const more = (n) => n > 0
+                    ? `<a class="ov-inc-more" href="/insights?view=incidents">+${n} more →</a>` : "";
+
+                const blocks = [];
+                if (open.length) {
+                    blocks.push(`
+                        <div class="ov-inc-group">
+                            <p class="ov-inc-group-label is-alert">Ongoing</p>
+                            ${open.slice(0, OV_INC_MAX_OPEN).map((i) => row(i, false)).join("")}
+                            ${more(open.length - OV_INC_MAX_OPEN)}
+                        </div>`);
+                }
+                if (done.length) {
+                    blocks.push(`
+                        <div class="ov-inc-group">
+                            <p class="ov-inc-group-label">Recently resolved</p>
+                            ${done.slice(0, OV_INC_MAX_DONE).map((i) => row(i, true)).join("")}
+                            ${more(done.length - OV_INC_MAX_DONE)}
+                        </div>`);
+                }
+                list.innerHTML = blocks.join("");
             } catch (e) {
                 console.warn("Failed to refresh overview incidents", e);
             }
@@ -3536,55 +3582,6 @@ document.addEventListener("DOMContentLoaded", () => {
         monitorTabs.forEach((t) => t.addEventListener("click", () => showMonitorTab(t.getAttribute("data-monitor-tab"))));
     }
 
-    // ── Overview: self-monitoring / anomaly explainer band ──────────────
-    const overviewAnomaly = document.querySelector("[data-overview-anomaly]");
-    if (overviewAnomaly) {
-        const checksEl = overviewAnomaly.querySelector("[data-overview-anomaly-checks]");
-        const healthDot = document.querySelector("[data-ov-health-dot]");
-        const healthText = document.querySelector("[data-ov-health-text]");
-        const load = async () => {
-            try {
-                const r = await fetch("/api/monitor/anomaly-config");
-                if (!r.ok) return;
-                const cfg = await r.json();
-                if (checksEl && Array.isArray(cfg.checks)) {
-                    checksEl.innerHTML = cfg.checks.map((c) =>
-                        `<div class="ov-anomaly-check">` +
-                        `<p class="ov-anomaly-check-title">${c.title}</p>` +
-                        `<p class="ov-anomaly-check-detail">${c.detail}</p>` +
-                        `</div>`
-                    ).join("");
-                }
-            } catch (err) { /* overview band is best-effort */ }
-        };
-        const refreshFlags = async () => {
-            try {
-                const since = Date.now() - 24 * 3600 * 1000;
-                const r = await fetch(`/api/monitor/anomalies/grouped?since=${since}`);
-                if (!r.ok) return;
-                const data = await r.json();
-                const counts = data.counts || {};
-                const critical = counts.Critical || 0;
-                const warning = counts.Warning || 0;
-                // health line on the System card: explicit at a glance
-                if (healthDot && healthText) {
-                    if (critical > 0) {
-                        healthDot.className = "ov-health-dot is-crit";
-                        healthText.textContent = `${critical} critical issue${critical === 1 ? "" : "s"} flagged in the last 24 h`;
-                    } else if (warning > 0) {
-                        healthDot.className = "ov-health-dot is-warn";
-                        healthText.textContent = `${warning} warning${warning === 1 ? "" : "s"} flagged in the last 24 h`;
-                    } else {
-                        healthDot.className = "ov-health-dot is-good";
-                        healthText.textContent = "No issues flagged in the last 24 h";
-                    }
-                }
-            } catch (err) { /* best-effort */ }
-        };
-        load();
-        refreshFlags();
-        window.setInterval(refreshFlags, 30000);
-    }
 
     const interfacesShell = document.querySelector("[data-interfaces-shell]");
     if (interfacesShell) {
@@ -5903,20 +5900,18 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (!incSummary) return;
                 const open = summary?.open_count ?? 0;
                 const total = summary?.window_count ?? 0;
-                const domains = summary?.by_domain || {};
-                const topDomain = Object.entries(domains).sort((a, b) => b[1] - a[1])[0];
                 incSummary.innerHTML = `
                     <div class="inc-sum-card${open > 0 ? " is-alert" : ""}">
                         <div class="inc-sum-value">${open}</div>
                         <div class="inc-sum-label">Ongoing now</div>
                     </div>
                     <div class="inc-sum-card">
-                        <div class="inc-sum-value">${total}</div>
-                        <div class="inc-sum-label">In this window</div>
+                        <div class="inc-sum-value">${Math.max(0, total - open)}</div>
+                        <div class="inc-sum-label">Resolved in window</div>
                     </div>
                     <div class="inc-sum-card">
-                        <div class="inc-sum-value" style="font-size:1rem">${topDomain ? incEsc(INC_DOMAIN_LABELS[topDomain[0]] || topDomain[0]) : "—"}</div>
-                        <div class="inc-sum-label">Most common cause</div>
+                        <div class="inc-sum-value">${total}</div>
+                        <div class="inc-sum-label">Total in window</div>
                     </div>`;
             };
 
@@ -5937,7 +5932,10 @@ document.addEventListener("DOMContentLoaded", () => {
             };
 
             const incLoad = async () => {
-                const params = new URLSearchParams({ window: incWindow });
+                // Sensor Insights owns sensor incidents only. A forwarding or
+                // uplink failure belongs to the page that can act on it; the
+                // Overview is the one place they all come together.
+                const params = new URLSearchParams({ window: incWindow, scope: "sensors" });
                 if (incStatus) params.set("status", incStatus);
                 if (incDomain) params.set("domain", incDomain);
                 try {
@@ -7756,8 +7754,75 @@ document.addEventListener("DOMContentLoaded", () => {
             });
         };
 
-        fwTabBtns.forEach((btn) => btn.addEventListener("click", () => syncFwTabs(btn.getAttribute("data-fw-tab"))));
+        // ── Incidents owned by this page ───────────────────────────────────
+        // Same correlated incidents as everywhere else, scoped to destination
+        // failures so a quiet sensor never shows up as a forwarding problem.
+        const fwIncList    = fwShell.querySelector("[data-fwinc-list]");
+        const fwIncEmpty   = fwShell.querySelector("[data-fwinc-empty]");
+        const fwIncSummary = fwShell.querySelector("[data-fwinc-summary]");
+
+        const fwIncLoad = async () => {
+            if (!fwIncList) return;
+            const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => (
+                { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+            const dur = (ms) => {
+                const m = Math.floor((ms || 0) / 60000);
+                return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
+            };
+            try {
+                const r = await fetch("/api/insights/incidents?window=7d&scope=forwarding");
+                if (!r.ok) return;
+                const d = await r.json();
+                const rows = d.incidents || [];
+                const open = rows.filter((i) => i.ongoing).length;
+                if (fwIncSummary) {
+                    fwIncSummary.innerHTML = `
+                        <div class="inc-sum-card${open ? " is-alert" : ""}">
+                            <div class="inc-sum-value">${open}</div>
+                            <div class="inc-sum-label">Ongoing now</div>
+                        </div>
+                        <div class="inc-sum-card">
+                            <div class="inc-sum-value">${Math.max(0, rows.length - open)}</div>
+                            <div class="inc-sum-label">Resolved · 7 d</div>
+                        </div>
+                        <div class="inc-sum-card">
+                            <div class="inc-sum-value">${rows.length}</div>
+                            <div class="inc-sum-label">Total · 7 d</div>
+                        </div>`;
+                }
+                if (!rows.length) {
+                    fwIncList.innerHTML = "";
+                    fwIncEmpty?.classList.remove("ov-hidden");
+                    return;
+                }
+                fwIncEmpty?.classList.add("ov-hidden");
+                fwIncList.innerHTML = rows.map((i) => `
+                    <a class="inc-row is-${i.status}" style="text-decoration:none;color:inherit"
+                       href="/insights?incident=${encodeURIComponent(i.ref)}">
+                        <div class="inc-row-top">
+                            <span class="inc-ref">${esc(i.ref)}</span>
+                            <span class="inc-title">${esc(i.title)}</span>
+                            <span class="inc-status-badge is-${i.status}">${esc(i.status)}</span>
+                            <span class="inc-domain-pill is-known">${esc(i.domain_label)}</span>
+                        </div>
+                        <div class="inc-row-meta">
+                            <span>Started <strong>${new Date(i.started_ms).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</strong></span>
+                            <span>${i.ongoing ? "Ongoing for" : "Lasted"} <strong>${dur(i.duration_ms)}</strong></span>
+                            ${i.resolution ? `<span>${esc(i.resolution)}</span>` : ""}
+                        </div>
+                    </a>`).join("");
+            } catch (e) {
+                console.warn("[Forwarding] incidents fetch failed:", e);
+            }
+        };
+
+        fwTabBtns.forEach((btn) => btn.addEventListener("click", () => {
+            const tab = btn.getAttribute("data-fw-tab");
+            syncFwTabs(tab);
+            if (tab === "incidents") fwIncLoad();
+        }));
         syncFwTabs("status");
+        fwIncLoad();
 
         // Switch to profiles tab when form opens for a new profile
         fwShell.querySelectorAll("[data-fw-add]").forEach((btn) => {

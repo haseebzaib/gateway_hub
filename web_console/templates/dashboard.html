@@ -93,12 +93,15 @@
        The single "is anything actually wrong" answer, correlated across every
        subsystem. Hidden entirely when nothing is open, so a healthy gateway
        stays quiet. #}
-    <section class="ov-incidents-band ov-hidden" data-ov-incidents>
-        <div class="ov-dsc-head">
-            <p class="ov-section-eyebrow">Active incidents</p>
-            <a href="/insights" class="ov-dsc-open">Open →</a>
+    <section class="ov-incidents-band" data-ov-incidents>
+        <div class="ov-inc-head">
+            <p class="ov-section-eyebrow">Incidents</p>
+            <div class="ov-inc-counts" data-ov-inc-counts></div>
+            <a href="/insights?view=incidents" class="ov-dsc-open">View all →</a>
         </div>
-        <div data-ov-incidents-list></div>
+        {# Capped so a bad week cannot push the rest of the page off screen;
+           anything beyond the cap is reachable through "View all". #}
+        <div class="ov-inc-groups" data-ov-incidents-list></div>
     </section>
 
     {# ── Domain Summary Grid ──────────────────────────────────────────── #}
@@ -193,16 +196,4 @@
         </a>
     </section>
 
-    {# ── Anomaly detection engine: explainer + live flags ─────────────── #}
-    <section class="ov-anomaly-band" data-overview-anomaly>
-        <p class="ov-section-eyebrow">Built in</p>
-        <h2 class="ov-anomaly-title">Anomaly detection engine</h2>
-        <p class="ov-anomaly-lede">The gateway watches your data in real time and automatically flags
-            anything abnormal, with no thresholds to babysit. It runs on the device's own health today,
-            and the same engine can be pointed at your sensor and field data with rules you configure.
-            Here are the kinds of problems it catches.</p>
-        <div class="ov-anomaly-checks" data-overview-anomaly-checks>
-            <p class="insights-empty-note">Loading detection summary…</p>
-        </div>
-    </section>
 {% endblock %}
