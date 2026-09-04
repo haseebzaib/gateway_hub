@@ -29,6 +29,7 @@ from gateway_forwarding import (
     save_config as persist_forwarding_config,
     topics_for as forwarding_topics_for,
 )
+from gateway_incidents import DOMAIN_LABELS as INCIDENT_DOMAIN_LABELS
 from gateway_ipc import build_config_message, encode_message, headline_for_stored
 
 from . import insights_data
@@ -2098,6 +2099,82 @@ def insights_events(request: Request) -> JSONResponse:
         device_lookup={(d["source"], d["device_id"]): d for d in configured},
     )
     return JSONResponse({"ok": True, "events": events})
+
+
+def _incident_store(request: Request):
+    task = getattr(request.app.state, "incidents", None)
+    return getattr(task, "storage", None) if task is not None else None
+
+
+def _incident_view(incident: dict[str, Any]) -> dict[str, Any]:
+    """Shape one incident for the UI, with the derived timings it renders."""
+    started = int(incident.get("started_ms") or 0)
+    restored = incident.get("restored_ms")
+    closed = incident.get("closed_ms")
+    ended = int(restored or closed or 0)
+    return {
+        **incident,
+        "domain_label": INCIDENT_DOMAIN_LABELS.get(incident.get("domain", ""), "Unknown"),
+        "duration_ms": max(0, (ended or _now_ms()) - started),
+        "ongoing": incident.get("status") != "resolved",
+    }
+
+
+@router.get("/api/insights/incidents")
+def insights_incidents(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    store = _incident_store(request)
+    if store is None:
+        return JSONResponse({"ok": True, "incidents": [], "summary": {"open_count": 0, "window_count": 0, "by_domain": {}}})
+    params = request.query_params
+    window_ms = insights_data.WINDOW_MS.get(params.get("window", "24h"), insights_data.WINDOW_MS["24h"])
+    since_ms = _now_ms() - window_ms
+    rows = store.query(
+        status=params.get("status") or None,
+        domain=params.get("domain") or None,
+        from_ms=since_ms,
+        limit=int(params.get("limit") or 100),
+    )
+    # An incident still running from before the window is the one the operator
+    # most needs to see, so it is never filtered out by the time range.
+    seen = {row["id"] for row in rows}
+    for row in store.open_incidents():
+        if row["id"] not in seen:
+            rows.append(row)
+    rows.sort(key=lambda r: int(r.get("started_ms") or 0), reverse=True)
+    return JSONResponse({
+        "ok": True,
+        "incidents": [_incident_view(row) for row in rows],
+        "summary": store.summary(since_ms),
+    })
+
+
+@router.get("/api/insights/incidents/{ref}")
+def insights_incident_detail(request: Request, ref: str) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    store = _incident_store(request)
+    incident = store.by_ref(ref) if store is not None else None
+    if incident is None:
+        return JSONResponse({"ok": False, "message": "Incident not found."}, status_code=status.HTTP_404_NOT_FOUND)
+
+    # The raw events behind the incident stay available underneath it: the
+    # correlation layer summarises, it does not replace the technical detail.
+    raw: list[dict[str, Any]] = []
+    storage = _interface_data_storage(request)
+    if storage is not None:
+        started = int(incident.get("started_ms") or 0)
+        ended = int(incident.get("closed_ms") or incident.get("restored_ms") or _now_ms())
+        configured = _insights_configured(request)
+        raw = insights_data.query_events(
+            storage,
+            window_ms=max(60_000, ended - started + 120_000),
+            severity="", source="", device_id="",
+            device_lookup={(d["source"], d["device_id"]): d for d in configured},
+        )
+        raw = [r for r in raw if started - 60_000 <= int(r.get("timestamp_ms") or 0) <= ended + 60_000]
+    return JSONResponse({"ok": True, "incident": _incident_view(incident), "raw_events": raw})
 
 
 @router.get("/api/insights/detection-config")

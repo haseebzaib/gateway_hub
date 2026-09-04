@@ -260,6 +260,50 @@
     {# ── Events panel ─────────────────────────────────────────────── #}
     <div class="ov-panel ov-hidden" data-ov-panel="events">
 
+        {# Incidents vs Raw Events. Incidents is the customer-facing view: one
+           row per real problem. Raw Events keeps every underlying line for
+           technical users — the correlation layer summarises, never replaces. #}
+        <div class="ev-view-bar" data-ev-views>
+            <button class="ev-view-btn is-current" data-ev-view="incidents">Incidents</button>
+            <button class="ev-view-btn" data-ev-view="raw">Raw Events</button>
+        </div>
+
+        {# ── Incidents view ─────────────────────────────────────────────── #}
+        <div class="ev-view" data-ev-view-panel="incidents">
+            <div class="inc-summary" data-inc-summary></div>
+            <div class="ev-filter-bar">
+                <select class="ev-filter-sel" data-inc-filter-status>
+                    <option value="">All incidents</option>
+                    <option value="open">Ongoing only</option>
+                    <option value="resolved">Resolved only</option>
+                </select>
+                <select class="ev-filter-sel" data-inc-filter-domain>
+                    <option value="">All failure domains</option>
+                    <option value="source">Source/Device</option>
+                    <option value="gateway">Gateway</option>
+                    <option value="local_network">Local Network</option>
+                    <option value="uplink">Uplink/Internet</option>
+                    <option value="destination">Destination/Server</option>
+                    <option value="unknown">Unknown</option>
+                </select>
+                <div class="ev-window-bar" data-inc-window-bar>
+                    <button class="ev-win-btn" data-inc-win="1h">1 h</button>
+                    <button class="ev-win-btn is-current" data-inc-win="24h">24 h</button>
+                    <button class="ev-win-btn" data-inc-win="7d">7 d</button>
+                </div>
+            </div>
+            <div class="inc-list" data-inc-list></div>
+            <div class="ev-empty" data-inc-empty>
+                <svg width="40" height="40" viewBox="0 0 40 40" fill="none" style="opacity:.3">
+                    <circle cx="20" cy="20" r="18" stroke="currentColor" stroke-width="1.5"/>
+                    <path d="M13 20l5 5 9-9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+                <p>No incidents in this time window.</p>
+            </div>
+        </div>
+
+        {# ── Raw events view ────────────────────────────────────────────── #}
+        <div class="ev-view ov-hidden" data-ev-view-panel="raw">
         {# Filter bar #}
         <div class="ev-filter-bar">
             <select class="ev-filter-sel" data-ev-filter-sev>
@@ -288,6 +332,13 @@
                 <path d="M20 12v9M20 27v2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
             </svg>
             <p>No events in this time window.</p>
+        </div>
+        </div>
+
+        {# Incident detail — slides in over the list, raw events included #}
+        <div class="inc-drawer ov-hidden" data-inc-drawer>
+            <div class="inc-drawer-scrim" data-inc-drawer-close></div>
+            <aside class="inc-drawer-panel" data-inc-drawer-body></aside>
         </div>
 
     </div>

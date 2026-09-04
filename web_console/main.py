@@ -11,6 +11,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from gateway_edge_server import EdgeServerTask
 from gateway_forwarding import ForwardingService
+from gateway_incidents import IncidentTask
 from gateway_ipc import GatewayCoreIpcTask
 
 from .engine_client import EngineClient
@@ -46,9 +47,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     LOGGER.info("hub_lifespan forwarding_started gateway_id=%s", forwarding_service.gateway_id)
     await network_runtime.start()
     app.state.network_runtime = network_runtime
+
+    # Correlation layer above the raw event streams: folds sensor, gateway,
+    # network and forwarding faults into one incident per real problem. Started
+    # last so it can see every subsystem; it only ever reads from them.
+    incidents = IncidentTask()
+    incidents.interfaces_storage = ipc_task.interface_storage
+    incidents.monitor_storage = ipc_task.storage
+    incidents.forwarding = forwarding_service
+    incidents.network_runtime = network_runtime
+    incidents.start()
+    app.state.incidents = incidents
+    LOGGER.info("hub_lifespan incident_correlator_started")
     try:
         yield
     finally:
+        await incidents.stop()
         await network_runtime.stop()
         await forwarding_service.stop()
         LOGGER.info("hub_lifespan forwarding_stopped")

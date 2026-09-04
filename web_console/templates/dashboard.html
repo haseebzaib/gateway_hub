@@ -89,6 +89,18 @@
         </a>
     </section>
 
+    {# ── Active incidents ─────────────────────────────────────────────────
+       The single "is anything actually wrong" answer, correlated across every
+       subsystem. Hidden entirely when nothing is open, so a healthy gateway
+       stays quiet. #}
+    <section class="ov-incidents-band ov-hidden" data-ov-incidents>
+        <div class="ov-dsc-head">
+            <p class="ov-section-eyebrow">Active incidents</p>
+            <a href="/insights" class="ov-dsc-open">Open →</a>
+        </div>
+        <div data-ov-incidents-list></div>
+    </section>
+
     {# ── Domain Summary Grid ──────────────────────────────────────────── #}
     <section class="ov-domain-summary-grid">
 

@@ -128,6 +128,14 @@ document.addEventListener("DOMContentLoaded", () => {
             const wifiConnected     = Boolean(wifiClient.connected_ssid);
             const wifiApEnabled     = Boolean(wifiAp.enabled);
             const wifiPresent       = wifiClient.present !== false;
+            // Authoritative per-uplink verdict from the network runtime — the
+            // same source the Connectivity page reads. Overview used to infer
+            // Wi-Fi state from "is the radio present", so a disabled or downed
+            // radio still read as Standby here while Connectivity said Disabled.
+            const wifiUplinkStatus  = String(
+                networkState?.uplink_stats?.interfaces?.wifi_client?.status || ""
+            );
+            const wifiEnabled       = wifiClient.enabled !== false && wifiUplinkStatus !== "disabled";
             const celConnected      = Boolean(cellular.connected);
             const celEnabled        = Boolean(cellular.enabled);
             const celPresent        = Boolean(cellular.present);
@@ -138,7 +146,12 @@ document.addEventListener("DOMContentLoaded", () => {
                                 : activeUplink === "wifi_client"         ? "Wi-Fi"
                                 : activeUplink === "cellular"            ? "Cellular"
                                 : "Offline";
-            const wirelessState = wifiConnected ? "Connected" : wifiApEnabled ? "Access Point" : wifiPresent ? "Standby" : "Unavailable";
+            const wirelessState = !wifiPresent ? "Unavailable"
+                                : wifiApEnabled ? "Access Point"
+                                : !wifiEnabled  ? "Disabled"
+                                : wifiConnected ? "Connected"
+                                : String(networkState?.uplink_stats?.interfaces?.wifi_client?.status || "") === "up"
+                                    ? "Standby" : "Not connected";
 
             if (chipGateway)  chipGateway.textContent  = gatewayHealth;
             if (chipPrimary)  chipPrimary.textContent  = primaryLink;
@@ -201,16 +214,32 @@ document.addEventListener("DOMContentLoaded", () => {
                 return wifiCfgSsid ? `Target: "${wifiCfgSsid}"` : "Radio available for setup";
             })();
 
+            // One derivation feeding the chip, the row and the port pill. These
+            // were three separate expressions and drifted out of agreement with
+            // each other and with the Connectivity page.
+            const wifiStatus = (() => {
+                if (!wifiPresent)   return { label: "Unavailable",  pill: "Down",     tone: "inactive" };
+                if (wifiApEnabled)  return { label: "Access Point", pill: "AP",       tone: "standby"  };
+                if (!wifiEnabled)   return { label: "Disabled",     pill: "Disabled", tone: "inactive" };
+                if (wifiConnected) {
+                    return activeUplink === "wifi_client"
+                        ? { label: "Connected", pill: "Active", tone: "active"  }
+                        : { label: "Connected", pill: "Ready",  tone: "standby" };
+                }
+                if (wifiUplinkStatus === "up") return { label: "Standby", pill: "Standby", tone: "standby" };
+                return { label: "Not connected", pill: "Down", tone: "inactive" };
+            })();
+
             updateItem(wifiItem,
-                wifiConnected ? "Connected" : wifiApEnabled ? "Access Point" : wifiPresent ? "Standby" : "Unavailable",
+                wifiStatus.label,
                 wifiConnected ? (wifiClient.connected_ssid || "Wireless uplink active")
                               : wifiStandbyDetail,
-                wifiConnected ? "active" : wifiApEnabled || wifiPresent ? "standby" : "inactive");
+                wifiStatus.tone);
             updateGatewayIface(
                 "wifi",
-                activeUplink === "wifi_client" ? "Active" : wifiConnected ? "Ready" : wifiApEnabled ? "AP" : wifiPresent ? "Standby" : "Down",
+                wifiStatus.pill,
                 wifiConnected ? (wifiClient.connected_ssid || "Connected") : wifiApEnabled ? `${wifiAp.clients ?? 0} client(s)` : wifiStandbyDetail,
-                activeUplink === "wifi_client" ? "active" : wifiConnected || wifiApEnabled || wifiPresent ? "standby" : "inactive",
+                wifiStatus.tone,
             );
 
             // Cellular item
@@ -340,6 +369,40 @@ document.addEventListener("DOMContentLoaded", () => {
 
         refreshOverviewState();
         window.setInterval(refreshOverviewState, 5000);
+
+        // ── Active incidents band ──────────────────────────────────────────
+        // The correlated "is anything actually wrong" answer. Stays hidden on a
+        // healthy gateway rather than showing a reassuring empty box.
+        const refreshOverviewIncidents = async () => {
+            const band = document.querySelector("[data-ov-incidents]");
+            const list = document.querySelector("[data-ov-incidents-list]");
+            if (!band || !list) return;
+            try {
+                const r = await fetch("/api/insights/incidents?window=24h&status=open");
+                if (!r.ok) return;
+                const d = await r.json();
+                const open = (d.incidents || []).filter((i) => i.ongoing);
+                if (!open.length) { band.classList.add("ov-hidden"); return; }
+                band.classList.remove("ov-hidden");
+                const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => (
+                    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+                const dur = (ms) => {
+                    const m = Math.floor((ms || 0) / 60000);
+                    return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
+                };
+                list.innerHTML = open.slice(0, 4).map((i) => `
+                    <div class="ov-incident-row">
+                        <span class="inc-ref">${esc(i.ref)}</span>
+                        <span style="flex:1">${esc(i.title)}</span>
+                        <span class="inc-domain-pill ${i.domain !== "unknown" ? "is-known" : "is-unknown"}">${esc(i.domain_label)}</span>
+                        <span style="color:var(--muted)">${dur(i.duration_ms)}</span>
+                    </div>`).join("");
+            } catch (e) {
+                console.warn("Failed to refresh overview incidents", e);
+            }
+        };
+        refreshOverviewIncidents();
+        window.setInterval(refreshOverviewIncidents, 15000);
 
         // ── Insights summary for overview domain card ──────────────────────
         // Per-device breakdown (not just one aggregate number) so a problem
@@ -5801,6 +5864,259 @@ document.addEventListener("DOMContentLoaded", () => {
                 });
             }
 
+            // ══════════════════════════════════════════════════════════════
+            //  Incidents view — the customer-facing layer above raw events.
+            //  One row per real problem, naming the layer most likely at
+            //  fault, with all the supporting evidence a drawer away.
+            // ══════════════════════════════════════════════════════════════
+            let incView     = "incidents";
+            let incWindow   = "24h";
+            let incStatus   = "";
+            let incDomain   = "";
+            let incLastFetch = 0;
+
+            const incList     = evPanel.querySelector("[data-inc-list]");
+            const incEmpty    = evPanel.querySelector("[data-inc-empty]");
+            const incSummary  = evPanel.querySelector("[data-inc-summary]");
+            const incDrawer   = evPanel.querySelector("[data-inc-drawer]");
+            const incDrawerBody = evPanel.querySelector("[data-inc-drawer-body]");
+
+            const incEsc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => (
+                { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+            ));
+
+            const incDuration = (ms) => {
+                if (!ms || ms < 0) return "—";
+                const s = Math.round(ms / 1000);
+                if (s < 60) return `${s}s`;
+                const m = Math.floor(s / 60);
+                if (m < 60) return `${m}m ${s % 60}s`;
+                const h = Math.floor(m / 60);
+                return h < 24 ? `${h}h ${m % 60}m` : `${Math.floor(h / 24)}d ${h % 24}h`;
+            };
+
+            const incRenderSummary = (summary) => {
+                if (!incSummary) return;
+                const open = summary?.open_count ?? 0;
+                const total = summary?.window_count ?? 0;
+                const domains = summary?.by_domain || {};
+                const topDomain = Object.entries(domains).sort((a, b) => b[1] - a[1])[0];
+                incSummary.innerHTML = `
+                    <div class="inc-sum-card${open > 0 ? " is-alert" : ""}">
+                        <div class="inc-sum-value">${open}</div>
+                        <div class="inc-sum-label">Ongoing now</div>
+                    </div>
+                    <div class="inc-sum-card">
+                        <div class="inc-sum-value">${total}</div>
+                        <div class="inc-sum-label">In this window</div>
+                    </div>
+                    <div class="inc-sum-card">
+                        <div class="inc-sum-value" style="font-size:1rem">${topDomain ? incEsc(INC_DOMAIN_LABELS[topDomain[0]] || topDomain[0]) : "—"}</div>
+                        <div class="inc-sum-label">Most common cause</div>
+                    </div>`;
+            };
+
+            const INC_DOMAIN_LABELS = {
+                source: "Source/Device", gateway: "Gateway", local_network: "Local Network",
+                uplink: "Uplink/Internet", destination: "Destination/Server", unknown: "Unknown",
+            };
+
+            const incLoad = async () => {
+                const params = new URLSearchParams({ window: incWindow });
+                if (incStatus) params.set("status", incStatus);
+                if (incDomain) params.set("domain", incDomain);
+                try {
+                    const r = await fetch(`/api/insights/incidents?${params}`);
+                    if (!r.ok) return;
+                    const d = await r.json();
+                    incRenderSummary(d.summary);
+                    incRenderList(d.incidents || []);
+                    incLastFetch = Date.now();
+                } catch (e) {
+                    console.warn("[Incidents] fetch failed:", e);
+                }
+            };
+
+            const incRenderList = (incidents) => {
+                if (!incList) return;
+                if (!incidents.length) {
+                    incList.innerHTML = "";
+                    incEmpty?.classList.remove("ov-hidden");
+                    return;
+                }
+                incEmpty?.classList.add("ov-hidden");
+                incList.innerHTML = incidents.map((inc) => {
+                    const status = inc.status || "open";
+                    const sources = (inc.affected || []).filter((a) => a.kind === "source");
+                    const known = inc.domain && inc.domain !== "unknown";
+                    const when = new Date(inc.started_ms).toLocaleString([], {
+                        month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+                    });
+                    return `
+                        <div class="inc-row is-${status}" data-inc-ref="${incEsc(inc.ref)}">
+                            <div class="inc-row-top">
+                                <span class="inc-ref">${incEsc(inc.ref)}</span>
+                                <span class="inc-title">${incEsc(inc.title)}</span>
+                                <span class="inc-status-badge is-${status}">${status === "recovering" ? "recovering" : status}</span>
+                                <span class="inc-domain-pill ${known ? "is-known" : "is-unknown"}">${incEsc(inc.domain_label || "Unknown")}</span>
+                            </div>
+                            <div class="inc-row-meta">
+                                <span>Started <strong>${incEsc(when)}</strong></span>
+                                <span>${inc.ongoing ? "Ongoing for" : "Lasted"} <strong>${incDuration(inc.duration_ms)}</strong></span>
+                                ${sources.length ? `<span>Affected <strong>${sources.length}</strong> source${sources.length > 1 ? "s" : ""}</span>` : ""}
+                            </div>
+                        </div>`;
+                }).join("");
+                incList.querySelectorAll("[data-inc-ref]").forEach((row) => {
+                    row.addEventListener("click", () => incOpenDrawer(row.getAttribute("data-inc-ref")));
+                });
+            };
+
+            const incOpenDrawer = async (ref) => {
+                if (!incDrawer || !incDrawerBody) return;
+                incDrawer.classList.remove("ov-hidden");
+                incDrawerBody.innerHTML = `<p style="color:var(--muted)">Loading ${incEsc(ref)}…</p>`;
+                try {
+                    const r = await fetch(`/api/insights/incidents/${encodeURIComponent(ref)}`);
+                    if (!r.ok) { incDrawerBody.innerHTML = "<p>Incident not found.</p>"; return; }
+                    const d = await r.json();
+                    incDrawerBody.innerHTML = incDrawerHtml(d.incident, d.raw_events || []);
+                    incDrawerBody.querySelector("[data-inc-close]")?.addEventListener("click", incCloseDrawer);
+                } catch (e) {
+                    incDrawerBody.innerHTML = "<p>Could not load this incident.</p>";
+                }
+            };
+
+            const incCloseDrawer = () => incDrawer?.classList.add("ov-hidden");
+            evPanel.querySelector("[data-inc-drawer-close]")?.addEventListener("click", incCloseDrawer);
+            document.addEventListener("keydown", (e) => {
+                if (e.key === "Escape" && !incDrawer?.classList.contains("ov-hidden")) incCloseDrawer();
+            });
+
+            const incDrawerHtml = (inc, raw) => {
+                const ts = (ms) => ms ? new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—";
+                const sources = (inc.affected || []).filter((a) => a.kind === "source");
+                const others  = (inc.affected || []).filter((a) => a.kind !== "source");
+                const c = inc.continuity || {};
+                const known = inc.domain && inc.domain !== "unknown";
+
+                const evidenceRows = (inc.evidence || []).map((e) => `
+                    <div class="inc-ev-row is-${e.state}">
+                        <span class="inc-ev-check">${incEsc(e.check)}</span>
+                        <span class="inc-ev-state">${incEsc(e.state)}</span>
+                        <span>${incEsc(e.finding)}</span>
+                    </div>`).join("");
+
+                const timelineRows = (inc.timeline || []).map((t) => `
+                    <div class="inc-tl-row">
+                        <span class="inc-tl-time">${ts(t.ts_ms)}</span>
+                        <span>${incEsc(t.label)}</span>
+                    </div>`).join("");
+
+                const rawRows = raw.length ? raw.slice(0, 40).map((r) => `
+                    <div class="inc-raw-row">
+                        <span class="inc-raw-time">${ts(r.timestamp_ms)}</span>
+                        <span class="inc-raw-msg"><strong>${incEsc(r.device_name || r.device_id || "")}</strong> ${incEsc(r.message || "")}</span>
+                    </div>`).join("") : `<div class="inc-raw-row"><span class="inc-raw-msg">No raw events recorded in this window.</span></div>`;
+
+                return `
+                    <button class="inc-d-close" data-inc-close aria-label="Close">×</button>
+                    <div class="inc-d-head">
+                        <span class="inc-ref">${incEsc(inc.ref)}</span>
+                        <h3 class="inc-d-title">${incEsc(inc.title)}</h3>
+                        <span class="inc-status-badge is-${inc.status}">${incEsc(inc.status)}</span>
+                    </div>
+
+                    <div class="inc-verdict${known ? "" : " is-unknown"}">
+                        <div class="inc-verdict-domain">Likely failure domain: ${incEsc(inc.domain_label || "Unknown")}</div>
+                        <div class="inc-verdict-note">${known
+                            ? `Determined with ${incEsc(inc.domain_conf)} confidence from the checks below.`
+                            : "Not enough evidence to attribute this reliably — the checks below show what could not be verified."}</div>
+                    </div>
+
+                    <div class="inc-d-section">
+                        <h4>Timeline</h4>
+                        <div class="inc-timeline">
+                            ${timelineRows || '<div class="inc-tl-row"><span>—</span></div>'}
+                            <div class="inc-tl-row">
+                                <span class="inc-tl-time">${ts(inc.restored_ms)}</span>
+                                <span>${inc.restored_ms ? "Service restored" : "Not yet restored"}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="inc-d-section">
+                        <h4>Impact</h4>
+                        <div class="inc-chips">
+                            ${sources.length
+                                ? sources.map((s) => `<span class="inc-chip">${incEsc(s.name)}</span>`).join("")
+                                : '<span class="inc-chip">No sources were delivering at the time</span>'}
+                        </div>
+                        ${others.length ? `<div class="inc-chips" style="margin-top:.45rem">${others.map((o) => `<span class="inc-chip">${incEsc(o.name)}</span>`).join("")}</div>` : ""}
+                    </div>
+
+                    <div class="inc-d-section">
+                        <h4>Data continuity</h4>
+                        <div class="inc-metrics">
+                            <div class="inc-metric">
+                                <div class="inc-metric-value">${(c.buffered_peak ?? c.pending ?? 0).toLocaleString()}</div>
+                                <div class="inc-metric-label">Buffered</div>
+                            </div>
+                            <div class="inc-metric">
+                                <div class="inc-metric-value">${(c.replayed ?? 0).toLocaleString()}</div>
+                                <div class="inc-metric-label">Replayed</div>
+                            </div>
+                            <div class="inc-metric ${(c.unrecovered ?? c.pending ?? 0) > 0 ? "is-loss" : "is-good"}">
+                                <div class="inc-metric-value">${(c.unrecovered ?? c.pending ?? 0).toLocaleString()}</div>
+                                <div class="inc-metric-label">Unrecovered</div>
+                            </div>
+                            <div class="inc-metric ${(c.dropped ?? 0) > 0 ? "is-loss" : "is-good"}">
+                                <div class="inc-metric-value">${(c.dropped ?? 0).toLocaleString()}</div>
+                                <div class="inc-metric-label">Dropped</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="inc-d-section">
+                        <h4>Connectivity evidence</h4>
+                        <div class="inc-evidence">${evidenceRows}</div>
+                    </div>
+
+                    <div class="inc-d-section">
+                        <h4>Raw events (${raw.length})</h4>
+                        <div class="inc-raw">${rawRows}</div>
+                    </div>`;
+            };
+
+            // ── Incident filter wiring ─────────────────────────────────────────
+            evPanel.querySelector("[data-inc-filter-status]")?.addEventListener("change", (e) => {
+                incStatus = e.target.value; incLoad();
+            });
+            evPanel.querySelector("[data-inc-filter-domain]")?.addEventListener("change", (e) => {
+                incDomain = e.target.value; incLoad();
+            });
+            evPanel.querySelectorAll("[data-inc-win]").forEach((btn) => {
+                btn.addEventListener("click", () => {
+                    incWindow = btn.getAttribute("data-inc-win");
+                    evPanel.querySelectorAll("[data-inc-win]").forEach((b) => b.classList.remove("is-current"));
+                    btn.classList.add("is-current");
+                    incLoad();
+                });
+            });
+
+            // ── View switch (Incidents | Raw Events) ───────────────────────────
+            evPanel.querySelectorAll("[data-ev-view]").forEach((btn) => {
+                btn.addEventListener("click", () => {
+                    incView = btn.getAttribute("data-ev-view");
+                    evPanel.querySelectorAll("[data-ev-view]").forEach((b) => b.classList.remove("is-current"));
+                    btn.classList.add("is-current");
+                    evPanel.querySelectorAll("[data-ev-view-panel]").forEach((panel) => {
+                        panel.classList.toggle("ov-hidden", panel.getAttribute("data-ev-view-panel") !== incView);
+                    });
+                    if (incView === "incidents") incLoad(); else evLoadEvents();
+                });
+            });
+
             // ── Entry point ────────────────────────────────────────────────────
             const evRefresh = () => {
                 const tabBtn   = insightsShell.querySelector('[data-ov-tab="events"]');
@@ -5810,6 +6126,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
                 if (!isActive) return;
 
+                if (incView === "incidents") {
+                    if (!incLastFetch || (Date.now() - incLastFetch) > 10_000) incLoad();
+                    return;
+                }
                 // Poll events every 10 s
                 if (!evLastFetch || (Date.now() - evLastFetch) > 10_000) {
                     evLoadEvents();
