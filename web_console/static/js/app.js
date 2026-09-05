@@ -766,6 +766,200 @@ document.addEventListener("DOMContentLoaded", () => {
                 return;
             }
             tab.addEventListener("click", () => syncPanels(tab.getAttribute("data-system-tab")));
+
+        // ── Notifications ─────────────────────────────────────────────────
+        // Channels are configured here and each one picks the events it cares
+        // about, so an on-call rota can take outages only while a chat room
+        // takes everything.
+        const ntChannelsEl = systemShell.querySelector("[data-nt-channels]");
+        if (ntChannelsEl) {
+            const ntEmpty   = systemShell.querySelector("[data-nt-empty]");
+            const ntLogEl   = systemShell.querySelector("[data-nt-log]");
+            const ntMessage = systemShell.querySelector("[data-nt-message]");
+            let ntConfig = { channels: [], rules: {} };
+            let ntMeta = { event_types: {}, channel_types: [], severities: [] };
+
+            const ntEsc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => (
+                { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+            const NT_TYPE_HELP = {
+                generic:   "POSTs the full incident as JSON. Use for n8n, Zapier, Make or your own endpoint.",
+                slack:     "Paste a Slack Incoming Webhook URL.",
+                teams:     "Paste a Microsoft Teams Incoming Webhook URL.",
+                discord:   "Paste a Discord channel webhook URL.",
+                pagerduty: "Events API v2. The incident ID is the dedup key, so a recovery resolves the alert it opened.",
+                email:     "Sends through your SMTP server.",
+            };
+
+            const ntRender = () => {
+                const channels = ntConfig.channels || [];
+                ntEmpty?.classList.toggle("is-hidden", channels.length > 0);
+                ntChannelsEl.innerHTML = channels.map((c, i) => {
+                    const isEmail = c.type === "email";
+                    const email = c.email || {};
+                    const events = c.events || [];
+                    return `
+                    <div class="nt-channel" data-nt-channel="${i}">
+                        <div class="nt-channel-head">
+                            <input class="settings-input nt-name" type="text" value="${ntEsc(c.name)}" data-nt-field="name" placeholder="Channel name">
+                            <select class="settings-input nt-type" data-nt-field="type">
+                                ${(ntMeta.channel_types || []).map((t) => `<option value="${t}"${t === c.type ? " selected" : ""}>${t}</option>`).join("")}
+                            </select>
+                            <label class="nt-toggle"><input type="checkbox" data-nt-field="enabled"${c.enabled ? " checked" : ""}> Enabled</label>
+                            <button type="button" class="ghost-action nt-test" data-nt-test>Send test</button>
+                            <button type="button" class="ghost-action nt-remove" data-nt-remove>Remove</button>
+                        </div>
+                        <p class="nt-help">${ntEsc(NT_TYPE_HELP[c.type] || "")}</p>
+                        ${isEmail ? `
+                        <div class="nt-grid">
+                            <label>SMTP host<input class="settings-input" type="text" value="${ntEsc(email.smtp_host)}" data-nt-email="smtp_host"></label>
+                            <label>Port<input class="settings-input" type="number" value="${email.smtp_port || 587}" data-nt-email="smtp_port"></label>
+                            <label>Username<input class="settings-input" type="text" value="${ntEsc(email.username)}" data-nt-email="username"></label>
+                            <label>Password<input class="settings-input" type="password" placeholder="${email.password_set ? "•••••• (saved)" : ""}" data-nt-email="password"></label>
+                            <label>From<input class="settings-input" type="text" value="${ntEsc(email.from_address)}" data-nt-email="from_address"></label>
+                            <label>To (comma separated)<input class="settings-input" type="text" value="${ntEsc((email.to_addresses || []).join(", "))}" data-nt-email="to_addresses"></label>
+                            <label class="nt-toggle"><input type="checkbox" data-nt-email="use_tls"${email.use_tls ? " checked" : ""}> Use TLS</label>
+                        </div>` : `
+                        <div class="nt-grid">
+                            <label class="nt-wide">Webhook URL<input class="settings-input" type="text" value="${ntEsc(c.url)}" data-nt-field="url" placeholder="https://..."></label>
+                            ${c.type === "pagerduty" ? "" : `<label class="nt-wide">Signing secret (optional)<input class="settings-input" type="password" placeholder="${c.secret_set ? "•••••• (saved)" : "adds X-MetaCrust-Signature"}" data-nt-field="secret"></label>`}
+                        </div>`}
+                        <p class="nt-section-label">Send this channel</p>
+                        <div class="nt-events">
+                            ${Object.entries(ntMeta.event_types || {}).map(([key, label]) => `
+                                <label class="nt-event"><input type="checkbox" data-nt-event="${key}"${events.includes(key) ? " checked" : ""}> ${ntEsc(label)}</label>`).join("")}
+                        </div>
+                        <label class="nt-min-sev">Minimum severity
+                            <select class="settings-input" data-nt-field="min_severity">
+                                ${(ntMeta.severities || []).map((sv) => `<option value="${sv}"${sv === c.min_severity ? " selected" : ""}>${sv}</option>`).join("")}
+                            </select>
+                        </label>
+                    </div>`;
+                }).join("");
+                ntBind();
+            };
+
+            const ntCollect = () => {
+                ntChannelsEl.querySelectorAll("[data-nt-channel]").forEach((el) => {
+                    const c = ntConfig.channels[Number(el.getAttribute("data-nt-channel"))];
+                    if (!c) return;
+                    el.querySelectorAll("[data-nt-field]").forEach((input) => {
+                        const key = input.getAttribute("data-nt-field");
+                        c[key] = input.type === "checkbox" ? input.checked : input.value;
+                    });
+                    const email = c.email || (c.email = {});
+                    el.querySelectorAll("[data-nt-email]").forEach((input) => {
+                        const key = input.getAttribute("data-nt-email");
+                        if (input.type === "checkbox") email[key] = input.checked;
+                        else if (key === "to_addresses") email[key] = input.value.split(",").map((x) => x.trim()).filter(Boolean);
+                        else if (key === "smtp_port") email[key] = Number(input.value) || 587;
+                        else if (key === "password" && !input.value) { /* keep stored */ }
+                        else email[key] = input.value;
+                    });
+                    c.events = Array.from(el.querySelectorAll("[data-nt-event]"))
+                        .filter((cb) => cb.checked).map((cb) => cb.getAttribute("data-nt-event"));
+                });
+                systemShell.querySelectorAll("[data-nt-rule]").forEach((input) => {
+                    ntConfig.rules[input.getAttribute("data-nt-rule")] = Number(input.value) || 0;
+                });
+                return ntConfig;
+            };
+
+            const ntBind = () => {
+                ntChannelsEl.querySelectorAll("[data-nt-remove]").forEach((btn) => {
+                    btn.addEventListener("click", () => {
+                        const idx = Number(btn.closest("[data-nt-channel]").getAttribute("data-nt-channel"));
+                        ntCollect();
+                        ntConfig.channels.splice(idx, 1);
+                        ntRender();
+                    });
+                });
+                ntChannelsEl.querySelectorAll("[data-nt-test]").forEach((btn) => {
+                    btn.addEventListener("click", async () => {
+                        const idx = Number(btn.closest("[data-nt-channel]").getAttribute("data-nt-channel"));
+                        ntCollect();
+                        btn.disabled = true; btn.textContent = "Sending…";
+                        try {
+                            const r = await fetch("/api/notifications/test", {
+                                method: "POST", headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ channel: ntConfig.channels[idx] }),
+                            });
+                            const d = await r.json();
+                            ntSetMessage(d.message || (d.ok ? "Test sent." : "Test failed."), d.ok);
+                        } catch (e) {
+                            ntSetMessage("Test failed: " + e, false);
+                        } finally {
+                            btn.disabled = false; btn.textContent = "Send test";
+                        }
+                    });
+                });
+                // Switching type re-renders so the right fields appear.
+                ntChannelsEl.querySelectorAll('[data-nt-field="type"]').forEach((sel) => {
+                    sel.addEventListener("change", () => { ntCollect(); ntRender(); });
+                });
+            };
+
+            const ntSetMessage = (text, ok) => {
+                if (!ntMessage) return;
+                ntMessage.textContent = text;
+                ntMessage.classList.toggle("is-ok", Boolean(ok));
+                ntMessage.classList.toggle("is-error", !ok);
+            };
+
+            const ntRenderLog = (rows) => {
+                if (!ntLogEl) return;
+                if (!rows.length) { ntLogEl.innerHTML = `<p class="nt-empty">Nothing sent yet.</p>`; return; }
+                ntLogEl.innerHTML = rows.slice(0, 20).map((r) => `
+                    <div class="nt-log-row ${r.ok ? "is-ok" : "is-error"}">
+                        <span class="nt-log-time">${ntEsc(r.at || "")}</span>
+                        <span>${ntEsc(r.channel)} <em>${ntEsc(r.channel_type)}</em></span>
+                        <span>${ntEsc(r.incident_ref || r.event || "")}</span>
+                        <span>${r.ok ? "delivered" : ntEsc(r.detail)}${r.attempts > 1 ? ` (${r.attempts} attempts)` : ""}</span>
+                    </div>`).join("");
+            };
+
+            const ntLoad = async () => {
+                try {
+                    const r = await fetch("/api/notifications/config");
+                    if (!r.ok) return;
+                    const d = await r.json();
+                    ntConfig = d.config || { channels: [], rules: {} };
+                    ntMeta = { event_types: d.event_types, channel_types: d.channel_types, severities: d.severities };
+                    systemShell.querySelectorAll("[data-nt-rule]").forEach((input) => {
+                        input.value = (ntConfig.rules || {})[input.getAttribute("data-nt-rule")] ?? "";
+                    });
+                    ntRender();
+                    ntRenderLog(d.deliveries || []);
+                } catch (e) {
+                    console.warn("[Notifications] load failed:", e);
+                }
+            };
+
+            systemShell.querySelector("[data-nt-add]")?.addEventListener("click", () => {
+                ntCollect();
+                ntConfig.channels.push({
+                    id: "", name: "New channel", type: "slack", enabled: true, url: "",
+                    events: Object.keys(ntMeta.event_types || {}), min_severity: "warning", email: {},
+                });
+                ntRender();
+            });
+
+            systemShell.querySelector("[data-nt-save]")?.addEventListener("click", async () => {
+                try {
+                    const r = await fetch("/api/notifications/config", {
+                        method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(ntCollect()),
+                    });
+                    const d = await r.json();
+                    if (d.ok) { ntConfig = d.config; ntRender(); }
+                    ntSetMessage(d.ok ? "Notification settings saved." : (d.message || "Save failed."), d.ok);
+                } catch (e) {
+                    ntSetMessage("Save failed: " + e, false);
+                }
+            });
+
+            ntLoad();
+        }
         });
 
         const initialTab = tabs.find((tab) => tab.classList.contains("is-current") && !tab.hasAttribute("disabled"))

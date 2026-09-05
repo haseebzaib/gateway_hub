@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
@@ -12,6 +13,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from gateway_edge_server import EdgeServerTask
 from gateway_forwarding import ForwardingService
 from gateway_incidents import IncidentTask
+from gateway_notifications import NotificationService
 from gateway_ipc import GatewayCoreIpcTask
 
 from .engine_client import EngineClient
@@ -60,9 +62,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     incidents.start()
     app.state.incidents = incidents
     LOGGER.info("hub_lifespan incident_correlator_started")
+
+    # Tells operators about incidents without them watching the dashboard.
+    # Driven by incident transitions, so one fault produces one notification
+    # when it starts and one when it recovers.
+    notifications = NotificationService()
+    notifications.incidents = incidents
+    notifications.forwarding = forwarding_service
+    notifications.gateway_id = forwarding_service.gateway_id
+    # Links in notifications need an address reachable from wherever the
+    # recipient reads them, which only the operator knows; without it the
+    # notification simply omits the link rather than sending a broken one.
+    notifications.base_url = os.environ.get("METACRUST_CONSOLE_URL", "")
+    notifications.start()
+    app.state.notifications = notifications
+    LOGGER.info("hub_lifespan notifications_started")
     try:
         yield
     finally:
+        await notifications.stop()
         await incidents.stop()
         await network_runtime.stop()
         await forwarding_service.stop()

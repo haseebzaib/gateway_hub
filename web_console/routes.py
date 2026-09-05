@@ -30,6 +30,7 @@ from gateway_forwarding import (
     topics_for as forwarding_topics_for,
 )
 from gateway_incidents import DOMAIN_LABELS as INCIDENT_DOMAIN_LABELS, kpi as incident_kpi, report as incident_report
+import gateway_notifications as notifications
 from gateway_ipc import build_config_message, encode_message, headline_for_stored
 
 from . import insights_data
@@ -1308,6 +1309,7 @@ async def system_page(request: Request) -> HTMLResponse:
     ctx.update({
         "system_tabs": [
             {"id": "access", "label": "Access", "active": True, "disabled": False},
+            {"id": "notifications", "label": "Notifications", "active": False, "disabled": False},
         ],
         "current_username": request.session.get("username", DEFAULT_USERNAME),
     })
@@ -2487,6 +2489,57 @@ async def set_report_branding(request: Request) -> JSONResponse:
     except OSError as exc:
         return JSONResponse({"ok": False, "message": f"Could not save: {exc}"}, status_code=500)
     return JSONResponse({"ok": True, "branding": branding})
+
+
+@router.get("/api/notifications/config")
+def get_notifications_config(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    service = getattr(request.app.state, "notifications", None)
+    return JSONResponse({
+        "ok": True,
+        "config": notifications.redact(notifications.load_config()),
+        "event_types": notifications.EVENT_TYPES,
+        "channel_types": list(notifications.CHANNEL_TYPES),
+        "severities": list(notifications.SEVERITIES),
+        "deliveries": service.recent_deliveries() if service is not None else [],
+    })
+
+
+@router.post("/api/notifications/config")
+async def save_notifications_config(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    payload = await request.json()
+    try:
+        # The browser never receives secrets, so a save would otherwise clear
+        # them; carry the stored values forward for channels it did not change.
+        merged = notifications.merge_secrets(dict(payload), notifications.load_config())
+        saved = await asyncio.to_thread(notifications.save_config, merged)
+    except (ValueError, OSError) as exc:
+        return JSONResponse({"ok": False, "message": f"Save failed: {exc}"}, status_code=status.HTTP_400_BAD_REQUEST)
+    return JSONResponse({"ok": True, "config": notifications.redact(saved)})
+
+
+@router.post("/api/notifications/test")
+async def test_notification_channel(request: Request) -> JSONResponse:
+    """Send a sample notification so a channel can be verified before relying on it."""
+    if auth := _json_auth_required(request):
+        return auth
+    service = getattr(request.app.state, "notifications", None)
+    if service is None:
+        return JSONResponse({"ok": False, "message": "Notification service is not running."}, status_code=503)
+    payload = await request.json()
+    channel = notifications.normalize_channel(payload.get("channel") or {})
+    # A channel saved earlier keeps its secret; the test uses the stored one.
+    channel = (notifications.merge_secrets(
+        {"channels": [channel]}, notifications.load_config()
+    )["channels"] or [channel])[0]
+    try:
+        await asyncio.to_thread(service.send_test, channel)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "message": str(exc)[:300]})
+    return JSONResponse({"ok": True, "message": "Test notification sent."})
 
 
 @router.get("/api/insights/pilot-summary")

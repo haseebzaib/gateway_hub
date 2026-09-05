@@ -60,6 +60,55 @@
                 <button type="submit" class="primary-action system-save">Save credentials</button>
             </form>
         </article>
+
+        {# ── Notifications ───────────────────────────────────────────────────
+           Send alerts to wherever the operator already works — a chat room, an
+           on-call rota, a custom endpoint or email — and choose per channel
+           which events are worth interrupting them for. #}
+        <article class="system-panel system-panel-wide is-hidden" data-system-panel="notifications">
+            <div class="system-panel-head">
+                <div>
+                    <p class="hero-band-eyebrow">Alerting</p>
+                    <h2>Notifications</h2>
+                </div>
+                <button type="button" class="ghost-action" data-nt-add>+ Add channel</button>
+            </div>
+
+            <p class="nt-lede">
+                Get told when data stops flowing, without watching the dashboard. Notifications
+                follow incidents, so one problem sends one alert when it starts and one when it
+                recovers — however many underlying events it produced. Every alert carries its
+                incident ID and a link to the record.
+            </p>
+
+            <div class="nt-channels" data-nt-channels></div>
+            <p class="nt-empty" data-nt-empty>No channels yet. Add one to start receiving alerts.</p>
+
+            <div class="nt-rules">
+                <p class="nt-section-label">Delivery rules</p>
+                <div class="nt-rule-row">
+                    <label>Warn when the buffer reaches
+                        <input type="number" min="1" max="100" step="1" data-nt-rule="buffer_warn_percent"> %
+                    </label>
+                    <label>Retry a failed send up to
+                        <input type="number" min="0" max="10" step="1" data-nt-rule="max_retries"> times
+                    </label>
+                    <label>Never send more than
+                        <input type="number" min="1" max="500" step="1" data-nt-rule="max_per_hour"> per hour
+                    </label>
+                </div>
+            </div>
+
+            <div class="nt-actions">
+                <button type="button" class="primary-action" data-nt-save>Save notification settings</button>
+                <span class="nt-message" data-nt-message></span>
+            </div>
+
+            <div class="nt-log-wrap">
+                <p class="nt-section-label">Recent deliveries</p>
+                <div class="nt-log" data-nt-log></div>
+            </div>
+        </article>
     </section>
 </section>
 {% endblock %}
