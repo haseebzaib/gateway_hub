@@ -81,6 +81,13 @@
                 incident ID and a link to the record.
             </p>
 
+            <p class="nt-note">
+                <strong>Webhooks need only a URL.</strong> Email needs more, because the gateway has
+                no mail server of its own — it has to hand the message to an SMTP server that
+                relays it for you (your own mail relay, Google Workspace, Microsoft 365 or
+                similar). If you have no mail server to hand, a chat webhook is the quicker route.
+            </p>
+
             <div class="nt-channels" data-nt-channels></div>
             <p class="nt-empty" data-nt-empty>No channels yet. Add one to start receiving alerts.</p>
 

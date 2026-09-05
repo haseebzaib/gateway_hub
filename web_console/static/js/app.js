@@ -782,52 +782,72 @@ document.addEventListener("DOMContentLoaded", () => {
             const ntEsc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => (
                 { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-            const NT_TYPE_HELP = {
-                generic:   "POSTs the full incident as JSON. Use for n8n, Zapier, Make or your own endpoint.",
-                slack:     "Paste a Slack Incoming Webhook URL.",
-                teams:     "Paste a Microsoft Teams Incoming Webhook URL.",
-                discord:   "Paste a Discord channel webhook URL.",
-                pagerduty: "Events API v2. The incident ID is the dedup key, so a recovery resolves the alert it opened.",
-                email:     "Sends through your SMTP server.",
+            // Each type gets an identity, a one-line explanation, and — for
+            // email — an answer to the obvious question of why it needs an SMTP
+            // server at all.
+            const NT_TYPES = {
+                slack:     { icon: "#",  label: "Slack",       help: "Paste an Incoming Webhook URL from your Slack workspace." },
+                teams:     { icon: "T",  label: "Microsoft Teams", help: "Paste an Incoming Webhook URL from your Teams channel." },
+                discord:   { icon: "D",  label: "Discord",     help: "Paste a channel webhook URL from Discord." },
+                pagerduty: { icon: "!",  label: "PagerDuty",   help: "Events API v2. The incident ID is the dedup key, so a recovery resolves the alert it opened." },
+                generic:   { icon: "{}", label: "Generic JSON webhook", help: "POSTs the whole incident as JSON — for n8n, Zapier, Make or your own endpoint." },
+                email:     { icon: "@",  label: "Email",       help: "The gateway has no mail server of its own, so email is handed to an SMTP server that relays it — your own mail relay, Google Workspace, Microsoft 365 or similar." },
             };
+            const ntTypeName = (t) => (NT_TYPES[t] || {}).label || t;
 
             const ntRender = () => {
                 const channels = ntConfig.channels || [];
                 ntEmpty?.classList.toggle("is-hidden", channels.length > 0);
                 ntChannelsEl.innerHTML = channels.map((c, i) => {
+                    const meta = NT_TYPES[c.type] || NT_TYPES.generic;
                     const isEmail = c.type === "email";
                     const email = c.email || {};
                     const events = c.events || [];
                     return `
-                    <div class="nt-channel" data-nt-channel="${i}">
+                    <div class="nt-channel${c.enabled ? "" : " is-off"}" data-nt-channel="${i}">
                         <div class="nt-channel-head">
-                            <input class="settings-input nt-name" type="text" value="${ntEsc(c.name)}" data-nt-field="name" placeholder="Channel name">
-                            <select class="settings-input nt-type" data-nt-field="type">
-                                ${(ntMeta.channel_types || []).map((t) => `<option value="${t}"${t === c.type ? " selected" : ""}>${t}</option>`).join("")}
+                            <span class="nt-badge is-${c.type}">${ntEsc(meta.icon)}</span>
+                            <div class="nt-ident">
+                                <input class="nt-name" type="text" value="${ntEsc(c.name)}" data-nt-field="name"
+                                       placeholder="${ntEsc(meta.label)} channel" aria-label="Channel name">
+                                <span class="nt-ident-sub">A label for you — it does not affect delivery.</span>
+                            </div>
+                            <select class="settings-input nt-type" data-nt-field="type" aria-label="Channel type">
+                                ${(ntMeta.channel_types || []).map((t) => `<option value="${t}"${t === c.type ? " selected" : ""}>${ntEsc(ntTypeName(t))}</option>`).join("")}
                             </select>
-                            <label class="nt-toggle"><input type="checkbox" data-nt-field="enabled"${c.enabled ? " checked" : ""}> Enabled</label>
-                            <button type="button" class="ghost-action nt-test" data-nt-test>Send test</button>
-                            <button type="button" class="ghost-action nt-remove" data-nt-remove>Remove</button>
+                            <label class="nt-switch" title="${c.enabled ? "Enabled" : "Disabled"}">
+                                <input type="checkbox" data-nt-field="enabled"${c.enabled ? " checked" : ""}>
+                                <span></span>
+                            </label>
+                            <button type="button" class="nt-btn" data-nt-test>Send test</button>
+                            <button type="button" class="nt-btn is-danger" data-nt-remove>Remove</button>
                         </div>
-                        <p class="nt-help">${ntEsc(NT_TYPE_HELP[c.type] || "")}</p>
+
+                        <p class="nt-help">${ntEsc(meta.help)}</p>
+
+                        <p class="nt-section-label">Where to send</p>
                         ${isEmail ? `
                         <div class="nt-grid">
-                            <label>SMTP host<input class="settings-input" type="text" value="${ntEsc(email.smtp_host)}" data-nt-email="smtp_host"></label>
+                            <label class="nt-f2">SMTP host<input class="settings-input" type="text" value="${ntEsc(email.smtp_host)}" data-nt-email="smtp_host" placeholder="smtp.example.com"></label>
                             <label>Port<input class="settings-input" type="number" value="${email.smtp_port || 587}" data-nt-email="smtp_port"></label>
-                            <label>Username<input class="settings-input" type="text" value="${ntEsc(email.username)}" data-nt-email="username"></label>
-                            <label>Password<input class="settings-input" type="password" placeholder="${email.password_set ? "•••••• (saved)" : ""}" data-nt-email="password"></label>
-                            <label>From<input class="settings-input" type="text" value="${ntEsc(email.from_address)}" data-nt-email="from_address"></label>
-                            <label>To (comma separated)<input class="settings-input" type="text" value="${ntEsc((email.to_addresses || []).join(", "))}" data-nt-email="to_addresses"></label>
-                            <label class="nt-toggle"><input type="checkbox" data-nt-email="use_tls"${email.use_tls ? " checked" : ""}> Use TLS</label>
+                            <label class="nt-check"><input type="checkbox" data-nt-email="use_tls"${email.use_tls ? " checked" : ""}><span>Use TLS</span></label>
+                            <label>Username<input class="settings-input" type="text" value="${ntEsc(email.username)}" data-nt-email="username" autocomplete="off"></label>
+                            <label>Password<input class="settings-input" type="password" placeholder="${email.password_set ? "•••••• saved" : ""}" data-nt-email="password" autocomplete="new-password"></label>
+                            <label class="nt-f2">From address<input class="settings-input" type="text" value="${ntEsc(email.from_address)}" data-nt-email="from_address" placeholder="gateway@yourcompany.com"></label>
+                            <label class="nt-f4">Send to<input class="settings-input" type="text" value="${ntEsc((email.to_addresses || []).join(", "))}" data-nt-email="to_addresses" placeholder="ops@yourcompany.com, oncall@yourcompany.com"></label>
                         </div>` : `
                         <div class="nt-grid">
-                            <label class="nt-wide">Webhook URL<input class="settings-input" type="text" value="${ntEsc(c.url)}" data-nt-field="url" placeholder="https://..."></label>
-                            ${c.type === "pagerduty" ? "" : `<label class="nt-wide">Signing secret (optional)<input class="settings-input" type="password" placeholder="${c.secret_set ? "•••••• (saved)" : "adds X-MetaCrust-Signature"}" data-nt-field="secret"></label>`}
+                            <label class="nt-f4">Webhook URL<input class="settings-input" type="text" value="${ntEsc(c.url)}" data-nt-field="url" placeholder="https://..."></label>
+                            ${c.type === "pagerduty" ? "" : `<label class="nt-f4">Signing secret <span class="nt-optional">optional</span><input class="settings-input" type="password" placeholder="${c.secret_set ? "•••••• saved" : "adds an X-MetaCrust-Signature header so the receiver can verify us"}" data-nt-field="secret" autocomplete="new-password"></label>`}
                         </div>`}
-                        <p class="nt-section-label">Send this channel</p>
+
+                        <p class="nt-section-label">When to notify</p>
                         <div class="nt-events">
                             ${Object.entries(ntMeta.event_types || {}).map(([key, label]) => `
-                                <label class="nt-event"><input type="checkbox" data-nt-event="${key}"${events.includes(key) ? " checked" : ""}> ${ntEsc(label)}</label>`).join("")}
+                                <label class="nt-chip${events.includes(key) ? " is-on" : ""}">
+                                    <input type="checkbox" data-nt-event="${key}"${events.includes(key) ? " checked" : ""}>
+                                    <span>${ntEsc(label)}</span>
+                                </label>`).join("")}
                         </div>
                         <label class="nt-min-sev">Minimum severity
                             <select class="settings-input" data-nt-field="min_severity">
@@ -895,7 +915,26 @@ document.addEventListener("DOMContentLoaded", () => {
                 });
                 // Switching type re-renders so the right fields appear.
                 ntChannelsEl.querySelectorAll('[data-nt-field="type"]').forEach((sel) => {
-                    sel.addEventListener("change", () => { ntCollect(); ntRender(); });
+                    sel.addEventListener("change", () => {
+                        const idx = Number(sel.closest("[data-nt-channel]").getAttribute("data-nt-channel"));
+                        const previous = ntConfig.channels[idx]?.type;
+                        ntCollect();
+                        const channel = ntConfig.channels[idx];
+                        // Keep the label honest: a channel still carrying the
+                        // default name for its old type is renamed with it, so a
+                        // Slack channel switched to Email stops reading "Slack".
+                        if (channel && channel.name === `${ntTypeName(previous)} channel`) {
+                            channel.name = `${ntTypeName(channel.type)} channel`;
+                        }
+                        ntRender();
+                    });
+                });
+                // Chips reflect their state without waiting for a re-render.
+                ntChannelsEl.querySelectorAll("[data-nt-event]").forEach((cb) => {
+                    cb.addEventListener("change", () => cb.closest(".nt-chip")?.classList.toggle("is-on", cb.checked));
+                });
+                ntChannelsEl.querySelectorAll('[data-nt-field="enabled"]').forEach((cb) => {
+                    cb.addEventListener("change", () => cb.closest(".nt-channel")?.classList.toggle("is-off", !cb.checked));
                 });
             };
 
@@ -938,7 +977,7 @@ document.addEventListener("DOMContentLoaded", () => {
             systemShell.querySelector("[data-nt-add]")?.addEventListener("click", () => {
                 ntCollect();
                 ntConfig.channels.push({
-                    id: "", name: "New channel", type: "slack", enabled: true, url: "",
+                    id: "", name: "Slack channel", type: "slack", enabled: true, url: "",
                     events: Object.keys(ntMeta.event_types || {}), min_severity: "warning", email: {},
                 });
                 ntRender();
