@@ -56,6 +56,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     incidents.monitor_storage = ipc_task.storage
     incidents.forwarding = forwarding_service
     incidents.network_runtime = network_runtime
+    incidents.edge_server = edge_server_task
     incidents.start()
     app.state.incidents = incidents
     LOGGER.info("hub_lifespan incident_correlator_started")

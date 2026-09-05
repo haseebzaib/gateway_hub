@@ -23,6 +23,7 @@
         <button type="button" class="system-tab" data-es-tab="http" role="tab" aria-selected="false">Live HTTP</button>
         <button type="button" class="system-tab" data-es-tab="mqtt" role="tab" aria-selected="false">Live MQTT</button>
         <button type="button" class="system-tab" data-es-tab="alerts" role="tab" aria-selected="false">Alerts</button>
+        <button type="button" class="system-tab" data-es-tab="incidents" role="tab" aria-selected="false">Incidents</button>
         <button type="button" class="system-tab" data-es-tab="history" role="tab" aria-selected="false">Device History</button>
         <button type="button" class="system-tab" data-es-tab="listeners" role="tab" aria-selected="false">Listener Config</button>
         <button type="button" class="system-tab" data-es-tab="funnel" role="tab" aria-selected="false">Public Tunnel</button>
@@ -956,6 +957,37 @@
                 <button class="fw-empty-action" data-es-add-mqtt>+ Add topic</button>
             </div>
         </section>
+    </div>
+
+    {# Incidents — inbound devices that stopped reaching the gateway, correlated
+       the same way as every other subsystem so they carry the same evidence,
+       KPIs and export as sensor and forwarding incidents. #}
+    <div class="es-panel is-hidden" data-es-panel="incidents">
+        <div class="inc-summary" data-esinc-summary></div>
+
+        <div class="pilot-panel" data-pilot-panel>
+            <div class="pilot-head">
+                <button class="ev-view-btn" data-pilot-toggle>Pilot Summary</button>
+                <div class="pilot-range ov-hidden" data-pilot-range>
+                    <label>From <input type="date" class="sv-date-input" data-pilot-from></label>
+                    <label>To <input type="date" class="sv-date-input" data-pilot-to></label>
+                    <button class="ev-win-btn" data-pilot-apply>Show</button>
+                    <a class="inc-export-btn" data-pilot-csv href="#">↓ CSV</a>
+                </div>
+            </div>
+            <div class="pilot-body ov-hidden" data-pilot-body></div>
+        </div>
+
+        <div class="inc-list" data-esinc-list></div>
+        <div class="ev-pager" data-esinc-pager></div>
+        <div class="ev-empty" data-esinc-empty>
+            <p>No inbound device incidents in the last 7 days.</p>
+        </div>
+
+        <div class="inc-drawer ov-hidden" data-inc-drawer>
+            <div class="inc-drawer-scrim" data-inc-drawer-close></div>
+            <aside class="inc-drawer-panel" data-inc-drawer-body></aside>
+        </div>
     </div>
 
     <div class="es-panel is-hidden" data-es-panel="alerts">

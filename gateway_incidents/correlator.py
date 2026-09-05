@@ -30,6 +30,16 @@ from typing import Any
 # A fault must clear and stay clear this long before its incident is closed,
 # so a flapping link is one incident rather than one per flap.
 STABILITY_WINDOW_MS = 5 * 60_000
+
+# Network faults must persist this long before they are allowed to raise an
+# incident. Uplinks flap constantly — this gateway has logged 3,495 uplink
+# switches and 1,673 eth0 down events — and a failover the buffer absorbed with
+# no data lost is not something to put in front of a customer. Short network
+# faults still appear as evidence on whatever incident is open; they just do not
+# create one of their own. Source and destination faults have no grace period:
+# those mean data is not being collected or not being delivered, which matters
+# immediately.
+NETWORK_FAULT_GRACE_MS = 2 * 60_000
 # How far back a correlation pass replays raw events to rebuild fault state.
 LOOKBACK_MS = 7 * 86_400_000
 
@@ -126,10 +136,11 @@ class Checks:
 def collect_signals(
     *, interfaces_storage: Any = None, forwarding: Any = None,
     network_runtime: Any = None, monitor_storage: Any = None,
-    from_ms: int, to_ms: int,
+    edge_server: Any = None, from_ms: int, to_ms: int,
 ) -> list[Signal]:
     signals: list[Signal] = []
     signals += _source_signals(interfaces_storage, from_ms, to_ms)
+    signals += _edge_signals(edge_server, from_ms)
     signals += _destination_signals(forwarding, from_ms)
     signals += _network_signals(network_runtime, from_ms)
     signals += _gateway_signals(monitor_storage, from_ms)
@@ -224,6 +235,55 @@ def _network_signals(network_runtime: Any, from_ms: int) -> list[Signal]:
     return out
 
 
+def _edge_signals(edge_server: Any, from_ms: int) -> list[Signal]:
+    """Inbound devices that stopped reaching the gateway.
+
+    Edge Server already detects these and records them edge-triggered
+    (no_data_timeout fires once per silence, device_recovered clears it), so
+    they map onto the same source layer as polled sensors: something that
+    should be sending data no longer is.
+    """
+    if edge_server is None:
+        return []
+    try:
+        storage = getattr(edge_server, "storage", None)
+        rows = storage.alert_events(limit=500) if storage is not None else []
+    except Exception:
+        return []
+
+    down_types = {"no_data_timeout", "mqtt_disconnected"}
+    out: list[Signal] = []
+    for row in rows:
+        kind = str(row.get("event_type") or "")
+        if kind not in down_types and kind != "device_recovered":
+            continue
+        ts_ms = _iso_to_ms(row.get("created_at"))
+        if not ts_ms or ts_ms < from_ms:
+            continue
+        device = str(row.get("device_id") or "").strip()
+        if not device:
+            continue
+        out.append(Signal(
+            ts_ms=ts_ms, layer=SOURCE, scope=f"edgeServer:{device}", label=device,
+            state="down" if kind in down_types else "up",
+            detail=str(row.get("message") or kind),
+        ))
+    return out
+
+
+def _iso_to_ms(value: Any) -> int:
+    from datetime import datetime
+
+    text = str(value or "")
+    if not text:
+        return 0
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return 0
+    return int(parsed.timestamp() * 1000)
+
+
 def _gateway_signals(monitor_storage: Any, from_ms: int) -> list[Signal]:
     """Critical device-health anomalies mean the gateway itself is degraded.
 
@@ -260,6 +320,17 @@ def _gateway_signals(monitor_storage: Any, from_ms: int) -> list[Signal]:
         out.append(Signal(last_ts + STABILITY_WINDOW_MS, GATEWAY, "gateway",
                           "Gateway health", "up", "device health returned to normal"))
     return out
+
+
+def incident_worthy(fault: Fault, now_ms: int) -> bool:
+    """Whether a fault is significant enough to raise a customer incident.
+
+    Network layers get a grace period because they flap; everything else is
+    incident-worthy the moment it is observed.
+    """
+    if fault.layer not in (UPLINK, LOCAL_NETWORK):
+        return True
+    return (now_ms - int(fault.since_ms)) >= NETWORK_FAULT_GRACE_MS
 
 
 # ── fault state ──────────────────────────────────────────────────────────

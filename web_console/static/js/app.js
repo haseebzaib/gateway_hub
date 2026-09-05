@@ -7597,6 +7597,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         const fwIncPager   = fwShell.querySelector("[data-fwinc-pager]");
         const fwIncDrawer  = Incidents.attachDrawer(fwShell.querySelector("[data-inc-drawer]"));
+        Incidents.attachPilotSummary(fwShell.querySelector("[data-pilot-panel]"), "forwarding");
         const FW_INC_PER_PAGE = 8;
         let fwIncRows = [];
         let fwIncPage = 0;
@@ -9975,6 +9976,57 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         };
 
+        // Inbound-device incidents, rendered by the same shared helper as every
+        // other page so they cannot drift in appearance or behaviour.
+        const esIncList    = edgeShell.querySelector("[data-esinc-list]");
+        const esIncEmpty   = edgeShell.querySelector("[data-esinc-empty]");
+        const esIncSummary = edgeShell.querySelector("[data-esinc-summary]");
+        const esIncPager   = edgeShell.querySelector("[data-esinc-pager]");
+        const esIncDrawer  = Incidents.attachDrawer(edgeShell.querySelector('[data-es-panel="incidents"] [data-inc-drawer]'));
+        Incidents.attachPilotSummary(edgeShell.querySelector('[data-es-panel="incidents"] [data-pilot-panel]'), "edge");
+        const ES_INC_PER_PAGE = 8;
+        let esIncRows = [];
+        let esIncPage = 0;
+
+        const esIncRender = () => {
+            if (!esIncList) return;
+            if (!esIncRows.length) {
+                esIncList.innerHTML = "";
+                if (esIncPager) esIncPager.innerHTML = "";
+                esIncEmpty?.classList.remove("ov-hidden");
+                return;
+            }
+            esIncEmpty?.classList.add("ov-hidden");
+            const { pageCount, current, slice } = Incidents.paginate(esIncRows, esIncPage, ES_INC_PER_PAGE);
+            esIncPage = current;
+            esIncList.innerHTML = slice.map(Incidents.rowHtml).join("");
+            Incidents.bindRows(esIncList, esIncDrawer);
+            if (esIncPager) {
+                esIncPager.innerHTML = Incidents.pagerHtml(current, pageCount, esIncRows.length);
+                esIncPager.querySelector("[data-inc-page-prev]")?.addEventListener("click", () => { esIncPage -= 1; esIncRender(); });
+                esIncPager.querySelector("[data-inc-page-next]")?.addEventListener("click", () => { esIncPage += 1; esIncRender(); });
+            }
+        };
+
+        const esIncLoad = async () => {
+            if (!esIncList) return;
+            try {
+                const r = await fetch("/api/insights/incidents?window=7d&scope=edge");
+                if (!r.ok) return;
+                const d = await r.json();
+                esIncRows = d.incidents || [];
+                const open = esIncRows.filter((i) => i.ongoing).length;
+                if (esIncSummary) {
+                    esIncSummary.innerHTML = Incidents.summaryHtml(
+                        open, Math.max(0, esIncRows.length - open), esIncRows.length, "Resolved · 7 d");
+                }
+                esIncPage = 0;
+                esIncRender();
+            } catch (e) {
+                console.warn("[Edge Server] incidents fetch failed:", e);
+            }
+        };
+
         edgeShell.querySelectorAll("[data-es-tab]").forEach((btn) => {
             btn.addEventListener("click", () => {
                 const tab = btn.getAttribute("data-es-tab");
@@ -9988,6 +10040,9 @@ document.addEventListener("DOMContentLoaded", () => {
                 });
                 if (tab === "history") {
                     esRefreshHistory();
+                }
+                if (tab === "incidents") {
+                    esIncLoad();
                 }
                 if (tab === "http" || tab === "mqtt") {
                     esRefreshProtocolMetrics(tab);

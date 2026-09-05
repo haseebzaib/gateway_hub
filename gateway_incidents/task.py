@@ -21,6 +21,7 @@ from .correlator import (
     classify,
     collect_signals,
     evidence_rows,
+    incident_worthy,
     replay_faults,
     retire_vanished,
 )
@@ -46,6 +47,7 @@ class IncidentTask:
         self.forwarding: Any = None
         self.network_runtime: Any = None
         self.monitor_storage: Any = None
+        self.edge_server: Any = None
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
 
@@ -94,6 +96,7 @@ class IncidentTask:
             forwarding=self.forwarding,
             network_runtime=self.network_runtime,
             monitor_storage=self.monitor_storage,
+            edge_server=self.edge_server,
             from_ms=now_ms - LOOKBACK_MS,
             to_ms=now_ms,
         )
@@ -106,7 +109,10 @@ class IncidentTask:
         continuity = self._continuity()
         counters = self._counters()
 
-        path_faults = [f for key, f in open_faults.items() if key[0] in PATH_LAYERS]
+        # Every open path fault informs the evidence; only the significant ones
+        # may raise an incident. A two-second failover is context, not news.
+        path_faults_seen = [f for key, f in open_faults.items() if key[0] in PATH_LAYERS]
+        path_faults = [f for f in path_faults_seen if incident_worthy(f, now_ms)]
         source_faults = [f for key, f in open_faults.items() if key[0] == SOURCE]
 
         # A shared-layer fault interrupts delivery for every device, so it is one
@@ -115,7 +121,7 @@ class IncidentTask:
             scope_kind="path", scope_key=PATH_SCOPE_KEY, faults=path_faults,
             cleared={k: v for k, v in cleared.items() if k[0] in PATH_LAYERS},
             now_ms=now_ms, network_state=network_state, source_total=source_total,
-            continuity=continuity, all_faults=path_faults + source_faults,
+            continuity=continuity, all_faults=path_faults_seen + source_faults,
             counters=counters, source_gap=bool(source_faults),
         )
 
@@ -125,13 +131,13 @@ class IncidentTask:
         # polled, whereas an unreachable uplink or destination cannot — those are
         # downstream of the sensors, so a sensor failing at the same time is a
         # genuinely separate problem and deserves its own incident.
-        explains_source_loss = any(f.layer in (GATEWAY_LAYER, LOCAL_NETWORK_LAYER) for f in path_faults)
+        explains_source_loss = any(f.layer in (GATEWAY_LAYER, LOCAL_NETWORK_LAYER) for f in path_faults_seen)
         for fault in source_faults:
             self._reconcile(
                 scope_kind="source", scope_key=fault.scope, faults=[fault],
                 cleared={}, now_ms=now_ms, network_state=network_state,
                 source_total=source_total, continuity=continuity,
-                all_faults=path_faults + [fault], suppressed=explains_source_loss,
+                all_faults=path_faults_seen + [fault], suppressed=explains_source_loss,
                 counters=counters, source_gap=True,
             )
         for key, fault in cleared.items():
@@ -139,7 +145,7 @@ class IncidentTask:
                 self._reconcile(
                     scope_kind="source", scope_key=fault.scope, faults=[],
                     cleared={key: fault}, now_ms=now_ms, network_state=network_state,
-                    source_total=source_total, continuity=continuity, all_faults=path_faults,
+                    source_total=source_total, continuity=continuity, all_faults=path_faults_seen,
                     counters=counters, source_gap=True,
                 )
 

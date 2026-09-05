@@ -437,6 +437,21 @@ Content-Type: application/json
     {# ════════════════════════════════════════════════════════════════════════ #}
     <div data-fw-panel="incidents" hidden>
         <div class="inc-summary" data-fwinc-summary></div>
+
+        {# Same aggregate KPIs as Sensor Insights, scoped to delivery failures. #}
+        <div class="pilot-panel" data-pilot-panel>
+            <div class="pilot-head">
+                <button class="ev-view-btn" data-pilot-toggle>Pilot Summary</button>
+                <div class="pilot-range ov-hidden" data-pilot-range>
+                    <label>From <input type="date" class="sv-date-input" data-pilot-from></label>
+                    <label>To <input type="date" class="sv-date-input" data-pilot-to></label>
+                    <button class="ev-win-btn" data-pilot-apply>Show</button>
+                    <a class="inc-export-btn" data-pilot-csv href="#">↓ CSV</a>
+                </div>
+            </div>
+            <div class="pilot-body ov-hidden" data-pilot-body></div>
+        </div>
+
         <div class="inc-list" data-fwinc-list></div>
         <div class="ev-pager" data-fwinc-pager></div>
         <div class="ev-empty" data-fwinc-empty>

@@ -2110,10 +2110,16 @@ def _incident_store(request: Request):
 # Which incidents belong to which page. Each page shows the incidents it can
 # actually act on; only the Overview shows everything.
 INCIDENT_SCOPES = {
-    "sensors": lambda inc: inc.get("scope_kind") == "source" or inc.get("domain") == "source",
+    "sensors": lambda inc: (
+        (inc.get("scope_kind") == "source" or inc.get("domain") == "source")
+        and not str(inc.get("scope_key") or "").startswith("edgeServer:")
+    ),
     "forwarding": lambda inc: inc.get("domain") == "destination",
     "network": lambda inc: inc.get("domain") in ("uplink", "local_network"),
     "gateway": lambda inc: inc.get("domain") == "gateway",
+    # Inbound devices are identified by their scope key, since they share the
+    # source layer with polled sensors.
+    "edge": lambda inc: str(inc.get("scope_key") or "").startswith("edgeServer:"),
 }
 
 
