@@ -211,14 +211,19 @@ def _send_email(channel: dict[str, Any], note: dict[str, Any]) -> None:
         lines += ["", f"Open in the gateway console: {note['dashboard_url']}"]
     message.set_content("\n".join(lines))
 
+    # Encryption is chosen explicitly rather than inferred from the port, so
+    # what the operator selected is what actually happens on the wire.
+    security = str(settings.get("security") or "starttls")
     port = int(settings.get("smtp_port") or 587)
-    if settings.get("use_tls") and port == 465:
+
+    if security == "ssl":
         with smtplib.SMTP_SSL(host, port, timeout=TIMEOUT_S, context=ssl.create_default_context()) as smtp:
             _authenticate(smtp, settings)
             smtp.send_message(message)
         return
+
     with smtplib.SMTP(host, port, timeout=TIMEOUT_S) as smtp:
-        if settings.get("use_tls"):
+        if security == "starttls":
             smtp.starttls(context=ssl.create_default_context())
         _authenticate(smtp, settings)
         smtp.send_message(message)

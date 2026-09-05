@@ -2502,6 +2502,7 @@ def get_notifications_config(request: Request) -> JSONResponse:
         "event_types": notifications.EVENT_TYPES,
         "channel_types": list(notifications.CHANNEL_TYPES),
         "severities": list(notifications.SEVERITIES),
+        "email_security": notifications.EMAIL_SECURITY,
         "deliveries": service.recent_deliveries() if service is not None else [],
     })
 

@@ -794,6 +794,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 email:     { icon: "@",  label: "Email",       help: "The gateway has no mail server of its own, so email is handed to an SMTP server that relays it — your own mail relay, Google Workspace, Microsoft 365 or similar." },
             };
             const ntTypeName = (t) => (NT_TYPES[t] || {}).label || t;
+            const NT_SECURITY_SHORT = { starttls: "STARTTLS", ssl: "SSL/TLS", none: "None (unencrypted)" };
+            const NT_SECURITY_PORT  = { starttls: 587, ssl: 465, none: 25 };
 
             const ntRender = () => {
                 const channels = ntConfig.channels || [];
@@ -830,7 +832,12 @@ document.addEventListener("DOMContentLoaded", () => {
                         <div class="nt-grid">
                             <label class="nt-f2">SMTP host<input class="settings-input" type="text" value="${ntEsc(email.smtp_host)}" data-nt-email="smtp_host" placeholder="smtp.example.com"></label>
                             <label>Port<input class="settings-input" type="number" value="${email.smtp_port || 587}" data-nt-email="smtp_port"></label>
-                            <label class="nt-check"><input type="checkbox" data-nt-email="use_tls"${email.use_tls ? " checked" : ""}><span>Use TLS</span></label>
+                            <label>Encryption
+                                <select class="settings-input" data-nt-email="security" data-nt-security>
+                                    ${Object.keys(ntMeta.email_security || {}).map((k) => `<option value="${k}"${k === (email.security || "starttls") ? " selected" : ""}>${ntEsc(NT_SECURITY_SHORT[k] || k)}</option>`).join("")}
+                                </select>
+                            </label>
+                            <p class="nt-inline-help nt-f4">${ntEsc((ntMeta.email_security || {})[email.security || "starttls"] || "")}</p>
                             <label>Username<input class="settings-input" type="text" value="${ntEsc(email.username)}" data-nt-email="username" autocomplete="off"></label>
                             <label>Password<input class="settings-input" type="password" placeholder="${email.password_set ? "•••••• saved" : ""}" data-nt-email="password" autocomplete="new-password"></label>
                             <label class="nt-f2">From address<input class="settings-input" type="text" value="${ntEsc(email.from_address)}" data-nt-email="from_address" placeholder="gateway@yourcompany.com"></label>
@@ -932,6 +939,19 @@ document.addEventListener("DOMContentLoaded", () => {
                 // Chips reflect their state without waiting for a re-render.
                 ntChannelsEl.querySelectorAll("[data-nt-event]").forEach((cb) => {
                     cb.addEventListener("change", () => cb.closest(".nt-chip")?.classList.toggle("is-on", cb.checked));
+                });
+                ntChannelsEl.querySelectorAll("[data-nt-security]").forEach((sel) => {
+                    sel.addEventListener("change", () => {
+                        const card = sel.closest("[data-nt-channel]");
+                        const portEl = card.querySelector('[data-nt-email="smtp_port"]');
+                        // Only move a port the operator has not customised, so a
+                        // relay on a non-standard port is left as they set it.
+                        const current = Number(portEl?.value);
+                        if (portEl && Object.values(NT_SECURITY_PORT).includes(current)) {
+                            portEl.value = NT_SECURITY_PORT[sel.value] || current;
+                        }
+                        ntCollect(); ntRender();
+                    });
                 });
                 ntChannelsEl.querySelectorAll('[data-nt-field="enabled"]').forEach((cb) => {
                     cb.addEventListener("change", () => cb.closest(".nt-channel")?.classList.toggle("is-off", !cb.checked));

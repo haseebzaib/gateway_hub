@@ -39,6 +39,17 @@ EVENT_TYPES = {
 DEFAULT_EVENTS = list(EVENT_TYPES)
 SEVERITIES = ("info", "warning", "critical")
 
+# How the SMTP connection is encrypted. A single "use TLS" flag was ambiguous:
+# it meant implicit TLS on port 465 and STARTTLS everywhere else, and left the
+# combination of port 465 with encryption off attempting plaintext on a port
+# that expects TLS immediately — which hangs rather than failing clearly.
+EMAIL_SECURITY = {
+    "starttls": "STARTTLS — connect in the clear, then upgrade (usual for port 587)",
+    "ssl": "SSL/TLS — encrypted from the start (usual for port 465)",
+    "none": "None — unencrypted, including your password (only for a trusted local relay)",
+}
+EMAIL_SECURITY_PORTS = {"starttls": 587, "ssl": 465, "none": 25}
+
 
 def default_config() -> dict[str, Any]:
     return {
@@ -102,10 +113,16 @@ def normalize_channel(raw: dict[str, Any]) -> dict[str, Any]:
     }
     if kind == "email":
         email = raw.get("email") if isinstance(raw.get("email"), dict) else {}
+        security = str(email.get("security") or "")
+        if security not in EMAIL_SECURITY:
+            # Migrate the old boolean, reading the port the way delivery did.
+            security = "starttls" if email.get("use_tls", True) else "none"
+            if email.get("use_tls", True) and int(email.get("smtp_port") or 587) == 465:
+                security = "ssl"
         channel["email"] = {
             "smtp_host": str(email.get("smtp_host") or "")[:253],
-            "smtp_port": _clamp(email.get("smtp_port"), 587, 1, 65535),
-            "use_tls": bool(email.get("use_tls", True)),
+            "smtp_port": _clamp(email.get("smtp_port"), EMAIL_SECURITY_PORTS[security], 1, 65535),
+            "security": security,
             "username": str(email.get("username") or "")[:128],
             # Kept as configured; the API never returns it to the browser.
             "password": str(email.get("password") or ""),

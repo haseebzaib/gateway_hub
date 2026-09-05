@@ -11210,3 +11210,10 @@ body.anomaly-modal-open { overflow: hidden; }
     max-width: 74ch;
 }
 .nt-note strong { color: var(--text); }
+
+.nt-inline-help {
+    margin: 0.1rem 0 0;
+    font-size: 0.74rem;
+    line-height: 1.5;
+    color: var(--muted);
+}
