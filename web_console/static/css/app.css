@@ -10589,10 +10589,42 @@ body.anomaly-modal-open { overflow: hidden; }
 .inc-verdict.is-unknown .inc-verdict-domain { color: var(--muted); }
 .inc-verdict-note { font-size: 0.82rem; color: var(--muted); margin-top: 0.3rem; }
 
-/* Timeline */
-.inc-timeline { display: grid; gap: 0.55rem; }
-.inc-tl-row { display: grid; grid-template-columns: 5.5rem 1fr; gap: 0.75rem; font-size: 0.85rem; align-items: baseline; }
-.inc-tl-time { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.78rem; color: var(--accent-cool); }
+/* When it started and ended, stated once at the top in full */
+.inc-when {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 0.5rem;
+    margin-bottom: 1.2rem;
+}
+.inc-when > div {
+    padding: 0.6rem 0.8rem;
+    border-radius: 0.7rem;
+    background: rgba(255,255,255,0.035);
+    border: 1px solid rgba(255,255,255,0.06);
+    display: grid;
+    gap: 0.15rem;
+}
+.inc-when-label { font-size: 0.66rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+.inc-when-value { font-size: 0.86rem; font-weight: 600; }
+
+/* Timeline. Each step carries a plain-English hint, because "started" and
+   "raised" are different moments and the difference is not self-evident. */
+.inc-timeline { display: grid; gap: 0.8rem; }
+.inc-tl-row {
+    display: grid;
+    grid-template-columns: 9.5rem 1fr;
+    gap: 0.8rem;
+    font-size: 0.85rem;
+    align-items: baseline;
+}
+.inc-tl-time { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.76rem; color: var(--accent-cool); }
+.inc-tl-body { display: grid; gap: 0.2rem; }
+.inc-tl-label { font-weight: 600; }
+.inc-tl-hint { font-size: 0.78rem; color: var(--muted); line-height: 1.45; }
+
+@media (max-width: 620px) {
+    .inc-tl-row { grid-template-columns: 1fr; gap: 0.2rem; }
+}
 
 /* Evidence table */
 .inc-evidence { display: grid; gap: 0.4rem; }
@@ -10695,11 +10727,17 @@ body.anomaly-modal-open { overflow: hidden; }
 }
 .inc-goto:hover { text-decoration: underline; }
 
+/* Matches .ov-connect-card and .ov-domain-summary-card exactly — same padding,
+   radius, border and ground — so the three stacked sections of the Overview
+   read as one system rather than three different cards. */
 .ov-incidents-band {
-    padding: 1.15rem 1.4rem 1.3rem;
-    border-radius: 1.35rem;
-    border: 1px solid rgba(255,255,255,0.08);
-    background: var(--surface);
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+    padding: 1.35rem;
+    border-radius: 1.6rem;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(6, 17, 23, 0.62);
     margin-bottom: 1.1rem;
 }
 /* Only tinted while something is actually wrong, so the colour still means

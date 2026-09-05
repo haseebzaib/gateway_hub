@@ -157,7 +157,7 @@ class IncidentTask:
                 timeline = list(existing.get("timeline") or [])
                 timeline.append({
                     "ts_ms": now_ms,
-                    "label": "Closed — no longer configured" if retired else "Closed — stayed healthy after recovery",
+                    "kind": "closed_retired" if retired else "closed_stable",
                 })
                 self.storage.update_incident(existing["id"], {
                     "status": "resolved", "restored_ms": int(restored), "closed_ms": now_ms,
@@ -172,7 +172,7 @@ class IncidentTask:
                 updates: dict[str, Any] = {"restored_ms": int(restored), "continuity_json": merged}
                 if existing.get("status") != "recovering":
                     timeline = list(existing.get("timeline") or [])
-                    timeline.append({"ts_ms": int(restored), "label": "Service restored — watching for stability"})
+                    timeline.append({"ts_ms": int(restored), "kind": "restored"})
                     updates["status"] = "recovering"
                     updates["timeline_json"] = timeline
                 self.storage.update_incident(existing["id"], updates)
@@ -197,8 +197,8 @@ class IncidentTask:
                 "severity": self._severity(domain, continuity),
                 "affected": affected, "evidence": evidence, "continuity": continuity,
                 "timeline": [
-                    {"ts_ms": started, "label": "First failure recorded"},
-                    {"ts_ms": now_ms, "label": "Gateway correlated and raised this incident"},
+                    {"ts_ms": started, "kind": "started"},
+                    {"ts_ms": now_ms, "kind": "detected"},
                 ],
             })
             LOGGER.info(

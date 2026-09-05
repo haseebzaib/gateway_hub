@@ -396,12 +396,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
                 band.classList.toggle("is-alert", open.length > 0);
 
-                const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => (
-                    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-                const dur = (ms) => {
-                    const m = Math.floor((ms || 0) / 60000);
-                    return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
-                };
+                const esc = Incidents.esc;
+                const dur = Incidents.duration;
 
                 if (counts) {
                     counts.innerHTML = `
@@ -417,10 +413,10 @@ document.addEventListener("DOMContentLoaded", () => {
                         <span class="inc-ref">${esc(i.ref)}</span>
                         <span class="ov-incident-main">
                             <span class="ov-incident-title">${esc(i.title)}</span>
-                            ${resolved && i.resolution ? `<span class="ov-incident-note">${esc(i.resolution)}</span>` : ""}
+                            ${resolved ? `<span class="ov-incident-note">Ended ${esc(Incidents.shortStamp(i.ended_ms))}${i.resolution ? ` · ${esc(i.resolution)}` : ""}</span>` : `<span class="ov-incident-note">Started ${esc(Incidents.shortStamp(i.started_ms))}</span>`}
                         </span>
                         <span class="inc-domain-pill ${i.domain !== "unknown" ? "is-known" : "is-unknown"}">${esc(i.domain_label)}</span>
-                        <span class="ov-incident-age">${dur(i.duration_ms)}</span>
+                        <span class="ov-incident-age" title="${esc(Incidents.stamp(i.started_ms))}">${dur(i.duration_ms)}</span>
                         <span class="ov-incident-go">→</span>
                     </a>`;
 
@@ -5882,53 +5878,19 @@ document.addEventListener("DOMContentLoaded", () => {
             const incDrawer   = evPanel.querySelector("[data-inc-drawer]");
             const incDrawerBody = evPanel.querySelector("[data-inc-drawer-body]");
 
-            const incEsc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => (
-                { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
-            ));
-
-            const incDuration = (ms) => {
-                if (!ms || ms < 0) return "—";
-                const s = Math.round(ms / 1000);
-                if (s < 60) return `${s}s`;
-                const m = Math.floor(s / 60);
-                if (m < 60) return `${m}m ${s % 60}s`;
-                const h = Math.floor(m / 60);
-                return h < 24 ? `${h}h ${m % 60}m` : `${Math.floor(h / 24)}d ${h % 24}h`;
-            };
+            // Rendering lives in incidents.js so this page and Data Forwarding
+            // present incidents identically.
+            const incPerPage = 8;
+            let incPage = 0;
+            let incRows = [];
+            const incPager = evPanel.querySelector("[data-inc-pager]");
+            const incDrawerCtl = Incidents.attachDrawer(incDrawer);
 
             const incRenderSummary = (summary) => {
                 if (!incSummary) return;
                 const open = summary?.open_count ?? 0;
                 const total = summary?.window_count ?? 0;
-                incSummary.innerHTML = `
-                    <div class="inc-sum-card${open > 0 ? " is-alert" : ""}">
-                        <div class="inc-sum-value">${open}</div>
-                        <div class="inc-sum-label">Ongoing now</div>
-                    </div>
-                    <div class="inc-sum-card">
-                        <div class="inc-sum-value">${Math.max(0, total - open)}</div>
-                        <div class="inc-sum-label">Resolved in window</div>
-                    </div>
-                    <div class="inc-sum-card">
-                        <div class="inc-sum-value">${total}</div>
-                        <div class="inc-sum-label">Total in window</div>
-                    </div>`;
-            };
-
-            const INC_DOMAIN_LABELS = {
-                source: "Source/Device", gateway: "Gateway", local_network: "Local Network",
-                uplink: "Uplink/Internet", destination: "Destination/Server", unknown: "Unknown",
-            };
-
-            // Where the operator actually acts on each kind of failure. An
-            // incident is diagnosed here but fixed on the owning page, so the
-            // detail always offers a route to it.
-            const INC_DOMAIN_PAGE = {
-                destination:   { href: "/forwarding",   label: "Open Data Forwarding" },
-                uplink:        { href: "/connectivity", label: "Open Connectivity" },
-                local_network: { href: "/connectivity", label: "Open Connectivity" },
-                gateway:       { href: "/monitor",      label: "Open System Monitor" },
-                source:        { href: "/interfaces",   label: "Open Interfaces" },
+                incSummary.innerHTML = Incidents.summaryHtml(open, Math.max(0, total - open), total);
             };
 
             const incLoad = async () => {
@@ -5943,166 +5905,37 @@ document.addEventListener("DOMContentLoaded", () => {
                     if (!r.ok) return;
                     const d = await r.json();
                     incRenderSummary(d.summary);
-                    incRenderList(d.incidents || []);
+                    incRows = d.incidents || [];
+                    incPage = 0;
+                    incRenderList();
                     incLastFetch = Date.now();
                 } catch (e) {
                     console.warn("[Incidents] fetch failed:", e);
                 }
             };
 
-            const incRenderList = (incidents) => {
+            const incRenderList = () => {
                 if (!incList) return;
-                if (!incidents.length) {
+                if (!incRows.length) {
                     incList.innerHTML = "";
+                    if (incPager) incPager.innerHTML = "";
                     incEmpty?.classList.remove("ov-hidden");
                     return;
                 }
                 incEmpty?.classList.add("ov-hidden");
-                incList.innerHTML = incidents.map((inc) => {
-                    const status = inc.status || "open";
-                    const sources = (inc.affected || []).filter((a) => a.kind === "source");
-                    const known = inc.domain && inc.domain !== "unknown";
-                    const when = new Date(inc.started_ms).toLocaleString([], {
-                        month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
-                    });
-                    return `
-                        <div class="inc-row is-${status}" data-inc-ref="${incEsc(inc.ref)}">
-                            <div class="inc-row-top">
-                                <span class="inc-ref">${incEsc(inc.ref)}</span>
-                                <span class="inc-title">${incEsc(inc.title)}</span>
-                                <span class="inc-status-badge is-${status}">${status === "recovering" ? "recovering" : status}</span>
-                                <span class="inc-domain-pill ${known ? "is-known" : "is-unknown"}">${incEsc(inc.domain_label || "Unknown")}</span>
-                            </div>
-                            <div class="inc-row-meta">
-                                <span>Started <strong>${incEsc(when)}</strong></span>
-                                <span>${inc.ongoing ? "Ongoing for" : "Lasted"} <strong>${incDuration(inc.duration_ms)}</strong></span>
-                                ${sources.length ? `<span>Affected <strong>${sources.length}</strong> source${sources.length > 1 ? "s" : ""}</span>` : ""}
-                            </div>
-                        </div>`;
-                }).join("");
-                incList.querySelectorAll("[data-inc-ref]").forEach((row) => {
-                    row.addEventListener("click", () => incOpenDrawer(row.getAttribute("data-inc-ref")));
-                });
-            };
-
-            const incOpenDrawer = async (ref) => {
-                if (!incDrawer || !incDrawerBody) return;
-                incDrawer.classList.remove("ov-hidden");
-                incDrawerBody.innerHTML = `<p style="color:var(--muted)">Loading ${incEsc(ref)}…</p>`;
-                try {
-                    const r = await fetch(`/api/insights/incidents/${encodeURIComponent(ref)}`);
-                    if (!r.ok) { incDrawerBody.innerHTML = "<p>Incident not found.</p>"; return; }
-                    const d = await r.json();
-                    incDrawerBody.innerHTML = incDrawerHtml(d.incident, d.raw_events || []);
-                    incDrawerBody.querySelector("[data-inc-close]")?.addEventListener("click", incCloseDrawer);
-                } catch (e) {
-                    incDrawerBody.innerHTML = "<p>Could not load this incident.</p>";
+                const { pageCount, current, slice } = Incidents.paginate(incRows, incPage, incPerPage);
+                incPage = current;
+                incList.innerHTML = slice.map(Incidents.rowHtml).join("");
+                Incidents.bindRows(incList, incDrawerCtl);
+                if (incPager) {
+                    incPager.innerHTML = Incidents.pagerHtml(current, pageCount, incRows.length);
+                    incPager.querySelector("[data-inc-page-prev]")?.addEventListener("click", () => { incPage -= 1; incRenderList(); });
+                    incPager.querySelector("[data-inc-page-next]")?.addEventListener("click", () => { incPage += 1; incRenderList(); });
                 }
             };
 
-            const incCloseDrawer = () => incDrawer?.classList.add("ov-hidden");
-            evPanel.querySelector("[data-inc-drawer-close]")?.addEventListener("click", incCloseDrawer);
-            document.addEventListener("keydown", (e) => {
-                if (e.key === "Escape" && !incDrawer?.classList.contains("ov-hidden")) incCloseDrawer();
-            });
+            const incOpenDrawer = (ref) => incDrawerCtl?.open(ref);
 
-            const incDrawerHtml = (inc, raw) => {
-                const ts = (ms) => ms ? new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—";
-                const sources = (inc.affected || []).filter((a) => a.kind === "source");
-                const others  = (inc.affected || []).filter((a) => a.kind !== "source");
-                const c = inc.continuity || {};
-                const known = inc.domain && inc.domain !== "unknown";
-
-                const evidenceRows = (inc.evidence || []).map((e) => `
-                    <div class="inc-ev-row is-${e.state}">
-                        <span class="inc-ev-check">${incEsc(e.check)}</span>
-                        <span class="inc-ev-state">${incEsc(e.state)}</span>
-                        <span>${incEsc(e.finding)}</span>
-                    </div>`).join("");
-
-                const timelineRows = (inc.timeline || []).map((t) => `
-                    <div class="inc-tl-row">
-                        <span class="inc-tl-time">${ts(t.ts_ms)}</span>
-                        <span>${incEsc(t.label)}</span>
-                    </div>`).join("");
-
-                const rawRows = raw.length ? raw.slice(0, 40).map((r) => `
-                    <div class="inc-raw-row">
-                        <span class="inc-raw-time">${ts(r.timestamp_ms)}</span>
-                        <span class="inc-raw-msg"><strong>${incEsc(r.device_name || r.device_id || "")}</strong> ${incEsc(r.message || "")}</span>
-                    </div>`).join("") : `<div class="inc-raw-row"><span class="inc-raw-msg">No raw events recorded in this window.</span></div>`;
-
-                return `
-                    <button class="inc-d-close" data-inc-close aria-label="Close">×</button>
-                    <div class="inc-d-head">
-                        <span class="inc-ref">${incEsc(inc.ref)}</span>
-                        <h3 class="inc-d-title">${incEsc(inc.title)}</h3>
-                        <span class="inc-status-badge is-${inc.status}">${incEsc(inc.status)}</span>
-                    </div>
-
-                    <div class="inc-verdict${known ? "" : " is-unknown"}">
-                        <div class="inc-verdict-domain">Likely failure domain: ${incEsc(inc.domain_label || "Unknown")}</div>
-                        <div class="inc-verdict-note">${known
-                            ? `Determined with ${incEsc(inc.domain_conf)} confidence from the checks below.`
-                            : "Not enough evidence to attribute this reliably — the checks below show what could not be verified."}</div>
-                        ${INC_DOMAIN_PAGE[inc.domain]
-                            ? `<a class="inc-goto" href="${INC_DOMAIN_PAGE[inc.domain].href}">${incEsc(INC_DOMAIN_PAGE[inc.domain].label)} →</a>`
-                            : ""}
-                    </div>
-
-                    <div class="inc-d-section">
-                        <h4>Timeline</h4>
-                        <div class="inc-timeline">
-                            ${timelineRows || '<div class="inc-tl-row"><span>—</span></div>'}
-                            <div class="inc-tl-row">
-                                <span class="inc-tl-time">${ts(inc.restored_ms)}</span>
-                                <span>${inc.restored_ms ? "Service restored" : "Not yet restored"}</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="inc-d-section">
-                        <h4>Impact</h4>
-                        <div class="inc-chips">
-                            ${sources.length
-                                ? sources.map((s) => `<span class="inc-chip">${incEsc(s.name)}</span>`).join("")
-                                : '<span class="inc-chip">No sources were delivering at the time</span>'}
-                        </div>
-                        ${others.length ? `<div class="inc-chips" style="margin-top:.45rem">${others.map((o) => `<span class="inc-chip">${incEsc(o.name)}</span>`).join("")}</div>` : ""}
-                    </div>
-
-                    <div class="inc-d-section">
-                        <h4>Data continuity</h4>
-                        <div class="inc-metrics">
-                            <div class="inc-metric">
-                                <div class="inc-metric-value">${(c.buffered_peak ?? c.pending ?? 0).toLocaleString()}</div>
-                                <div class="inc-metric-label">Buffered</div>
-                            </div>
-                            <div class="inc-metric">
-                                <div class="inc-metric-value">${(c.replayed ?? 0).toLocaleString()}</div>
-                                <div class="inc-metric-label">Replayed</div>
-                            </div>
-                            <div class="inc-metric ${(c.unrecovered ?? c.pending ?? 0) > 0 ? "is-loss" : "is-good"}">
-                                <div class="inc-metric-value">${(c.unrecovered ?? c.pending ?? 0).toLocaleString()}</div>
-                                <div class="inc-metric-label">Unrecovered</div>
-                            </div>
-                            <div class="inc-metric ${(c.dropped ?? 0) > 0 ? "is-loss" : "is-good"}">
-                                <div class="inc-metric-value">${(c.dropped ?? 0).toLocaleString()}</div>
-                                <div class="inc-metric-label">Dropped</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="inc-d-section">
-                        <h4>Connectivity evidence</h4>
-                        <div class="inc-evidence">${evidenceRows}</div>
-                    </div>
-
-                    <div class="inc-d-section">
-                        <h4>Raw events (${raw.length})</h4>
-                        <div class="inc-raw">${rawRows}</div>
-                    </div>`;
-            };
 
             // ── Incident filter wiring ─────────────────────────────────────────
             evPanel.querySelector("[data-inc-filter-status]")?.addEventListener("change", (e) => {
@@ -7761,56 +7594,48 @@ document.addEventListener("DOMContentLoaded", () => {
         const fwIncEmpty   = fwShell.querySelector("[data-fwinc-empty]");
         const fwIncSummary = fwShell.querySelector("[data-fwinc-summary]");
 
+        const fwIncPager   = fwShell.querySelector("[data-fwinc-pager]");
+        const fwIncDrawer  = Incidents.attachDrawer(fwShell.querySelector("[data-inc-drawer]"));
+        const FW_INC_PER_PAGE = 8;
+        let fwIncRows = [];
+        let fwIncPage = 0;
+
+        const fwIncRender = () => {
+            if (!fwIncList) return;
+            if (!fwIncRows.length) {
+                fwIncList.innerHTML = "";
+                if (fwIncPager) fwIncPager.innerHTML = "";
+                fwIncEmpty?.classList.remove("ov-hidden");
+                return;
+            }
+            fwIncEmpty?.classList.add("ov-hidden");
+            const { pageCount, current, slice } = Incidents.paginate(fwIncRows, fwIncPage, FW_INC_PER_PAGE);
+            fwIncPage = current;
+            fwIncList.innerHTML = slice.map(Incidents.rowHtml).join("");
+            // Opens in place: a forwarding incident used to navigate to Sensor
+            // Insights, which is not where it belongs.
+            Incidents.bindRows(fwIncList, fwIncDrawer);
+            if (fwIncPager) {
+                fwIncPager.innerHTML = Incidents.pagerHtml(current, pageCount, fwIncRows.length);
+                fwIncPager.querySelector("[data-inc-page-prev]")?.addEventListener("click", () => { fwIncPage -= 1; fwIncRender(); });
+                fwIncPager.querySelector("[data-inc-page-next]")?.addEventListener("click", () => { fwIncPage += 1; fwIncRender(); });
+            }
+        };
+
         const fwIncLoad = async () => {
             if (!fwIncList) return;
-            const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => (
-                { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-            const dur = (ms) => {
-                const m = Math.floor((ms || 0) / 60000);
-                return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
-            };
             try {
                 const r = await fetch("/api/insights/incidents?window=7d&scope=forwarding");
                 if (!r.ok) return;
                 const d = await r.json();
-                const rows = d.incidents || [];
-                const open = rows.filter((i) => i.ongoing).length;
+                fwIncRows = d.incidents || [];
+                const open = fwIncRows.filter((i) => i.ongoing).length;
                 if (fwIncSummary) {
-                    fwIncSummary.innerHTML = `
-                        <div class="inc-sum-card${open ? " is-alert" : ""}">
-                            <div class="inc-sum-value">${open}</div>
-                            <div class="inc-sum-label">Ongoing now</div>
-                        </div>
-                        <div class="inc-sum-card">
-                            <div class="inc-sum-value">${Math.max(0, rows.length - open)}</div>
-                            <div class="inc-sum-label">Resolved · 7 d</div>
-                        </div>
-                        <div class="inc-sum-card">
-                            <div class="inc-sum-value">${rows.length}</div>
-                            <div class="inc-sum-label">Total · 7 d</div>
-                        </div>`;
+                    fwIncSummary.innerHTML = Incidents.summaryHtml(
+                        open, Math.max(0, fwIncRows.length - open), fwIncRows.length, "Resolved · 7 d");
                 }
-                if (!rows.length) {
-                    fwIncList.innerHTML = "";
-                    fwIncEmpty?.classList.remove("ov-hidden");
-                    return;
-                }
-                fwIncEmpty?.classList.add("ov-hidden");
-                fwIncList.innerHTML = rows.map((i) => `
-                    <a class="inc-row is-${i.status}" style="text-decoration:none;color:inherit"
-                       href="/insights?incident=${encodeURIComponent(i.ref)}">
-                        <div class="inc-row-top">
-                            <span class="inc-ref">${esc(i.ref)}</span>
-                            <span class="inc-title">${esc(i.title)}</span>
-                            <span class="inc-status-badge is-${i.status}">${esc(i.status)}</span>
-                            <span class="inc-domain-pill is-known">${esc(i.domain_label)}</span>
-                        </div>
-                        <div class="inc-row-meta">
-                            <span>Started <strong>${new Date(i.started_ms).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</strong></span>
-                            <span>${i.ongoing ? "Ongoing for" : "Lasted"} <strong>${dur(i.duration_ms)}</strong></span>
-                            ${i.resolution ? `<span>${esc(i.resolution)}</span>` : ""}
-                        </div>
-                    </a>`).join("");
+                fwIncPage = 0;
+                fwIncRender();
             } catch (e) {
                 console.warn("[Forwarding] incidents fetch failed:", e);
             }

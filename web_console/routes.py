@@ -67,6 +67,7 @@ def _file_hash(path: Path) -> str:
 
 
 templates.env.globals["js_hash"] = _file_hash(PACKAGE_DIR / "static" / "js" / "app.js")
+templates.env.globals["incidents_hash"] = _file_hash(PACKAGE_DIR / "static" / "js" / "incidents.js")
 templates.env.globals["css_hash"] = _file_hash(PACKAGE_DIR / "static" / "css" / "app.css")
 
 
@@ -2116,13 +2117,81 @@ INCIDENT_SCOPES = {
 }
 
 
+# Timeline wording lives here, not in the database, so improving it also fixes
+# incidents that were recorded earlier. Each entry carries a plain-English hint
+# because "started" and "detected" are two different moments and the difference
+# is not obvious.
+INCIDENT_TIMELINE_TEXT = {
+    "started": (
+        "Problem began",
+        "The earliest failure the gateway has on record for this incident.",
+    ),
+    "detected": (
+        "Gateway raised the incident",
+        "When the gateway connected the separate signals together and opened this "
+        "incident. Normally seconds after it began; longer if the gateway was "
+        "restarting and replayed earlier history.",
+    ),
+    "restored": (
+        "Service came back",
+        "Working again. The incident stays open a few more minutes to be sure it holds.",
+    ),
+    "closed_stable": (
+        "Incident closed",
+        "Stayed healthy after recovering, so the incident was closed.",
+    ),
+    "closed_retired": (
+        "Incident closed",
+        "The failing item was removed from the configuration, so there is nothing "
+        "left to recover.",
+    ),
+}
+
+# Which evidence rows belong on which incident. Showing every layer meant a
+# forwarding incident listed "Source polling: failed", which reads as a
+# contradiction next to a Destination verdict. Each incident shows only the
+# chain that actually informed its diagnosis.
+INCIDENT_EVIDENCE_LAYERS = {
+    "source": ("source", "gateway", "local_network"),
+    "path": ("gateway", "local_network", "uplink", "destination"),
+}
+
+
+# Incidents recorded before timelines carried a kind stored their label text
+# instead. Mapping the old wording back onto a kind means the clearer labels and
+# hints apply to those too, rather than only to incidents opened from now on.
+INCIDENT_TIMELINE_LEGACY = {
+    "Problem started": "started",
+    "First failure recorded": "started",
+    "Detected by gateway": "detected",
+    "Gateway correlated and raised this incident": "detected",
+    "Service restored — confirming stability": "restored",
+    "Service restored — watching for stability": "restored",
+    "Service restored": "restored",
+    "Closed after stable recovery": "closed_stable",
+    "Closed — stayed healthy after recovery": "closed_stable",
+    "Closed — no longer configured": "closed_retired",
+}
+
+
+def _incident_timeline(incident: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for entry in incident.get("timeline") or []:
+        stored_label = str(entry.get("label") or "")
+        kind = str(entry.get("kind") or "") or INCIDENT_TIMELINE_LEGACY.get(stored_label, "")
+        label, hint = INCIDENT_TIMELINE_TEXT.get(kind, (stored_label, ""))
+        rows.append({"ts_ms": entry.get("ts_ms"), "kind": kind, "label": label, "hint": hint})
+    return rows
+
+
 def _incident_resolution(incident: dict[str, Any], duration_ms: int) -> str:
     """One line saying how an incident ended, for the resolved list."""
     if incident.get("status") != "resolved":
         return ""
+    kinds = [str(entry.get("kind") or "") for entry in incident.get("timeline") or []]
     labels = [str(entry.get("label") or "") for entry in incident.get("timeline") or []]
-    closing = labels[-1] if labels else ""
-    if "no longer configured" in closing:
+    closing = kinds[-1] if kinds and kinds[-1] else (labels[-1] if labels else "")
+    if "retired" in closing or "no longer configured" in closing:
         return "Ended because the failing item was removed from configuration"
     minutes = max(1, round(duration_ms / 60000))
     recovered = int((incident.get("continuity") or {}).get("replayed") or 0)
@@ -2138,12 +2207,16 @@ def _incident_view(incident: dict[str, Any]) -> dict[str, Any]:
     closed = incident.get("closed_ms")
     ended = int(restored or closed or 0)
     duration_ms = max(0, (ended or _now_ms()) - started)
+    keep = INCIDENT_EVIDENCE_LAYERS.get(str(incident.get("scope_kind") or "path"), ())
     return {
         **incident,
         "domain_label": INCIDENT_DOMAIN_LABELS.get(incident.get("domain", ""), "Unknown"),
         "duration_ms": duration_ms,
         "ongoing": incident.get("status") != "resolved",
         "resolution": _incident_resolution(incident, duration_ms),
+        "timeline": _incident_timeline(incident),
+        "evidence": [row for row in incident.get("evidence") or [] if row.get("layer") in keep],
+        "ended_ms": ended or None,
     }
 
 
@@ -2210,6 +2283,15 @@ def insights_incident_detail(request: Request, ref: str) -> JSONResponse:
             device_lookup={(d["source"], d["device_id"]): d for d in configured},
         )
         raw = [r for r in raw if started - 60_000 <= int(r.get("timestamp_ms") or 0) <= ended + 60_000]
+        # Only this incident's own sources. Without it a single-device incident
+        # listed every device's events from the same window, which read as though
+        # the others were involved.
+        affected_ids = {
+            str(a.get("id") or "").split(":", 1)[-1]
+            for a in incident.get("affected") or [] if a.get("kind") == "source"
+        }
+        if affected_ids:
+            raw = [r for r in raw if str(r.get("device_id") or "") in affected_ids]
     return JSONResponse({"ok": True, "incident": _incident_view(incident), "raw_events": raw})
 
 

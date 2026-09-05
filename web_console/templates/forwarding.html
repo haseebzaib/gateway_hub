@@ -438,12 +438,19 @@ Content-Type: application/json
     <div data-fw-panel="incidents" hidden>
         <div class="inc-summary" data-fwinc-summary></div>
         <div class="inc-list" data-fwinc-list></div>
+        <div class="ev-pager" data-fwinc-pager></div>
         <div class="ev-empty" data-fwinc-empty>
             <svg width="40" height="40" viewBox="0 0 40 40" fill="none" style="opacity:.3">
                 <circle cx="20" cy="20" r="18" stroke="currentColor" stroke-width="1.5"/>
                 <path d="M13 20l5 5 9-9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
             </svg>
             <p>No delivery incidents in the last 7 days.</p>
+        </div>
+
+        {# Detail opens here rather than sending the operator to another page. #}
+        <div class="inc-drawer ov-hidden" data-inc-drawer>
+            <div class="inc-drawer-scrim" data-inc-drawer-close></div>
+            <aside class="inc-drawer-panel" data-inc-drawer-body></aside>
         </div>
     </div>
 

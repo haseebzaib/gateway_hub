@@ -9,6 +9,8 @@
 </head>
 <body>
     {% block body %}{% endblock %}
+    {# Shared incident rendering, loaded before app.js which consumes it. #}
+    <script src="{{ url_for('static', path='js/incidents.js') }}?v={{ incidents_hash }}" defer></script>
     <script src="{{ url_for('static', path='js/app.js') }}?v={{ js_hash }}" defer></script>
 </body>
 </html>
