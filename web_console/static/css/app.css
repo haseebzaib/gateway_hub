@@ -10738,7 +10738,9 @@ body.anomaly-modal-open { overflow: hidden; }
     border-radius: 1.6rem;
     border: 1px solid rgba(255, 255, 255, 0.08);
     background: rgba(6, 17, 23, 0.62);
-    margin-bottom: 1.1rem;
+    /* This page separates sections with margin-top, so a margin-bottom here
+       left no gap at all above the band and it butted into the card above. */
+    margin-top: 1rem;
 }
 /* Only tinted while something is actually wrong, so the colour still means
    something when it appears. */
