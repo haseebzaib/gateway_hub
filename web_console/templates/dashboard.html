@@ -46,6 +46,21 @@
             </div>
         </div>
 
+        {# ── Active incidents ─────────────────────────────────────────────────
+           The single "is anything actually wrong" answer, correlated across every
+           subsystem. Hidden entirely when nothing is open, so a healthy gateway
+           stays quiet. #}
+        <section class="ov-incidents-band" data-ov-incidents>
+            <div class="ov-inc-head">
+                <p class="ov-section-eyebrow">Incidents</p>
+                <div class="ov-inc-counts" data-ov-inc-counts></div>
+                <a href="/insights?view=incidents" class="ov-dsc-open">View all →</a>
+            </div>
+            {# Capped so a bad week cannot push the rest of the page off screen;
+               anything beyond the cap is reachable through "View all". #}
+            <div class="ov-inc-groups" data-ov-incidents-list></div>
+        </section>
+
         {# Right: Connectivity summary (clickable → /connectivity) #}
         <a href="/connectivity" class="ov-connect-card">
             <div class="ov-connect-head">
@@ -87,21 +102,6 @@
                 <span class="ov-footer-val" data-ov-failover-summary>No data yet</span>
             </div>
         </a>
-    </section>
-
-    {# ── Active incidents ─────────────────────────────────────────────────
-       The single "is anything actually wrong" answer, correlated across every
-       subsystem. Hidden entirely when nothing is open, so a healthy gateway
-       stays quiet. #}
-    <section class="ov-incidents-band" data-ov-incidents>
-        <div class="ov-inc-head">
-            <p class="ov-section-eyebrow">Incidents</p>
-            <div class="ov-inc-counts" data-ov-inc-counts></div>
-            <a href="/insights?view=incidents" class="ov-dsc-open">View all →</a>
-        </div>
-        {# Capped so a bad week cannot push the rest of the page off screen;
-           anything beyond the cap is reachable through "View all". #}
-        <div class="ov-inc-groups" data-ov-incidents-list></div>
     </section>
 
     {# ── Domain Summary Grid ──────────────────────────────────────────── #}

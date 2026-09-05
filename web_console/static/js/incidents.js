@@ -145,6 +145,13 @@ const Incidents = (() => {
                 <span class="inc-status-badge is-${inc.status}">${esc(inc.status)}</span>
             </div>
 
+            <div class="inc-export">
+                <span class="inc-export-label">Export incident</span>
+                <a class="inc-export-btn is-primary" href="/api/insights/incidents/${encodeURIComponent(inc.ref)}/report" target="_blank" rel="noopener">Report (print / PDF)</a>
+                <a class="inc-export-btn" href="/api/insights/incidents/${encodeURIComponent(inc.ref)}/report.csv">CSV</a>
+                <a class="inc-export-btn" href="/api/insights/incidents/${encodeURIComponent(inc.ref)}/report.json" target="_blank" rel="noopener">JSON</a>
+            </div>
+
             <div class="inc-when">
                 <div>
                     <span class="inc-when-label">Started</span>

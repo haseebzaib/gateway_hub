@@ -10738,9 +10738,9 @@ body.anomaly-modal-open { overflow: hidden; }
     border-radius: 1.6rem;
     border: 1px solid rgba(255, 255, 255, 0.08);
     background: rgba(6, 17, 23, 0.62);
-    /* This page separates sections with margin-top, so a margin-bottom here
-       left no gap at all above the band and it butted into the card above. */
-    margin-top: 1rem;
+    /* No margin: the band sits inside .overview-grid, whose own gap spaces it
+       from the identity bar above and the connectivity card below. Setting a
+       margin here is what previously made the spacing uneven. */
 }
 /* Only tinted while something is actually wrong, so the colour still means
    something when it appears. */
@@ -10855,3 +10855,38 @@ body.anomaly-modal-open { overflow: hidden; }
 .inc-completeness.is-verified .inc-completeness-tag     { color: var(--success); }
 .inc-completeness.is-unverifiable .inc-completeness-tag { color: var(--accent-strong); }
 .inc-completeness-note { color: var(--muted); }
+
+/* ── Incident export actions ──────────────────────────────────────────── */
+.inc-export {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin-bottom: 1.2rem;
+    padding-bottom: 1.1rem;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+}
+.inc-export-label {
+    font-size: 0.66rem;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-right: 0.2rem;
+}
+.inc-export-btn {
+    padding: 0.34rem 0.8rem;
+    border-radius: 0.5rem;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.04);
+    color: var(--text);
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-decoration: none;
+    transition: border-color 160ms, background 160ms;
+}
+.inc-export-btn:hover { border-color: rgba(57,208,200,0.4); background: rgba(57,208,200,0.08); }
+.inc-export-btn.is-primary {
+    border-color: rgba(57,208,200,0.35);
+    background: rgba(57,208,200,0.12);
+    color: var(--accent-cool);
+}

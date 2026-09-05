@@ -29,7 +29,7 @@ from gateway_forwarding import (
     save_config as persist_forwarding_config,
     topics_for as forwarding_topics_for,
 )
-from gateway_incidents import DOMAIN_LABELS as INCIDENT_DOMAIN_LABELS, kpi as incident_kpi
+from gateway_incidents import DOMAIN_LABELS as INCIDENT_DOMAIN_LABELS, kpi as incident_kpi, report as incident_report
 from gateway_ipc import build_config_message, encode_message, headline_for_stored
 
 from . import insights_data
@@ -2312,6 +2312,122 @@ def insights_incidents(request: Request) -> JSONResponse:
         "by_domain": {},
     }
     return JSONResponse({"ok": True, "incidents": views, "summary": summary})
+
+
+def _incident_report(request: Request, ref: str) -> dict[str, Any] | None:
+    """Build a report from exactly the values the dashboard shows."""
+    store = _incident_store(request)
+    stored = store.by_ref(ref) if store is not None else None
+    if stored is None:
+        return None
+    view = _incident_view(stored)
+    raw: list[dict[str, Any]] = []
+    storage = _interface_data_storage(request)
+    if storage is not None:
+        started = int(view.get("started_ms") or 0)
+        ended = int(view.get("ended_ms") or _now_ms())
+        configured = _insights_configured(request)
+        raw = insights_data.query_events(
+            storage,
+            window_ms=max(60_000, ended - started + 120_000),
+            severity="", source="", device_id="",
+            device_lookup={(d["source"], d["device_id"]): d for d in configured},
+        )
+        raw = [r for r in raw if started - 60_000 <= int(r.get("timestamp_ms") or 0) <= ended + 60_000]
+        affected_ids = {
+            str(a.get("id") or "").split(":", 1)[-1]
+            for a in view.get("affected") or [] if a.get("kind") == "source"
+        }
+        if affected_ids:
+            raw = [r for r in raw if str(r.get("device_id") or "") in affected_ids]
+
+    identifiers = request.query_params.get("identifiers")
+    override = None if identifiers is None else identifiers not in ("0", "false", "no")
+    return incident_report.build(view, raw, include_identifiers=override)
+
+
+@router.get("/api/insights/incidents/{ref}/report.json")
+def incident_report_json(request: Request, ref: str) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    report = _incident_report(request, ref)
+    if report is None:
+        return JSONResponse({"ok": False, "message": "Incident not found."}, status_code=status.HTTP_404_NOT_FOUND)
+    return JSONResponse({"ok": True, "report": report})
+
+
+@router.get("/api/insights/incidents/{ref}/report.csv")
+def incident_report_csv(request: Request, ref: str) -> Response:
+    """Flat key/value export for technical use and spreadsheet analysis."""
+    if not _is_authenticated(request):
+        return PlainTextResponse("Authentication required.", status_code=status.HTTP_401_UNAUTHORIZED)
+    report = _incident_report(request, ref)
+    if report is None:
+        return PlainTextResponse("Incident not found.", status_code=status.HTTP_404_NOT_FOUND)
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["section", "field", "value"])
+    for field in ("reference", "title", "status", "started_at", "detected_at", "restored_at", "duration"):
+        writer.writerow(["incident", field, report.get(field) or ""])
+    writer.writerow(["incident", "affected_sources", ", ".join(report["affected"]["sources"])])
+    writer.writerow(["incident", "affected_destinations", ", ".join(report["affected"]["destinations"])])
+    writer.writerow(["summary", "plain_language", report.get("summary") or ""])
+    for key, value in (report.get("continuity") or {}).items():
+        writer.writerow(["continuity", key, "" if value is None else value])
+    for key, value in (report.get("connectivity") or {}).items():
+        writer.writerow(["connectivity", key, "" if value is None else value])
+    diagnosis = report.get("diagnosis") or {}
+    writer.writerow(["diagnosis", "likely_failure_domain_INFERRED", diagnosis.get("likely_failure_domain") or ""])
+    writer.writerow(["diagnosis", "confidence", diagnosis.get("confidence") or ""])
+    writer.writerow(["diagnosis", "basis", diagnosis.get("basis") or ""])
+    for row in diagnosis.get("evidence") or []:
+        writer.writerow(["evidence", f"{row.get('check')} ({row.get('result')})", row.get("finding") or ""])
+    statement = report.get("measurement_statement") or {}
+    for item in statement.get("measured") or []:
+        writer.writerow(["measured_fact", "", item])
+    for item in statement.get("inferred") or []:
+        writer.writerow(["inferred_conclusion", "", item])
+    writer.writerow(["completeness", "", statement.get("completeness") or ""])
+    for row in report.get("related_events") or []:
+        writer.writerow(["related_event", f"{row.get('at')} {row.get('device')}", row.get("detail") or ""])
+
+    return PlainTextResponse(
+        buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{ref}-incident-report.csv"'},
+    )
+
+
+@router.get("/api/insights/incidents/{ref}/report", response_class=HTMLResponse)
+def incident_report_html(request: Request, ref: str) -> HTMLResponse:
+    """Printable customer-facing report. Browser print produces the PDF."""
+    if not _is_authenticated(request):
+        return HTMLResponse("Authentication required.", status_code=status.HTTP_401_UNAUTHORIZED)
+    report = _incident_report(request, ref)
+    if report is None:
+        return HTMLResponse("Incident not found.", status_code=status.HTTP_404_NOT_FOUND)
+    return templates.TemplateResponse(request, "incident_report.html", {"report": report})
+
+
+@router.get("/api/insights/report-branding")
+def get_report_branding(request: Request) -> JSONResponse:
+    if auth := _json_auth_required(request):
+        return auth
+    return JSONResponse({"ok": True, "branding": incident_report.load_branding()})
+
+
+@router.post("/api/insights/report-branding")
+async def set_report_branding(request: Request) -> JSONResponse:
+    """Customer identifiers on reports are opt-in and edited here."""
+    if auth := _json_auth_required(request):
+        return auth
+    payload = await request.json()
+    try:
+        branding = await asyncio.to_thread(incident_report.save_branding, payload)
+    except OSError as exc:
+        return JSONResponse({"ok": False, "message": f"Could not save: {exc}"}, status_code=500)
+    return JSONResponse({"ok": True, "branding": branding})
 
 
 @router.get("/api/insights/pilot-summary")

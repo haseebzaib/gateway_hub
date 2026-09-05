@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ report.reference }} — Incident Report</title>
+    <style>
+        /* Printed on white for customers, so this deliberately does not inherit
+           the console's dark theme. Browser "Print to PDF" is the PDF path. */
+        :root { color-scheme: light; }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            padding: 2.5rem 2rem 4rem;
+            background: #f4f5f7;
+            color: #16202a;
+            font: 15px/1.6 "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif;
+        }
+        .sheet {
+            max-width: 860px;
+            margin: 0 auto;
+            padding: 3rem 3.2rem;
+            background: #fff;
+            border-radius: 6px;
+            box-shadow: 0 2px 18px rgba(0,0,0,.09);
+        }
+        .toolbar { max-width: 860px; margin: 0 auto 1rem; display: flex; gap: .6rem; }
+        .toolbar button, .toolbar a {
+            padding: .5rem 1rem; border-radius: 6px; border: 1px solid #c9d2da;
+            background: #fff; color: #16202a; font: inherit; font-size: .86rem;
+            font-weight: 600; cursor: pointer; text-decoration: none;
+        }
+        .toolbar button:hover, .toolbar a:hover { border-color: #7c8b99; }
+
+        header.rep { border-bottom: 2px solid #16202a; padding-bottom: 1.1rem; margin-bottom: 1.6rem; }
+        .eyebrow { font-size: .7rem; letter-spacing: .16em; text-transform: uppercase; color: #6b7a88; margin: 0; }
+        h1 { font-size: 1.5rem; margin: .35rem 0 .5rem; }
+        .ref { font-family: ui-monospace, Menlo, monospace; font-weight: 700; }
+        .ident { font-size: .88rem; color: #4a5a68; margin: .2rem 0 0; }
+
+        .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .8rem; margin-bottom: 1.8rem; }
+        .fact { border: 1px solid #e0e5ea; border-radius: 5px; padding: .6rem .75rem; }
+        .fact dt { font-size: .66rem; letter-spacing: .07em; text-transform: uppercase; color: #6b7a88; margin: 0; }
+        .fact dd { margin: .2rem 0 0; font-weight: 600; font-size: .92rem; }
+
+        h2 { font-size: .78rem; letter-spacing: .12em; text-transform: uppercase; color: #6b7a88;
+             margin: 2rem 0 .7rem; padding-bottom: .35rem; border-bottom: 1px solid #e0e5ea; }
+        p.summary { font-size: 1.02rem; line-height: 1.75; margin: 0; }
+
+        table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+        th, td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid #eceff2; vertical-align: top; }
+        th { font-size: .68rem; letter-spacing: .06em; text-transform: uppercase; color: #6b7a88; font-weight: 600; }
+        td.when { white-space: nowrap; font-family: ui-monospace, Menlo, monospace; font-size: .8rem; color: #4a5a68; }
+        .hint { color: #6b7a88; font-size: .84rem; }
+
+        .pill { display: inline-block; padding: .1rem .55rem; border-radius: 99px; font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+        .pill.ok { background: #e4f6ec; color: #1c7a45; }
+        .pill.failed { background: #fdeaea; color: #b3261e; }
+        .pill.unknown { background: #eef1f4; color: #5c6b79; }
+        .pill.open { background: #fdeaea; color: #b3261e; }
+        .pill.recovering { background: #fdf2e2; color: #96590d; }
+        .pill.resolved { background: #e4f6ec; color: #1c7a45; }
+
+        /* The distinction the whole report turns on. */
+        .split { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+        .split section { border: 1px solid #e0e5ea; border-radius: 5px; padding: .9rem 1rem; }
+        .split h3 { margin: 0 0 .5rem; font-size: .74rem; letter-spacing: .08em; text-transform: uppercase; }
+        .split .measured h3 { color: #1c7a45; }
+        .split .inferred h3 { color: #96590d; }
+        .split ul { margin: 0; padding-left: 1.1rem; font-size: .88rem; }
+        .split li { margin-bottom: .35rem; }
+        .caveat { margin-top: 1rem; padding: .8rem 1rem; border-radius: 5px; background: #fdf6e8; border: 1px solid #f0dcb4; font-size: .88rem; }
+
+        footer.rep { margin-top: 2.5rem; padding-top: 1rem; border-top: 1px solid #e0e5ea; font-size: .78rem; color: #6b7a88; }
+
+        @media print {
+            body { background: #fff; padding: 0; }
+            .sheet { box-shadow: none; border-radius: 0; padding: 0; max-width: none; }
+            .toolbar { display: none; }
+            h2 { break-after: avoid; }
+            tr, .split section { break-inside: avoid; }
+        }
+        @media (max-width: 680px) { .split { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+    <div class="toolbar">
+        <button onclick="window.print()">Print / Save as PDF</button>
+        <a href="/api/insights/incidents/{{ report.reference }}/report.json">Download JSON</a>
+        <a href="/api/insights/incidents/{{ report.reference }}/report.csv">Download CSV</a>
+    </div>
+
+    <article class="sheet">
+        <header class="rep">
+            <p class="eyebrow">Incident Report</p>
+            <h1><span class="ref">{{ report.reference }}</span> — {{ report.title }}</h1>
+            {% if report.identifiers %}
+            <p class="ident">
+                {{ report.identifiers.company }}{% if report.identifiers.company and report.identifiers.site %} · {% endif %}{{ report.identifiers.site }}
+            </p>
+            {% endif %}
+            <p class="ident">
+                Status <span class="pill {{ report.status }}">{{ report.status }}</span>
+                &nbsp;·&nbsp; Report generated {{ report.generated_at }}
+            </p>
+        </header>
+
+        <dl class="facts">
+            <div class="fact"><dt>Started</dt><dd>{{ report.started_at or "—" }}</dd></div>
+            <div class="fact"><dt>Detected</dt><dd>{{ report.detected_at or "—" }}</dd></div>
+            <div class="fact"><dt>Restored</dt><dd>{{ report.restored_at or "Not yet restored" }}</dd></div>
+            <div class="fact"><dt>Duration</dt><dd>{{ report.duration or "—" }}</dd></div>
+        </dl>
+
+        <h2>What happened</h2>
+        <p class="summary">{{ report.summary }}</p>
+
+        <h2>Affected</h2>
+        <table>
+            <tr><th>Sources</th><td>{{ report.affected.sources | join(", ") or "None recorded as delivering at the time" }}</td></tr>
+            <tr><th>Destinations</th><td>{{ report.affected.destinations | join(", ") or "—" }}</td></tr>
+        </table>
+
+        <h2>Timeline</h2>
+        <table>
+            <thead><tr><th>When</th><th>Event</th></tr></thead>
+            <tbody>
+                {% for step in report.timeline %}
+                <tr>
+                    <td class="when">{{ step.at or "—" }}</td>
+                    <td>{{ step.event }}{% if step.detail %}<div class="hint">{{ step.detail }}</div>{% endif %}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <h2>Data continuity</h2>
+        <table>
+            <tr><th>Interruption duration</th><td>{{ report.continuity.blind_time or "—" }}</td></tr>
+            <tr><th>Detection latency</th><td>{{ report.continuity.detection_latency or "—" }}</td></tr>
+            <tr><th>Records reaching gateway</th><td>{{ report.continuity.records_reaching_gateway if report.continuity.records_reaching_gateway is not none else "Not measured" }}</td></tr>
+            <tr><th>Buffered locally</th><td>{{ report.continuity.buffered if report.continuity.buffered is not none else "Not measured" }}</td></tr>
+            <tr><th>Replayed after recovery</th><td>{{ report.continuity.replayed if report.continuity.replayed is not none else "Not measured" }}</td></tr>
+            <tr><th>Still outstanding</th><td>{{ report.continuity.outstanding if report.continuity.outstanding is not none else "Not measured" }}</td></tr>
+            <tr>
+                <th>Recovery</th>
+                <td>
+                    {% if report.continuity.recovery_percent is not none %}{{ report.continuity.recovery_percent }}%{% else %}Not applicable{% endif %}
+                    <div class="hint">Measured as {{ report.continuity.recovery_basis }}.</div>
+                </td>
+            </tr>
+        </table>
+
+        <h2>Connectivity during the incident</h2>
+        <table>
+            <tr><th>Internet uplink</th><td>{{ report.connectivity.uplink or "Not evaluated" }}</td></tr>
+            <tr><th>Local network</th><td>{{ report.connectivity.local_network or "Not evaluated" }}</td></tr>
+            <tr><th>Gateway health</th><td>{{ report.connectivity.gateway or "Not evaluated" }}</td></tr>
+            <tr><th>Uplink switches</th><td>{{ report.connectivity.uplink_switches if report.connectivity.uplink_switches is not none else "Not measured" }}</td></tr>
+            <tr><th>Forwarding retries</th><td>{{ report.connectivity.forwarding_retries if report.connectivity.forwarding_retries is not none else "Not measured" }}</td></tr>
+        </table>
+
+        <h2>Likely cause and supporting evidence</h2>
+        <p class="summary" style="font-size:.95rem">
+            <strong>{{ report.diagnosis.likely_failure_domain }}</strong>
+            ({{ report.diagnosis.confidence }} confidence) — {{ report.diagnosis.basis }}.
+        </p>
+        <table style="margin-top:.8rem">
+            <thead><tr><th>Check</th><th>Result</th><th>Finding</th></tr></thead>
+            <tbody>
+                {% for row in report.diagnosis.evidence %}
+                <tr>
+                    <td>{{ row.check }}</td>
+                    <td><span class="pill {{ row.result }}">{{ row.result }}</span></td>
+                    <td>{{ row.finding }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <h2>Measured facts and inferred cause</h2>
+        <div class="split">
+            <section class="measured">
+                <h3>Measured directly</h3>
+                <ul>{% for item in report.measurement_statement.measured %}<li>{{ item }}</li>{% endfor %}</ul>
+            </section>
+            <section class="inferred">
+                <h3>Inferred from evidence</h3>
+                <ul>{% for item in report.measurement_statement.inferred %}<li>{{ item }}</li>{% endfor %}</ul>
+            </section>
+        </div>
+        <p class="caveat">{{ report.measurement_statement.completeness }}</p>
+
+        {% if report.related_events %}
+        <h2>Appendix — related device events</h2>
+        <table>
+            <thead><tr><th>When</th><th>Device</th><th>Detail</th></tr></thead>
+            <tbody>
+                {% for row in report.related_events %}
+                <tr><td class="when">{{ row.at or "—" }}</td><td>{{ row.device }}</td><td>{{ row.detail }}</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% endif %}
+
+        <footer class="rep">
+            Produced automatically by MetaCrust Edge Gateway from its own recorded measurements.
+            Times are UTC. Reference {{ report.reference }}.
+        </footer>
+    </article>
+</body>
+</html>
