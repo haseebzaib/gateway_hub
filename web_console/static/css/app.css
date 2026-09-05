@@ -10927,3 +10927,40 @@ body.anomaly-modal-open { overflow: hidden; }
     border: 1px solid rgba(255,255,255,0.08);
     background: var(--surface);
 }
+
+/* ── Connectivity: instability episodes ───────────────────────────────── */
+.net-episodes { display: grid; gap: 0.5rem; margin-bottom: 1rem; }
+.net-episodes-head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    margin: 0 0 0.15rem;
+    font-size: 0.7rem;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--accent);
+}
+.net-episodes-head span { letter-spacing: 0; text-transform: none; color: var(--muted); font-size: 0.74rem; }
+
+.net-episode {
+    padding: 0.75rem 0.95rem;
+    border-radius: 0.75rem;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-left: 2px solid rgba(57,208,200,0.45);
+    background: rgba(255,255,255,0.03);
+}
+.net-episode.is-warning { border-left-color: rgba(240,166,75,0.6); background: rgba(240,166,75,0.05); }
+
+.net-episode-top { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; }
+.net-episode-title { font-weight: 600; font-size: 0.9rem; }
+.net-episode-when { font-family: ui-monospace, Menlo, monospace; font-size: 0.76rem; color: var(--muted); }
+.net-episode-facts {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-top: 0.35rem;
+    font-size: 0.8rem;
+    color: var(--muted);
+}
+.net-episode-facts strong { color: var(--text); }
+.net-episode-note { margin: 0.4rem 0 0; font-size: 0.78rem; color: var(--success); }

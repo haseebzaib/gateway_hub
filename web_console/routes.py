@@ -220,6 +220,46 @@ def _disk_usage() -> dict[str, object]:
     }
 
 
+# Failover hysteresis. The uplink monitor honours exactly these three fields;
+# it has no dwell/cooldown setting, so none is offered here rather than showing
+# a control that would silently do nothing.
+#
+# Values are starting points for pilot tuning, not tuned constants: three
+# consecutive failures before declaring an uplink bad, three consecutive
+# successes before trusting it again, and fifteen seconds of stability before
+# failing back to a preferred uplink.
+UPLINK_HYSTERESIS_DEFAULTS = {
+    "fail_count_threshold": 3,
+    "recover_count_threshold": 3,
+    "stable_seconds_before_switch": 15,
+}
+
+# The combination that ships with no hysteresis at all. Seeing exactly this is
+# the old default rather than a deliberate choice, so it is migrated; any other
+# combination is left alone because someone may have tuned it on purpose.
+_LEGACY_UPLINK_POLICY = {
+    "fail_count_threshold": 1,
+    "recover_count_threshold": 1,
+    "stable_seconds_before_switch": 0,
+}
+
+
+def apply_uplink_hysteresis_defaults(settings: dict[str, Any]) -> bool:
+    """Raise a no-hysteresis uplink policy to the safer defaults.
+
+    Returns whether anything changed. A policy of 1 fail / 1 recover / 0 stable
+    seconds switches uplink on a single failed probe, which turns ordinary
+    packet loss into a failover; this gateway recorded 3,495 switches under it.
+    """
+    uplink = ((settings.get("network") or {}).get("uplink"))
+    if not isinstance(uplink, dict):
+        return False
+    if any(int(uplink.get(key, -1)) != value for key, value in _LEGACY_UPLINK_POLICY.items()):
+        return False
+    uplink.update(UPLINK_HYSTERESIS_DEFAULTS)
+    return True
+
+
 def _network_settings() -> dict[str, Any]:
     return {
         "version": 2,
@@ -285,10 +325,14 @@ def _network_settings() -> dict[str, Any]:
             "uplink": {
                 "uplink_priority": ["eth0", "eth1", "wifi_client", "cellular"],
                 "failback_enabled": True,
-                "stable_seconds_before_switch": 0,
+                # Hysteresis. The previous defaults (1 fail / 1 recover / 0 stable
+                # seconds) switched on a single probe result, which is why this
+                # gateway logged thousands of uplink switches from momentary
+                # packet loss. See UPLINK_HYSTERESIS_DEFAULTS.
+                "stable_seconds_before_switch": UPLINK_HYSTERESIS_DEFAULTS["stable_seconds_before_switch"],
                 "require_connectivity_check": True,
-                "fail_count_threshold": 1,
-                "recover_count_threshold": 1,
+                "fail_count_threshold": UPLINK_HYSTERESIS_DEFAULTS["fail_count_threshold"],
+                "recover_count_threshold": UPLINK_HYSTERESIS_DEFAULTS["recover_count_threshold"],
                 "connectivity_targets": ["1.1.1.1", "8.8.8.8"],
             },
         },
@@ -1317,6 +1361,15 @@ async def get_network_settings(request: Request) -> JSONResponse:
         return auth
     settings = NETWORK_RUNTIME.load_settings()
     if settings is not None:
+        # Installs configured before hysteresis had safe defaults are still
+        # switching on a single probe; migrate them once, here, so the policy
+        # the operator sees is the policy that will be written back.
+        if apply_uplink_hysteresis_defaults(settings):
+            LOGGER.info("uplink_policy_migrated_to_hysteresis_defaults")
+            try:
+                await asyncio.to_thread(NETWORK_RUNTIME.save_settings, settings)
+            except (ValueError, OSError) as exc:
+                LOGGER.error("uplink_policy_migration_save_failed error=%s", exc)
         CONFIGS["network"] = settings
     payload = dict(CONFIGS["network"])
     payload["ok"] = True

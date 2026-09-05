@@ -55,6 +55,80 @@ def _events_path() -> Path:
     return _EVENTS_FALLBACK
 
 
+# Switch/recovery events closer together than this belong to one instability
+# episode. A link that flaps every few seconds is one problem, not forty.
+EPISODE_GAP_MS = 5 * 60_000
+# Types that are low-level churn rather than customer-visible events.
+_CHURN_EVENTS = {"uplink_switch", "interface_issue_started", "interface_recovered", "tailscale_recovery"}
+
+
+def group_instability_episodes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse repeated switch/recovery churn into one episode per problem.
+
+    Forty "active uplink switched from Wi-Fi to eth0" lines describe a single
+    unstable period, and listing them individually both buries the real events
+    and overstates how much went wrong. Each episode reports when the churn
+    started and stopped, how many low-level events it contained, how much
+    service was *actually* lost, and which uplink it settled on.
+
+    Service outage is counted only from real outage events, so a failover that
+    kept working through another uplink reports zero seconds lost — a switch is
+    not an outage.
+    """
+    churn = sorted(
+        (row for row in rows if str(row.get("event_type")) in _CHURN_EVENTS),
+        key=lambda row: int(row.get("timestamp_ms") or 0),
+    )
+    if not churn:
+        return []
+
+    outages = [row for row in rows if str(row.get("event_type")) == "outage_recovered"]
+    episodes: list[dict[str, Any]] = []
+    bucket: list[dict[str, Any]] = []
+
+    def flush() -> None:
+        if not bucket:
+            return
+        first_ms = int(bucket[0].get("timestamp_ms") or 0)
+        last_ms = int(bucket[-1].get("timestamp_ms") or 0)
+        # Only outages that actually overlap this episode count against it.
+        lost_ms = sum(
+            int(row.get("duration_ms") or 0) for row in outages
+            if first_ms <= int(row.get("timestamp_ms") or 0) <= last_ms + EPISODE_GAP_MS
+        )
+        switches = [row for row in bucket if str(row.get("event_type")) == "uplink_switch"]
+        final = ""
+        for row in reversed(switches):
+            final = str(row.get("to") or row.get("active_uplink") or "")
+            if final:
+                break
+        interfaces = sorted({
+            str(row.get("interface") or "") for row in bucket if row.get("interface")
+        })
+        episodes.append({
+            "started_ms": first_ms,
+            "ended_ms": last_ms,
+            "duration_ms": max(0, last_ms - first_ms),
+            "event_count": len(bucket),
+            "switch_count": len(switches),
+            "service_outage_ms": lost_ms,
+            "service_maintained": lost_ms == 0,
+            "final_uplink": final or "unchanged",
+            "interfaces": interfaces,
+            "severity": "warning" if lost_ms else "info",
+        })
+
+    for row in churn:
+        ts = int(row.get("timestamp_ms") or 0)
+        if bucket and ts - int(bucket[-1].get("timestamp_ms") or 0) > EPISODE_GAP_MS:
+            flush()
+            bucket = []
+        bucket.append(row)
+    flush()
+    episodes.sort(key=lambda item: item["started_ms"], reverse=True)
+    return episodes
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
         data = json.loads(path.read_text())
@@ -342,6 +416,7 @@ class NetworkRuntime:
                 "duration_seconds": int(network.get("current_down_seconds") or 0),
                 "duration_ms": int(network.get("current_down_seconds") or 0) * 1000,
             }
+        episodes = group_instability_episodes(rows)
         # shape matches the audit JS: summary.counts.* + total_downtime_ms
         summary = {
             "counts": {
@@ -352,8 +427,16 @@ class NetworkRuntime:
             },
             "total_downtime_ms": sum(int(e.get("duration_ms") or 0) for e in rows if e.get("event_type") == "outage_recovered"),
             "open_outage": open_outage,
+            # One underlying problem should read as one line, not forty.
+            "instability_episodes": len(episodes),
         }
-        return {"ok": True, "events": rows, "open_outage": open_outage, "summary": summary}
+        return {
+            "ok": True,
+            "events": rows,                 # raw, still exportable for engineering
+            "episodes": episodes,           # the customer-facing summary above them
+            "open_outage": open_outage,
+            "summary": summary,
+        }
 
 
 # ── kernel-level interface introspection ─────────────────────────────────

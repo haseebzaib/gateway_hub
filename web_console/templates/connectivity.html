@@ -196,6 +196,11 @@
                 <div class="fw-audit-stat"><strong>—</strong><span>Uplink switches</span></div>
                 <div class="fw-audit-stat"><strong>—</strong><span>Total downtime</span></div>
             </div>
+            {# Instability episodes: repeated switch/recovery churn grouped into one
+               line per underlying problem. The raw events stay below, unchanged,
+               for engineering analysis and CSV export. #}
+            <div class="net-episodes" data-net-episodes></div>
+
             <div class="fw-audit-list" data-net-audit-list>
                 <p class="fw-audit-empty">Loading connectivity audit…</p>
             </div>

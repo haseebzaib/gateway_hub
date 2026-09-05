@@ -1219,6 +1219,39 @@ document.addEventListener("DOMContentLoaded", () => {
                 `;
             }
 
+            // Instability episodes sit above the raw list: one line per
+            // underlying problem, so forty near-identical switches read as the
+            // single event they actually were. Raw events stay below for
+            // engineering and remain in the CSV export.
+            const episodesEl = connectivityShell.querySelector("[data-net-episodes]");
+            if (episodesEl) {
+                const episodes = Array.isArray(payload?.episodes) ? payload.episodes : [];
+                if (!episodes.length) {
+                    episodesEl.innerHTML = "";
+                } else {
+                    const clock = (ms) => ms ? new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "—";
+                    const day = (ms) => ms ? new Date(ms).toLocaleDateString([], { month: "short", day: "numeric" }) : "";
+                    episodesEl.innerHTML = `
+                        <p class="net-episodes-head">Instability episodes
+                            <span>${episodes.length} grouped from ${events.length} raw events</span></p>
+                        ${episodes.map((ep) => `
+                            <div class="net-episode is-${ep.severity}">
+                                <div class="net-episode-top">
+                                    <span class="net-episode-title">Uplink instability episode</span>
+                                    <span class="net-episode-when">${day(ep.started_ms)} ${clock(ep.started_ms)} – ${clock(ep.ended_ms)}</span>
+                                </div>
+                                <div class="net-episode-facts">
+                                    <span><strong>${ep.event_count}</strong> low-level switch/recovery events</span>
+                                    <span>service outage: <strong>${Math.round((ep.service_outage_ms || 0) / 1000)} s</strong></span>
+                                    <span>final active uplink: <strong>${_stUplink(ep.final_uplink)}</strong></span>
+                                </div>
+                                ${ep.service_maintained
+                                    ? `<p class="net-episode-note">Service stayed available throughout — these switches did not interrupt data delivery.</p>`
+                                    : ""}
+                            </div>`).join("")}`;
+                }
+            }
+
             if (!listEl) return;
             if (!events.length) {
                 listEl.innerHTML = `<p class="fw-audit-empty">No connectivity audit events in selected window.</p>`;
