@@ -777,7 +777,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const ntLogEl   = systemShell.querySelector("[data-nt-log]");
             const ntMessage = systemShell.querySelector("[data-nt-message]");
             let ntConfig = { channels: [], rules: {} };
-            let ntMeta = { event_types: {}, channel_types: [], severities: [] };
+            let ntMeta = { event_types: {}, channel_types: [], severities: [], email_security: {} };
 
             const ntEsc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => (
                 { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -844,8 +844,10 @@ document.addEventListener("DOMContentLoaded", () => {
                             <label class="nt-f4">Send to<input class="settings-input" type="text" value="${ntEsc((email.to_addresses || []).join(", "))}" data-nt-email="to_addresses" placeholder="ops@yourcompany.com, oncall@yourcompany.com"></label>
                         </div>` : `
                         <div class="nt-grid">
-                            <label class="nt-f4">Webhook URL<input class="settings-input" type="text" value="${ntEsc(c.url)}" data-nt-field="url" placeholder="https://..."></label>
-                            ${c.type === "pagerduty" ? "" : `<label class="nt-f4">Signing secret <span class="nt-optional">optional</span><input class="settings-input" type="password" placeholder="${c.secret_set ? "•••••• saved" : "adds an X-MetaCrust-Signature header so the receiver can verify us"}" data-nt-field="secret" autocomplete="new-password"></label>`}
+                            <label class="nt-f4">${c.type === "pagerduty" ? "Events API URL" : "Webhook URL"}<input class="settings-input" type="text" value="${ntEsc(c.url)}" data-nt-field="url" placeholder="${c.type === "pagerduty" ? "https://events.pagerduty.com/v2/enqueue" : "https://..."}"></label>
+                            ${c.type === "pagerduty"
+                                ? `<label class="nt-f4">Integration key <span class="nt-optional">required</span><input class="settings-input" type="password" placeholder="${c.routing_key_set ? "•••••• saved" : "the 32-character routing key from your PagerDuty service"}" data-nt-field="routing_key" autocomplete="new-password"></label>`
+                                : `<label class="nt-f4">Signing secret <span class="nt-optional">optional</span><input class="settings-input" type="password" placeholder="${c.secret_set ? "•••••• saved" : "adds an X-MetaCrust-Signature header so the receiver can verify us"}" data-nt-field="secret" autocomplete="new-password"></label>`}
                         </div>`}
 
                         <p class="nt-section-label">When to notify</p>
@@ -983,7 +985,12 @@ document.addEventListener("DOMContentLoaded", () => {
                     if (!r.ok) return;
                     const d = await r.json();
                     ntConfig = d.config || { channels: [], rules: {} };
-                    ntMeta = { event_types: d.event_types, channel_types: d.channel_types, severities: d.severities };
+                    ntMeta = {
+                        event_types: d.event_types,
+                        channel_types: d.channel_types,
+                        severities: d.severities,
+                        email_security: d.email_security || {},
+                    };
                     systemShell.querySelectorAll("[data-nt-rule]").forEach((input) => {
                         input.value = (ntConfig.rules || {})[input.getAttribute("data-nt-rule")] ?? "";
                     });

@@ -136,6 +136,11 @@ def normalize_channel(raw: dict[str, Any]) -> dict[str, Any]:
         # Generic receivers often want to verify the sender; when set, bodies are
         # signed with HMAC-SHA256 in the X-MetaCrust-Signature header.
         channel["secret"] = str(raw.get("secret") or "")[:256]
+        if kind == "pagerduty":
+            # PagerDuty's integration key is a credential, so it is redacted and
+            # carried forward on save exactly like a signing secret.
+            channel["routing_key"] = str(raw.get("routing_key") or "")[:256]
+            channel["url"] = channel["url"] or "https://events.pagerduty.com/v2/enqueue"
     return channel
 
 
@@ -148,6 +153,8 @@ def redact(config: dict[str, Any]) -> dict[str, Any]:
             email["password_set"] = bool(email.pop("password", ""))
         else:
             channel["secret_set"] = bool(channel.pop("secret", ""))
+            if "routing_key" in channel:
+                channel["routing_key_set"] = bool(channel.pop("routing_key", ""))
     return out
 
 
@@ -166,8 +173,11 @@ def merge_secrets(incoming: dict[str, Any], existing: dict[str, Any]) -> dict[st
             email = channel.setdefault("email", {})
             if not email.get("password"):
                 email["password"] = (previous.get("email") or {}).get("password", "")
-        elif not channel.get("secret"):
-            channel["secret"] = previous.get("secret", "")
+        else:
+            if not channel.get("secret"):
+                channel["secret"] = previous.get("secret", "")
+            if not channel.get("routing_key"):
+                channel["routing_key"] = previous.get("routing_key", "")
     return incoming
 
 

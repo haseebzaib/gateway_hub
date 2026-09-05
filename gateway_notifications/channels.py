@@ -21,6 +21,7 @@ from typing import Any
 
 
 TIMEOUT_S = 15.0
+PAGERDUTY_EVENTS_URL = "https://events.pagerduty.com/v2/enqueue"
 USER_AGENT = "MetaCrust-Gateway/1.0"
 
 _SEVERITY_COLOUR = {"critical": "#d93025", "warning": "#f0a64b", "info": "#39d0c8"}
@@ -34,13 +35,17 @@ def deliver(channel: dict[str, Any], note: dict[str, Any]) -> None:
         _send_email(channel, note)
         return
     url = str(channel.get("url") or "").strip()
+    if kind == "pagerduty":
+        url = url or PAGERDUTY_EVENTS_URL
+        if not str(channel.get("routing_key") or channel.get("secret") or "").strip():
+            raise ValueError("PagerDuty needs an integration (routing) key")
     if not url:
         raise ValueError("channel has no URL configured")
-    body = build_body(kind, note)
+    body = build_body(kind, note, channel)
     _post(url, body, channel)
 
 
-def build_body(kind: str, note: dict[str, Any]) -> dict[str, Any]:
+def build_body(kind: str, note: dict[str, Any], channel: dict[str, Any] | None = None) -> dict[str, Any]:
     """The provider-shaped payload for a notification."""
     if kind == "slack":
         return _slack_body(note)
@@ -49,7 +54,7 @@ def build_body(kind: str, note: dict[str, Any]) -> dict[str, Any]:
     if kind == "discord":
         return _discord_body(note)
     if kind == "pagerduty":
-        return _pagerduty_body(note)
+        return _pagerduty_body(note, channel or {})
     return _generic_body(note)
 
 
@@ -125,13 +130,15 @@ def _discord_body(note: dict[str, Any]) -> dict[str, Any]:
     return {"embeds": [embed]}
 
 
-def _pagerduty_body(note: dict[str, Any]) -> dict[str, Any]:
+def _pagerduty_body(note: dict[str, Any], channel: dict[str, Any]) -> dict[str, Any]:
     """Events API v2. The incident reference is the dedup key, so PagerDuty
     groups our alerts exactly as the gateway groups them, and a recovery
     notification resolves the alert it opened rather than raising a new one."""
     resolved = note.get("event") == "recovery"
     return {
-        "routing_key": note.get("routing_key") or "",
+        # PagerDuty authenticates by integration key in the body, not by URL,
+        # so it is stored per channel rather than carried on the notification.
+        "routing_key": str(channel.get("routing_key") or channel.get("secret") or ""),
         "event_action": "resolve" if resolved else "trigger",
         "dedup_key": note.get("incident_ref") or note.get("event"),
         "payload": {
@@ -167,9 +174,11 @@ def _facts(note: dict[str, Any]) -> list[tuple[str, Any]]:
 
 
 def _subject(note: dict[str, Any]) -> str:
+    # Plain ASCII hyphen: an em dash forces RFC 2047 encoded-words in email
+    # subjects, which some clients render raw as "=?utf-8?b?...?=".
     ref = note.get("incident_ref")
     title = note.get("title") or "Gateway notification"
-    return f"MetaCrust Incident {ref} — {title}" if ref else f"MetaCrust — {title}"
+    return f"MetaCrust Incident {ref} - {title}" if ref else f"MetaCrust - {title}"
 
 
 # ── transport ────────────────────────────────────────────────────────────
