@@ -79,7 +79,17 @@ class IncidentStorage:
             CREATE INDEX IF NOT EXISTS idx_incidents_scope ON incidents (scope_kind, scope_key, status);
             """
         )
+        # kpi_json arrived after the first incidents were recorded, so it is added
+        # by migration rather than in the CREATE above.
+        self._ensure_columns_locked("incidents", {"kpi_json": "TEXT"})
         self._conn.commit()
+
+    def _ensure_columns_locked(self, table: str, columns: dict[str, str]) -> None:
+        assert self._conn is not None
+        existing = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+        for name, definition in columns.items():
+            if name not in existing:
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
     # ── writes ───────────────────────────────────────────────────────────
     def open_incident(self, incident: dict[str, Any]) -> dict[str, Any]:
@@ -90,14 +100,15 @@ class IncidentStorage:
                 """INSERT INTO incidents
                    (ref, scope_kind, scope_key, title, status, started_ms, detected_ms,
                     restored_ms, closed_ms, domain, domain_conf, severity,
-                    affected_json, evidence_json, continuity_json, timeline_json)
-                   VALUES (?, ?, ?, ?, 'open', ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)""",
+                    affected_json, evidence_json, continuity_json, timeline_json, kpi_json)
+                   VALUES (?, ?, ?, ?, 'open', ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     incident["ref"], incident["scope_kind"], incident["scope_key"],
                     incident["title"], int(incident["started_ms"]), int(incident["detected_ms"]),
                     incident["domain"], incident["domain_conf"], incident["severity"],
                     _json(incident.get("affected", [])), _json(incident.get("evidence", [])),
                     _json(incident.get("continuity", {})), _json(incident.get("timeline", [])),
+                    _json(incident.get("kpi", {})),
                 ),
             )
             self._conn.commit()
@@ -232,6 +243,7 @@ def _row_to_incident(row: sqlite3.Row) -> dict[str, Any]:
     for key, target in (
         ("affected_json", "affected"), ("evidence_json", "evidence"),
         ("continuity_json", "continuity"), ("timeline_json", "timeline"),
+        ("kpi_json", "kpi"),
     ):
         item[target] = _load(item.pop(key))
     return item

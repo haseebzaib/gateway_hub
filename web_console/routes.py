@@ -29,7 +29,7 @@ from gateway_forwarding import (
     save_config as persist_forwarding_config,
     topics_for as forwarding_topics_for,
 )
-from gateway_incidents import DOMAIN_LABELS as INCIDENT_DOMAIN_LABELS
+from gateway_incidents import DOMAIN_LABELS as INCIDENT_DOMAIN_LABELS, kpi as incident_kpi
 from gateway_ipc import build_config_message, encode_message, headline_for_stored
 
 from . import insights_data
@@ -2174,6 +2174,21 @@ INCIDENT_TIMELINE_LEGACY = {
 }
 
 
+def _iso_from_ms(ms: Any) -> str:
+    if not ms:
+        return ""
+    return datetime.fromtimestamp(int(ms) / 1000, UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _csv_num(value: Any) -> str:
+    """Blank means not measured, which is not the same as zero."""
+    return "" if value is None else str(value)
+
+
+def _seconds(ms: Any) -> str:
+    return "" if ms is None else str(round(int(ms) / 1000))
+
+
 def _incident_timeline(incident: dict[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for entry in incident.get("timeline") or []:
@@ -2200,6 +2215,45 @@ def _incident_resolution(incident: dict[str, Any], duration_ms: int) -> str:
     return f"Recovered after {minutes} min · service returned to normal"
 
 
+def _incident_kpi(incident: dict[str, Any], duration_ms: int) -> dict[str, Any]:
+    """The incident's KPI record, or an honest partial one for older incidents.
+
+    Incidents closed before KPIs were recorded have no counter baseline, so the
+    volume figures are genuinely unknown. They are reported as null rather than
+    zero: zero would read as "nothing was recovered", which is a stronger claim
+    than the data supports.
+    """
+    stored = incident.get("kpi") or {}
+    if stored.get("recovery_basis"):
+        return stored
+
+    started = int(incident.get("started_ms") or 0)
+    detected = int(incident.get("detected_ms") or 0)
+    continuity = incident.get("continuity") or {}
+    return {
+        # Timings survive because they come from the incident's own timestamps.
+        "detection_latency_ms": max(0, detected - started) if started and detected else None,
+        "blind_time_ms": duration_ms or None,
+        "received_during": None,
+        "buffered_peak": continuity.get("buffered_peak"),
+        "replayed": None,
+        "pending": continuity.get("unrecovered", continuity.get("pending")),
+        "evicted": None,
+        "uplink_switches": None,
+        "forwarding_failures": None,
+        "recovery_pct": None,
+        "recovery_basis": "not measured — this incident predates continuity KPI recording",
+        "accounted": None,
+        "completeness": incident_kpi.UNVERIFIABLE,
+        "completeness_note": (
+            "This incident was recorded before the gateway captured continuity "
+            "counters, so how much data was buffered and replayed is unknown. It is "
+            "reported as unknown rather than as zero or as fully recovered."
+        ),
+        "partial": True,
+    }
+
+
 def _incident_view(incident: dict[str, Any]) -> dict[str, Any]:
     """Shape one incident for the UI, with the derived timings it renders."""
     started = int(incident.get("started_ms") or 0)
@@ -2217,6 +2271,7 @@ def _incident_view(incident: dict[str, Any]) -> dict[str, Any]:
         "timeline": _incident_timeline(incident),
         "evidence": [row for row in incident.get("evidence") or [] if row.get("layer") in keep],
         "ended_ms": ended or None,
+        "kpi": _incident_kpi(incident, duration_ms),
     }
 
 
@@ -2257,6 +2312,79 @@ def insights_incidents(request: Request) -> JSONResponse:
         "by_domain": {},
     }
     return JSONResponse({"ok": True, "incidents": views, "summary": summary})
+
+
+@router.get("/api/insights/pilot-summary")
+def insights_pilot_summary(request: Request) -> JSONResponse:
+    """Cumulative continuity KPIs across a date range, for pilot reporting.
+
+    Each incident contributes its own frozen KPI record exactly once, so
+    overlapping queries cannot double-count the same activity.
+    """
+    if auth := _json_auth_required(request):
+        return auth
+    store = _incident_store(request)
+    if store is None:
+        return JSONResponse({"ok": True, "summary": incident_kpi.aggregate([]), "incidents": []})
+    params = request.query_params
+    to_ms = int(params.get("to_ms") or _now_ms())
+    from_ms = int(params.get("from_ms") or (to_ms - insights_data.WINDOW_MS["7d"]))
+    rows = store.query(from_ms=from_ms, to_ms=to_ms, limit=1000)
+    scope = params.get("scope") or ""
+    predicate = INCIDENT_SCOPES.get(scope)
+    if predicate is not None:
+        rows = [row for row in rows if predicate(row)]
+    return JSONResponse({
+        "ok": True,
+        "from_ms": from_ms,
+        "to_ms": to_ms,
+        "summary": incident_kpi.aggregate(rows),
+        "incidents": [_incident_view(row) for row in rows],
+    })
+
+
+@router.get("/api/insights/pilot-summary.csv")
+def insights_pilot_summary_csv(request: Request) -> Response:
+    """The same KPIs as CSV, one row per incident, for offline analysis."""
+    if not _is_authenticated(request):
+        return PlainTextResponse("Authentication required.", status_code=status.HTTP_401_UNAUTHORIZED)
+    store = _incident_store(request)
+    params = request.query_params
+    to_ms = int(params.get("to_ms") or _now_ms())
+    from_ms = int(params.get("from_ms") or (to_ms - insights_data.WINDOW_MS["7d"]))
+    rows = store.query(from_ms=from_ms, to_ms=to_ms, limit=1000) if store is not None else []
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow([
+        "reference", "title", "status", "failure_domain", "confidence",
+        "started_utc", "detected_utc", "restored_utc",
+        "detection_latency_s", "blind_time_s",
+        "received_by_gateway", "buffered_peak", "replayed", "still_pending",
+        "evicted", "records_entering_buffer", "recovery_pct_of_buffered",
+        "uplink_switches", "forwarding_failures", "completeness",
+    ])
+    for row in rows:
+        started = int(row.get("started_ms") or 0)
+        ended = int(row.get("restored_ms") or row.get("closed_ms") or 0)
+        k = _incident_kpi(row, max(0, ended - started) if ended else 0)
+        writer.writerow([
+            row.get("ref"), row.get("title"), row.get("status"),
+            INCIDENT_DOMAIN_LABELS.get(row.get("domain", ""), "Unknown"), row.get("domain_conf"),
+            _iso_from_ms(row.get("started_ms")), _iso_from_ms(row.get("detected_ms")),
+            _iso_from_ms(row.get("restored_ms")),
+            _seconds(k.get("detection_latency_ms")), _seconds(k.get("blind_time_ms")),
+            _csv_num(k.get("received_during")), _csv_num(k.get("buffered_peak")),
+            _csv_num(k.get("replayed")), _csv_num(k.get("pending")), _csv_num(k.get("evicted")),
+            _csv_num(k.get("accounted")), _csv_num(k.get("recovery_pct")),
+            _csv_num(k.get("uplink_switches")), _csv_num(k.get("forwarding_failures")),
+            k.get("completeness", ""),
+        ])
+    return PlainTextResponse(
+        buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="pilot-summary.csv"'},
+    )
 
 
 @router.get("/api/insights/incidents/{ref}")

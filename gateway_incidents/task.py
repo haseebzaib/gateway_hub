@@ -24,6 +24,7 @@ from .correlator import (
     replay_faults,
     retire_vanished,
 )
+from . import kpi as kpi_mod
 from .storage import IncidentStorage
 
 
@@ -103,6 +104,7 @@ class IncidentTask:
         network_state = self._network_state()
         source_total = self._source_total()
         continuity = self._continuity()
+        counters = self._counters()
 
         path_faults = [f for key, f in open_faults.items() if key[0] in PATH_LAYERS]
         source_faults = [f for key, f in open_faults.items() if key[0] == SOURCE]
@@ -114,6 +116,7 @@ class IncidentTask:
             cleared={k: v for k, v in cleared.items() if k[0] in PATH_LAYERS},
             now_ms=now_ms, network_state=network_state, source_total=source_total,
             continuity=continuity, all_faults=path_faults + source_faults,
+            counters=counters, source_gap=bool(source_faults),
         )
 
         # A source failing on its own is its own incident. It is only folded into
@@ -129,6 +132,7 @@ class IncidentTask:
                 cleared={}, now_ms=now_ms, network_state=network_state,
                 source_total=source_total, continuity=continuity,
                 all_faults=path_faults + [fault], suppressed=explains_source_loss,
+                counters=counters, source_gap=True,
             )
         for key, fault in cleared.items():
             if key[0] == SOURCE:
@@ -136,13 +140,15 @@ class IncidentTask:
                     scope_kind="source", scope_key=fault.scope, faults=[],
                     cleared={key: fault}, now_ms=now_ms, network_state=network_state,
                     source_total=source_total, continuity=continuity, all_faults=path_faults,
+                    counters=counters, source_gap=True,
                 )
 
     def _reconcile(
         self, *, scope_kind: str, scope_key: str, faults: list[Fault],
         cleared: dict[tuple[str, str], Fault], now_ms: int,
         network_state: dict[str, Any] | None, source_total: int,
-        continuity: dict[str, Any], all_faults: list[Fault], suppressed: bool = False,
+        continuity: dict[str, Any], all_faults: list[Fault], counters: dict[str, int],
+        source_gap: bool = False, suppressed: bool = False,
     ) -> None:
         existing = self.storage.open_for_scope(scope_kind, scope_key)
 
@@ -159,11 +165,16 @@ class IncidentTask:
                     "ts_ms": now_ms,
                     "kind": "closed_retired" if retired else "closed_stable",
                 })
+                final_continuity = {**existing.get("continuity", {}), **continuity,
+                                    "unrecovered": continuity.get("pending", 0)}
+                closed = {**existing, "restored_ms": int(restored)}
                 self.storage.update_incident(existing["id"], {
                     "status": "resolved", "restored_ms": int(restored), "closed_ms": now_ms,
-                    "continuity_json": {**existing.get("continuity", {}), **continuity,
-                                        "unrecovered": continuity.get("pending", 0)},
+                    "continuity_json": final_continuity,
                     "timeline_json": timeline,
+                    # Frozen at close: the pilot report reads this record, so it
+                    # must not drift as lifetime counters keep moving afterwards.
+                    "kpi_json": self._kpi_for(closed, counters, final_continuity, source_gap, now_ms),
                 })
             else:
                 # Still inside the stability window. Keep refreshing continuity so
@@ -200,7 +211,11 @@ class IncidentTask:
                     {"ts_ms": started, "kind": "started"},
                     {"ts_ms": now_ms, "kind": "detected"},
                 ],
+                # The baseline is frozen now so later counter readings measure
+                # this incident rather than the gateway's whole lifetime.
+                "kpi": {"baseline": kpi_mod.baseline_from(counters)},
             })
+            self._write_kpi(incident, counters, continuity, source_gap, now_ms)
             LOGGER.info(
                 "incident_opened ref=%s scope=%s domain=%s confidence=%s",
                 incident["ref"], scope_key, domain, confidence,
@@ -219,6 +234,7 @@ class IncidentTask:
             "severity": self._severity(domain, merged),
             "affected_json": affected, "evidence_json": evidence, "continuity_json": merged,
             "title": self._title(scope_kind, affected, domain),
+            "kpi_json": self._kpi_for(existing, counters, merged, source_gap, now_ms),
         }
         if existing.get("status") == "recovering":
             # It broke again inside the stability window — same incident.
@@ -273,6 +289,80 @@ class IncidentTask:
         if domain in ("gateway", "uplink"):
             return "critical"
         return "warning"
+
+    # ── KPI plumbing ─────────────────────────────────────────────────────
+    def _counters(self) -> dict[str, int]:
+        """Cumulative counters an incident's KPIs are measured against."""
+        out = {"replayed": 0, "dropped": 0, "uplink_switches": 0, "forwarding_failures": 0}
+        if self.forwarding is not None:
+            try:
+                stats = self.forwarding.buffer_stats()
+                out["replayed"] = int(stats.get("total_replayed") or 0)
+                out["dropped"] = int(stats.get("total_dropped") or 0)
+            except Exception:
+                pass
+            try:
+                # Counts every failed publish cycle, including the retries that
+                # are deliberately not written to the event log.
+                out["forwarding_failures"] = sum(
+                    int((state or {}).get("failed_count") or 0)
+                    for state in (getattr(self.forwarding, "_states", {}) or {}).values()
+                )
+            except Exception:
+                pass
+        state = self._network_state() or {}
+        try:
+            out["uplink_switches"] = int((state.get("uplink_stats") or {}).get("switch_count") or 0)
+        except Exception:
+            pass
+        return out
+
+    def _received_during(self, started_ms: int, ended_ms: int) -> int:
+        """Messages that actually reached the gateway across the incident.
+
+        This is the countable half of the picture: whatever a source failed to
+        send never appears here, which is exactly why completeness cannot be
+        claimed from it alone.
+        """
+        if self.interfaces_storage is None or not started_ms:
+            return 0
+        try:
+            rows = self.interfaces_storage.sensor_messages(
+                from_ms=int(started_ms), to_ms=int(ended_ms), limit=10000,
+            )
+            return len(rows)
+        except Exception:
+            return 0
+
+    def _kpi_for(
+        self, incident: dict[str, Any], counters: dict[str, int],
+        continuity: dict[str, Any], source_gap: bool, now_ms: int,
+    ) -> dict[str, Any]:
+        stored = incident.get("kpi") or {}
+        baseline = stored.get("baseline") or kpi_mod.baseline_from(counters)
+        started = int(incident.get("started_ms") or 0)
+        ended = int(incident.get("restored_ms") or 0) or now_ms
+        return kpi_mod.compute(
+            incident=incident,
+            baseline=baseline,
+            counters=counters,
+            received_during=self._received_during(started, ended),
+            buffered_peak=int(continuity.get("buffered_peak") or continuity.get("pending") or 0),
+            pending=int(continuity.get("pending") or 0),
+            source_gap=source_gap,
+            now_ms=now_ms,
+        )
+
+    def _write_kpi(
+        self, incident: dict[str, Any], counters: dict[str, int],
+        continuity: dict[str, Any], source_gap: bool, now_ms: int,
+    ) -> None:
+        try:
+            self.storage.update_incident(incident["id"], {
+                "kpi_json": self._kpi_for(incident, counters, continuity, source_gap, now_ms),
+            })
+        except Exception as exc:
+            LOGGER.error("incident_kpi_write_failed ref=%s error=%s", incident.get("ref"), exc)
 
     def _live_scopes(self) -> dict[str, set[str]]:
         """Scopes that still exist in configuration, per layer.

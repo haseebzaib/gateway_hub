@@ -42,6 +42,70 @@ const Incidents = (() => {
         return h < 24 ? `${h}h ${m % 60}m` : `${Math.floor(h / 24)}d ${h % 24}h`;
     };
 
+    // A KPI that was never measured is shown as "—", not as 0: zero would read
+    // as "nothing was recovered", a stronger claim than the data supports.
+    const num = (v) => (v === null || v === undefined) ? "—" : v.toLocaleString();
+
+    /** KPI strip: the numbers a pilot report is written from.
+     *
+     * Recovery always states its denominator, and an incident whose source went
+     * silent is labelled unverifiable however well the buffer performed —
+     * a percentage of what we received is not a measure of completeness.
+     */
+    const kpiHtml = (inc) => {
+        const k = inc.kpi;
+        if (!k || Object.keys(k).length <= 1) return "";
+        const verified = k.completeness === "verified";
+        const partial = Boolean(k.partial);
+        const pct = k.recovery_pct === null || k.recovery_pct === undefined
+            ? "n/a" : `${k.recovery_pct}%`;
+        return `
+            <div class="inc-d-section">
+                <h4>Continuity KPIs</h4>
+                <div class="inc-kpis">
+                    <div class="inc-kpi">
+                        <div class="inc-kpi-value">${duration(k.blind_time_ms)}</div>
+                        <div class="inc-kpi-label">Blind time</div>
+                    </div>
+                    <div class="inc-kpi">
+                        <div class="inc-kpi-value">${duration(k.detection_latency_ms)}</div>
+                        <div class="inc-kpi-label">Detection latency</div>
+                    </div>
+                    <div class="inc-kpi">
+                        <div class="inc-kpi-value">${num(k.buffered_peak)}</div>
+                        <div class="inc-kpi-label">Buffered</div>
+                    </div>
+                    <div class="inc-kpi${k.replayed ? " is-good" : ""}">
+                        <div class="inc-kpi-value">${num(k.replayed)}</div>
+                        <div class="inc-kpi-label">Recovered</div>
+                    </div>
+                    <div class="inc-kpi ${(k.pending || 0) + (k.evicted || 0) > 0 ? "is-loss" : ""}">
+                        <div class="inc-kpi-value">${k.pending === null && k.evicted === null
+                            ? "—" : num((k.pending || 0) + (k.evicted || 0))}</div>
+                        <div class="inc-kpi-label">Unrecovered</div>
+                    </div>
+                    <div class="inc-kpi">
+                        <div class="inc-kpi-value">${pct}</div>
+                        <div class="inc-kpi-label">Recovery</div>
+                    </div>
+                    <div class="inc-kpi">
+                        <div class="inc-kpi-value">${num(k.uplink_switches)}</div>
+                        <div class="inc-kpi-label">Uplink switches</div>
+                    </div>
+                    <div class="inc-kpi">
+                        <div class="inc-kpi-value">${num(k.forwarding_failures)}</div>
+                        <div class="inc-kpi-label">Forwarding retries</div>
+                    </div>
+                </div>
+                <p class="inc-kpi-basis">Recovery measured as ${esc(k.recovery_basis || "")}.</p>
+                <div class="inc-completeness ${verified ? "is-verified" : "is-unverifiable"}">
+                    <span class="inc-completeness-tag">${verified ? "Completeness verified"
+                        : partial ? "Not measured" : "Completeness unverifiable"}</span>
+                    <span class="inc-completeness-note">${esc(k.completeness_note || "")}</span>
+                </div>
+            </div>`;
+    };
+
     const detailHtml = (inc, raw) => {
         const sources = (inc.affected || []).filter((a) => a.kind === "source");
         const others  = (inc.affected || []).filter((a) => a.kind !== "source");
@@ -120,8 +184,10 @@ const Incidents = (() => {
                 </div>
             </div>
 
+            ${kpiHtml(inc)}
+
             <div class="inc-d-section">
-                <h4>Data continuity</h4>
+                <h4>Data continuity detail</h4>
                 <div class="inc-metrics">
                     <div class="inc-metric">
                         <div class="inc-metric-value">${(c.buffered_peak ?? c.pending ?? 0).toLocaleString()}</div>

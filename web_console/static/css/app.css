@@ -10796,3 +10796,62 @@ body.anomaly-modal-open { overflow: hidden; }
 .ov-incident-main  { display: grid; gap: 0.15rem; min-width: 0; }
 .ov-incident-note  { font-size: 0.76rem; color: var(--muted); }
 .ov-incident-row.is-resolved .inc-ref { color: var(--muted); }
+
+/* ── Incident continuity KPIs ─────────────────────────────────────────── */
+.inc-kpis {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 0.5rem;
+}
+.inc-kpi {
+    padding: 0.7rem 0.8rem;
+    border-radius: 0.75rem;
+    background: rgba(255,255,255,0.035);
+    border: 1px solid rgba(255,255,255,0.07);
+}
+.inc-kpi-value { font-size: 1.1rem; font-weight: 700; line-height: 1.2; }
+.inc-kpi-label {
+    font-size: 0.64rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-top: 0.2rem;
+}
+.inc-kpi.is-good .inc-kpi-value { color: var(--success); }
+.inc-kpi.is-loss .inc-kpi-value { color: #ff8f8f; }
+
+/* Every ratio states its denominator, so a percentage can never be read as a
+   completeness claim it does not support. */
+.inc-kpi-basis {
+    margin: 0.6rem 0 0;
+    font-size: 0.76rem;
+    color: var(--muted);
+    line-height: 1.5;
+}
+
+.inc-completeness {
+    margin-top: 0.7rem;
+    padding: 0.7rem 0.85rem;
+    border-radius: 0.7rem;
+    display: grid;
+    gap: 0.3rem;
+    font-size: 0.78rem;
+    line-height: 1.5;
+}
+.inc-completeness.is-verified {
+    background: rgba(98,211,158,0.07);
+    border: 1px solid rgba(98,211,158,0.25);
+}
+.inc-completeness.is-unverifiable {
+    background: rgba(240,166,75,0.07);
+    border: 1px solid rgba(240,166,75,0.3);
+}
+.inc-completeness-tag {
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+.inc-completeness.is-verified .inc-completeness-tag     { color: var(--success); }
+.inc-completeness.is-unverifiable .inc-completeness-tag { color: var(--accent-strong); }
+.inc-completeness-note { color: var(--muted); }
