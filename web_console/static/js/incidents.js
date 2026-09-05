@@ -254,6 +254,83 @@ const Incidents = (() => {
         };
     };
 
+    /** Pilot Summary: KPIs totalled across a date range.
+     *
+     * Reports on a whole pilot rather than a single incident. Every figure
+     * carries the same caveats as the per-incident KPIs — the recovery basis is
+     * shown, and one incident with an unverifiable gap makes the whole period
+     * unverifiable, because a headline total would otherwise imply a
+     * completeness the data cannot support.
+     */
+    const attachPilotSummary = (panel, scope) => {
+        if (!panel) return null;
+        const toggle = panel.querySelector("[data-pilot-toggle]");
+        const range  = panel.querySelector("[data-pilot-range]");
+        const body   = panel.querySelector("[data-pilot-body]");
+        const fromEl = panel.querySelector("[data-pilot-from]");
+        const toEl   = panel.querySelector("[data-pilot-to]");
+        const csvEl  = panel.querySelector("[data-pilot-csv]");
+
+        const iso = (d) => d.toISOString().slice(0, 10);
+        const today = new Date();
+        const weekAgo = new Date(today.getTime() - 7 * 86400000);
+        if (fromEl && !fromEl.value) fromEl.value = iso(weekAgo);
+        if (toEl && !toEl.value) toEl.value = iso(today);
+
+        const params = () => {
+            const p = new URLSearchParams();
+            if (fromEl?.value) p.set("from_ms", String(new Date(`${fromEl.value}T00:00:00`).getTime()));
+            if (toEl?.value)   p.set("to_ms",   String(new Date(`${toEl.value}T23:59:59`).getTime()));
+            if (scope) p.set("scope", scope);
+            return p;
+        };
+
+        const load = async () => {
+            if (!body) return;
+            body.innerHTML = `<p style="color:var(--muted)">Loading…</p>`;
+            if (csvEl) csvEl.href = `/api/insights/pilot-summary.csv?${params()}`;
+            try {
+                const r = await fetch(`/api/insights/pilot-summary?${params()}`);
+                if (!r.ok) { body.innerHTML = "<p>Could not load the summary.</p>"; return; }
+                const s = (await r.json()).summary || {};
+                const verified = s.completeness === "verified";
+                const pct = s.recovery_pct === null || s.recovery_pct === undefined ? "n/a" : `${s.recovery_pct}%`;
+                body.innerHTML = `
+                    <div class="inc-kpis">
+                        <div class="inc-kpi"><div class="inc-kpi-value">${num(s.incidents)}</div><div class="inc-kpi-label">Incidents</div></div>
+                        <div class="inc-kpi"><div class="inc-kpi-value">${num(s.resolved)}</div><div class="inc-kpi-label">Resolved</div></div>
+                        <div class="inc-kpi ${s.ongoing ? "is-loss" : ""}"><div class="inc-kpi-value">${num(s.ongoing)}</div><div class="inc-kpi-label">Still open</div></div>
+                        <div class="inc-kpi"><div class="inc-kpi-value">${duration(s.total_blind_time_ms)}</div><div class="inc-kpi-label">Total blind time</div></div>
+                        <div class="inc-kpi"><div class="inc-kpi-value">${duration(s.longest_blind_time_ms)}</div><div class="inc-kpi-label">Longest outage</div></div>
+                        <div class="inc-kpi"><div class="inc-kpi-value">${duration(s.median_detection_latency_ms)}</div><div class="inc-kpi-label">Median detection</div></div>
+                        <div class="inc-kpi"><div class="inc-kpi-value">${num(s.buffered_peak)}</div><div class="inc-kpi-label">Peak buffered</div></div>
+                        <div class="inc-kpi ${s.replayed ? "is-good" : ""}"><div class="inc-kpi-value">${num(s.replayed)}</div><div class="inc-kpi-label">Recovered</div></div>
+                        <div class="inc-kpi ${(s.pending || 0) + (s.evicted || 0) > 0 ? "is-loss" : ""}"><div class="inc-kpi-value">${num((s.pending || 0) + (s.evicted || 0))}</div><div class="inc-kpi-label">Unrecovered</div></div>
+                        <div class="inc-kpi"><div class="inc-kpi-value">${pct}</div><div class="inc-kpi-label">Recovery</div></div>
+                        <div class="inc-kpi"><div class="inc-kpi-value">${num(s.uplink_switches)}</div><div class="inc-kpi-label">Uplink switches</div></div>
+                        <div class="inc-kpi"><div class="inc-kpi-value">${num(s.forwarding_failures)}</div><div class="inc-kpi-label">Forwarding retries</div></div>
+                    </div>
+                    <p class="inc-kpi-basis">Recovery measured as ${esc(s.recovery_basis || "")}.</p>
+                    <div class="inc-completeness ${verified ? "is-verified" : "is-unverifiable"}">
+                        <span class="inc-completeness-tag">${verified ? "Completeness verified" : "Completeness unverifiable"}</span>
+                        <span class="inc-completeness-note">${esc(s.completeness_note || "")}</span>
+                    </div>`;
+            } catch (e) {
+                body.innerHTML = "<p>Could not load the summary.</p>";
+            }
+        };
+
+        toggle?.addEventListener("click", () => {
+            const hidden = body?.classList.contains("ov-hidden");
+            body?.classList.toggle("ov-hidden", !hidden);
+            range?.classList.toggle("ov-hidden", !hidden);
+            toggle.classList.toggle("is-current", hidden);
+            if (hidden) load();
+        });
+        panel.querySelector("[data-pilot-apply]")?.addEventListener("click", load);
+        return { load };
+    };
+
     /** Page a long incident history so the list never grows without bound. */
     const paginate = (rows, page, perPage) => {
         const pageCount = Math.max(1, Math.ceil(rows.length / perPage));
@@ -273,6 +350,9 @@ const Incidents = (() => {
                 <span class="inc-title">${esc(inc.title)}</span>
                 <span class="inc-status-badge is-${inc.status}">${esc(inc.status)}</span>
                 <span class="inc-domain-pill ${inc.domain !== "unknown" ? "is-known" : "is-unknown"}">${esc(inc.domain_label)}</span>
+                <a class="inc-row-export" data-inc-row-export
+                   href="/api/insights/incidents/${encodeURIComponent(inc.ref)}/report"
+                   target="_blank" rel="noopener" title="Open the customer report for ${esc(inc.ref)}">Export</a>
             </div>
             <div class="inc-row-meta">
                 <span>Started <strong>${shortStamp(inc.started_ms)}</strong></span>
@@ -288,6 +368,11 @@ const Incidents = (() => {
     const bindRows = (container, drawer) => {
         container?.querySelectorAll("[data-inc-ref]").forEach((row) => {
             row.addEventListener("click", () => drawer?.open(row.getAttribute("data-inc-ref")));
+        });
+        // The export link sits inside a row that opens the drawer on click, so
+        // it has to stop the click reaching the row or both would fire.
+        container?.querySelectorAll("[data-inc-row-export]").forEach((link) => {
+            link.addEventListener("click", (e) => e.stopPropagation());
         });
     };
 
@@ -307,6 +392,6 @@ const Incidents = (() => {
 
     return {
         esc, stamp, shortStamp, duration, detailHtml, attachDrawer,
-        paginate, pagerHtml, rowHtml, bindRows, summaryHtml, DOMAIN_PAGE,
+        paginate, pagerHtml, rowHtml, bindRows, summaryHtml, attachPilotSummary, DOMAIN_PAGE,
     };
 })();

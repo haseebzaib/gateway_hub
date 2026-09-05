@@ -5885,6 +5885,7 @@ document.addEventListener("DOMContentLoaded", () => {
             let incRows = [];
             const incPager = evPanel.querySelector("[data-inc-pager]");
             const incDrawerCtl = Incidents.attachDrawer(incDrawer);
+            Incidents.attachPilotSummary(evPanel.querySelector("[data-pilot-panel]"), "sensors");
 
             const incRenderSummary = (summary) => {
                 if (!incSummary) return;

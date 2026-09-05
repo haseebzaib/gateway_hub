@@ -292,6 +292,21 @@
                     <button class="ev-win-btn" data-inc-win="7d">7 d</button>
                 </div>
             </div>
+            {# Pilot Summary: the same KPIs totalled across a date range, for
+               reporting on a whole pilot rather than one incident at a time. #}
+            <div class="pilot-panel" data-pilot-panel>
+                <div class="pilot-head">
+                    <button class="ev-view-btn" data-pilot-toggle>Pilot Summary</button>
+                    <div class="pilot-range ov-hidden" data-pilot-range>
+                        <label>From <input type="date" class="sv-date-input" data-pilot-from></label>
+                        <label>To <input type="date" class="sv-date-input" data-pilot-to></label>
+                        <button class="ev-win-btn" data-pilot-apply>Show</button>
+                        <a class="inc-export-btn" data-pilot-csv href="#">↓ CSV</a>
+                    </div>
+                </div>
+                <div class="pilot-body ov-hidden" data-pilot-body></div>
+            </div>
+
             <div class="inc-list" data-inc-list></div>
             <div class="ev-pager" data-inc-pager></div>
             <div class="ev-empty" data-inc-empty>
