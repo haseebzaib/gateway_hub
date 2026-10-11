@@ -53,15 +53,26 @@ HEADLINES = {
     "relapsed": "Problem returned",
     "restored": "Service restored",
     "closed": "Resolved",
+    "revised": "Diagnosis revised",
 }
 
 
-def incident_details(incident: dict[str, Any], *, stage: str) -> dict[str, Any]:
+def incident_details(
+    incident: dict[str, Any], *, stage: str, told_domain: str | None = None,
+) -> dict[str, Any]:
     """The full, structured explanation of one incident at this transition.
 
-    `stage` is open, relapsed, restored or closed. Figures are final only at
-    closed; before that they are labelled as progress so far.
+    `stage` is open, relapsed, restored, closed or revised. Figures are final
+    only at closed; before that they are labelled as progress so far.
+    `told_domain` is the diagnosis stated in the previous message; when it
+    differs from the current one, the change is called out rather than left
+    for the reader to spot.
     """
+    domain_now = str(incident.get("domain") or "unknown")
+    revised_from = (
+        DOMAIN_LABELS.get(told_domain, told_domain)
+        if told_domain and told_domain != domain_now else None
+    )
     final = stage == "closed"
     view = dict(incident)
     view["timeline"] = wording.timeline_rows(incident)
@@ -93,6 +104,7 @@ def incident_details(incident: dict[str, Any], *, stage: str) -> dict[str, Any]:
                 "This is the gateway's conclusion from the checks below, not a direct "
                 "observation of the remote system."
             ),
+            "revised_from": revised_from,
         },
         "checks": [
             {
@@ -110,7 +122,7 @@ def incident_details(incident: dict[str, Any], *, stage: str) -> dict[str, Any]:
         "facts": _facts(incident, kpi),
         "data": _data_rows(kpi, final=final),
         "data_note": kpi.get("completeness_note") or "",
-        "action": _action(incident, kpi, destinations, domain, stage=stage),
+        "action": _action(incident, kpi, destinations, domain, stage=stage, revised_from=revised_from),
     }
 
 
@@ -187,8 +199,19 @@ def _data_rows(kpi: dict[str, Any], *, final: bool) -> list[tuple[str, str]]:
 
 def _action(
     incident: dict[str, Any], kpi: dict[str, Any], destinations: list[str],
-    domain: str, *, stage: str,
+    domain: str, *, stage: str, revised_from: str | None = None,
 ) -> str:
+    if stage == "revised":
+        lead = (
+            f"Correction: the earlier notification gave the likely cause as {revised_from}. "
+            f"With more evidence the gateway now concludes {domain_label(incident)}; "
+            "please disregard the earlier cause. "
+        )
+        if incident.get("status") == "open":
+            template = ACTION_OPEN.get(domain, ACTION_OPEN["unknown"])
+            return lead + template.format(
+                destination=incident_report._join(destinations) or "the destination server")
+        return lead + "Service is working again; no action is needed now."
     if stage in ("open", "relapsed"):
         template = ACTION_OPEN.get(domain, ACTION_OPEN["unknown"])
         text = template.format(destination=incident_report._join(destinations) or "the destination server")

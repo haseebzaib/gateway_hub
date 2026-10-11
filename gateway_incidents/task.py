@@ -33,6 +33,8 @@ from .storage import IncidentStorage
 LOGGER = logging.getLogger("edge_server")
 CORRELATE_INTERVAL_S = 20.0
 PATH_SCOPE_KEY = "delivery"
+# Revisions closer together than this are one change of mind, not several.
+REVISION_COLLAPSE_MS = 5 * 60_000
 # Titles for gateway/network incidents that began while delivery was already
 # interrupted, and so stand on their own.
 SIDE_TITLES = {
@@ -287,6 +289,26 @@ class IncidentTask:
             "title": self._title(scope_kind, scope_key, affected, domain),
             "kpi_json": self._kpi_for(existing, counters, merged, source_gap, now_ms),
         }
+        if domain != existing.get("domain"):
+            # The diagnosis changed as evidence arrived. Recorded so the console,
+            # the report and any correction email all show that it moved.
+            # Back-to-back revisions collapse into one entry, and a flip back to
+            # the original verdict removes it, so evidence that wobbles cannot
+            # grow the timeline without bound.
+            timeline = list(existing.get("timeline") or [])
+            last = timeline[-1] if timeline else {}
+            if last.get("kind") == "revised" and now_ms - int(last.get("ts_ms") or 0) < REVISION_COLLAPSE_MS:
+                origin = last.get("from")
+                timeline.pop()
+            else:
+                origin = existing.get("domain")
+            if origin != domain:
+                timeline.append({"ts_ms": now_ms, "kind": "revised", "from": origin, "to": domain})
+            updates["timeline_json"] = timeline
+            LOGGER.info(
+                "incident_rediagnosed ref=%s from=%s to=%s",
+                existing.get("ref"), existing.get("domain"), domain,
+            )
         if existing.get("status") == "recovering":
             # It broke again inside the stability window — same incident.
             updates["status"] = "open"

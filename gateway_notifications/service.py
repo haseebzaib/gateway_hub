@@ -28,6 +28,9 @@ from gateway_incidents import INCIDENT_HOMES, incident_home
 
 LOGGER = logging.getLogger("edge_server")
 POLL_INTERVAL_S = 20.0
+# A changed diagnosis must hold this long before a correction is sent, so
+# evidence that wobbles between two verdicts cannot produce a stream of emails.
+REVISION_SETTLE_MS = 60_000
 RETRY_BASE_S = 5.0
 MAX_LOG_ENTRIES = 200
 
@@ -50,6 +53,8 @@ class NotificationService:
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
         self._buffer_warned = False
+        # incident id -> (candidate domain, first seen ms) while a revision settles
+        self._revisions: dict[int, tuple[str, int]] = {}
         self._sent_times: deque[float] = deque(maxlen=1000)
         self._log: deque[dict[str, Any]] = deque(maxlen=MAX_LOG_ENTRIES)
 
@@ -97,11 +102,27 @@ class NotificationService:
         notes: list[dict[str, Any]] = []
         store = getattr(self.incidents, "storage", None)
 
+        now_ms = int(time.time() * 1000)
         for incident in self._recent_incidents():
             status = str(incident.get("status") or "")
+            domain = str(incident.get("domain") or "")
             previous = incident.get("notified_state")
+            told = incident.get("notified_domain")
+            incident_id = int(incident["id"])
+
             if previous == status:
+                # No state change — but if the diagnosis readers were given has
+                # since changed, they are acting on a wrong cause; correct it.
+                if status in ("open", "recovering") and told and domain != told:
+                    if self._revision_settled(incident_id, domain, now_ms):
+                        notes.append(self._incident_note(incident, stage="revised", told_domain=told))
+                        self._revisions.pop(incident_id, None)
+                        if store is not None:
+                            store.mark_notified(incident_id, status, domain)
+                else:
+                    self._revisions.pop(incident_id, None)
                 continue
+
             # One message per state a reader cares about: it broke, it is
             # working again (sent the moment service returns, not 5 minutes
             # later), and it is closed with final figures. A relapse inside the
@@ -109,24 +130,35 @@ class NotificationService:
             if previous is None and status in ("open", "recovering"):
                 notes.append(self._incident_note(incident, stage="open"))
             elif previous == "open" and status == "recovering":
-                notes.append(self._incident_note(incident, stage="restored"))
+                notes.append(self._incident_note(incident, stage="restored", told_domain=told))
             elif previous == "recovering" and status == "open":
-                notes.append(self._incident_note(incident, stage="relapsed"))
+                notes.append(self._incident_note(incident, stage="relapsed", told_domain=told))
             elif status == "resolved":
                 # Also covers opened-and-closed between two polls.
-                notes.append(self._incident_note(incident, stage="closed"))
+                notes.append(self._incident_note(incident, stage="closed", told_domain=told))
+            self._revisions.pop(incident_id, None)
             if store is not None:
-                store.mark_notified(int(incident["id"]), status)
+                store.mark_notified(incident_id, status, domain)
 
         buffer_note = self._buffer_note(config)
         if buffer_note is not None:
             notes.append(buffer_note)
         return notes
 
-    def _incident_note(self, incident: dict[str, Any], *, stage: str) -> dict[str, Any]:
+    def _revision_settled(self, incident_id: int, domain: str, now_ms: int) -> bool:
+        candidate = self._revisions.get(incident_id)
+        if candidate is None or candidate[0] != domain:
+            self._revisions[incident_id] = (domain, now_ms)
+            return False
+        return now_ms - candidate[1] >= REVISION_SETTLE_MS
+
+    def _incident_note(
+        self, incident: dict[str, Any], *, stage: str, told_domain: str | None = None,
+    ) -> dict[str, Any]:
         kpi = incident.get("kpi") or {}
-        opened = stage in ("open", "relapsed")
-        details = incident_details(incident, stage=stage)
+        # A revision of a live incident is as actionable as the first alert.
+        opened = stage in ("open", "relapsed") or (stage == "revised" and incident.get("status") == "open")
+        details = incident_details(incident, stage=stage, told_domain=told_domain)
         ref = str(incident.get("ref") or "")
         domain = str(incident.get("domain") or "")
         # Opens the incident over the page that owns it, on every address the

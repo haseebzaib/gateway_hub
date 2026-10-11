@@ -48,6 +48,10 @@ TIMELINE_TEXT = {
         "Service came back",
         "Working again. The incident stays open 5 more minutes to be sure it holds.",
     ),
+    "revised": (
+        "Likely cause revised",
+        "New evidence changed the gateway's conclusion about the likely cause.",
+    ),
     "closed_stable": (
         "Incident closed",
         "Stayed healthy for 5 minutes after recovering, so the incident was closed.",
@@ -94,6 +98,12 @@ def local_clock(ms: Any) -> str:
     return datetime.fromtimestamp(int(ms) / 1000).astimezone().strftime("%d %b %Y, %H:%M:%S %Z")
 
 
+def _domain_name(domain: Any) -> str:
+    # Imported here: the correlator imports this module.
+    from .correlator import DOMAIN_LABELS
+    return DOMAIN_LABELS.get(str(domain or "unknown"), str(domain or "Unknown"))
+
+
 def status_label(status: Any) -> str:
     return STATUS_LABELS.get(str(status or ""), str(status or ""))
 
@@ -104,6 +114,8 @@ def timeline_rows(incident: dict[str, Any]) -> list[dict[str, Any]]:
         stored_label = str(entry.get("label") or "")
         kind = str(entry.get("kind") or "") or TIMELINE_LEGACY.get(stored_label, "")
         label, hint = TIMELINE_TEXT.get(kind, (stored_label, ""))
+        if kind == "revised":
+            label = f"{label}: {_domain_name(entry.get('from'))} → {_domain_name(entry.get('to'))}"
         rows.append({"ts_ms": entry.get("ts_ms"), "kind": kind, "label": label, "hint": hint})
     return rows
 

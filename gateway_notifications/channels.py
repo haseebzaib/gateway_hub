@@ -184,6 +184,8 @@ def _subject(note: dict[str, Any]) -> str:
     ref = note.get("incident_ref")
     title = note.get("title") or "Gateway notification"
     status = f"[{note['status_label']}] " if note.get("status_label") else ""
+    if note.get("stage") == "revised":
+        title = f"Diagnosis revised - {title}"
     return f"MetaCrust {status}Incident {ref} - {title}" if ref else f"MetaCrust - {title}"
 
 
@@ -275,6 +277,7 @@ def email_text(note: dict[str, Any]) -> str:
     cause = d["cause"]
     out += _section("Likely cause (inferred)", [
         f"{cause['domain']} - {cause['confidence']} confidence.",
+        f"Revised: previously reported as {cause['revised_from']}." if cause.get("revised_from") else "",
         f"Basis: {cause['basis']}.",
         cause["note"],
     ])
@@ -350,7 +353,9 @@ def email_html(note: dict[str, Any]) -> str:
         _html_h("Likely cause <span style='font-weight:400;color:#5f6368'>(inferred)</span>"),
         f"<p style='margin:0 0 4px'><strong>{e(str(cause['domain']))}</strong> &middot; "
         f"{e(str(cause['confidence']))} confidence</p>"
-        f"<p style='margin:0 0 4px;color:#3c4043'>Basis: {e(cause['basis'])}.</p>"
+        + (f"<p style='margin:0 0 4px;color:#b06000;font-weight:600'>Revised: previously reported as "
+           f"{e(str(cause['revised_from']))}.</p>" if cause.get("revised_from") else "")
+        + f"<p style='margin:0 0 4px;color:#3c4043'>Basis: {e(cause['basis'])}.</p>"
         f"<p style='margin:0;color:#5f6368;font-size:13px'>{e(cause['note'])}</p>",
         (_html_h("What the gateway checked") + _html_table(checks)) if checks else "",
         (_html_h("Timeline") + _html_table(timeline)) if timeline else "",

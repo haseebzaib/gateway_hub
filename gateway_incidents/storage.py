@@ -89,6 +89,12 @@ class IncidentStorage:
             # Incidents that predate this column were handled by the old
             # in-memory notifier; treat them as already announced.
             self._conn.execute("UPDATE incidents SET notified_state = status WHERE notified_state IS NULL")
+        if self._ensure_columns_locked("incidents", {"notified_domain": "TEXT"}):
+            # Whatever was announced before this column existed named the
+            # diagnosis of the time, which is the stored one.
+            self._conn.execute(
+                "UPDATE incidents SET notified_domain = domain WHERE notified_state IS NOT NULL"
+            )
         self._conn.commit()
 
     def _ensure_columns_locked(self, table: str, columns: dict[str, str]) -> bool:
@@ -102,11 +108,19 @@ class IncidentStorage:
                 added = True
         return added
 
-    def mark_notified(self, incident_id: int, state: str) -> None:
+    def mark_notified(self, incident_id: int, state: str, domain: str | None = None) -> None:
+        """Record what readers were last told: the state, and the diagnosis
+        stated with it, so a later change of diagnosis can be corrected."""
         with self._lock:
             self.open()
             assert self._conn is not None
-            self._conn.execute("UPDATE incidents SET notified_state = ? WHERE id = ?", (state, int(incident_id)))
+            if domain is None:
+                self._conn.execute("UPDATE incidents SET notified_state = ? WHERE id = ?", (state, int(incident_id)))
+            else:
+                self._conn.execute(
+                    "UPDATE incidents SET notified_state = ?, notified_domain = ? WHERE id = ?",
+                    (state, domain, int(incident_id)),
+                )
             self._conn.commit()
 
     # ── writes ───────────────────────────────────────────────────────────
