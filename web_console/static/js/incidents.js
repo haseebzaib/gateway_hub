@@ -116,7 +116,6 @@ const Incidents = (() => {
     const detailHtml = (inc, raw) => {
         const sources = (inc.affected || []).filter((a) => a.kind === "source");
         const others  = (inc.affected || []).filter((a) => a.kind !== "source");
-        const c = inc.continuity || {};
         const known = inc.domain && inc.domain !== "unknown";
         const page = DOMAIN_PAGE[inc.domain];
 
@@ -200,28 +199,6 @@ const Incidents = (() => {
             </div>
 
             ${kpiHtml(inc)}
-
-            <div class="inc-d-section">
-                <h4>Data continuity detail</h4>
-                <div class="inc-metrics">
-                    <div class="inc-metric">
-                        <div class="inc-metric-value">${(c.buffered_peak ?? c.pending ?? 0).toLocaleString()}</div>
-                        <div class="inc-metric-label">Buffered</div>
-                    </div>
-                    <div class="inc-metric">
-                        <div class="inc-metric-value">${(c.replayed ?? 0).toLocaleString()}</div>
-                        <div class="inc-metric-label">Replayed</div>
-                    </div>
-                    <div class="inc-metric ${(c.unrecovered ?? c.pending ?? 0) > 0 ? "is-loss" : "is-good"}">
-                        <div class="inc-metric-value">${(c.unrecovered ?? c.pending ?? 0).toLocaleString()}</div>
-                        <div class="inc-metric-label">Unrecovered</div>
-                    </div>
-                    <div class="inc-metric ${(c.dropped ?? 0) > 0 ? "is-loss" : "is-good"}">
-                        <div class="inc-metric-value">${(c.dropped ?? 0).toLocaleString()}</div>
-                        <div class="inc-metric-label">Dropped</div>
-                    </div>
-                </div>
-            </div>
 
             <div class="inc-d-section">
                 <h4>What the gateway checked</h4>

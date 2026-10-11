@@ -181,6 +181,11 @@ def summary_prose(
 
 def _replay_sentence(kpi: dict[str, Any]) -> str:
     """What recovered — stated only as far as the counters actually support."""
+    if kpi.get("side_incident"):
+        return (
+            "Data delivery for this period is counted on the delivery interruption incident "
+            "that was already open, so it is not repeated here."
+        )
     if kpi.get("source_outage"):
         return (
             "A device that stops reporting sends nothing for the gateway to buffer, so "
@@ -219,7 +224,11 @@ def measurement_statement(incident: dict[str, Any], kpi: dict[str, Any]) -> dict
         "Incident start, detection and restoration times.",
         "Which connectivity checks passed or failed during the interruption.",
     ]
-    if kpi.get("source_outage"):
+    if kpi.get("side_incident"):
+        measured.append(
+            "Buffer and replay volumes are counted on the delivery interruption incident open at the time."
+        )
+    elif kpi.get("source_outage"):
         measured.append(
             "Buffer and replay volumes do not apply: a stopped source sends nothing to buffer."
         )

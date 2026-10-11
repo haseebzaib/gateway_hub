@@ -155,6 +155,7 @@ class IncidentTask:
                 now_ms=now_ms, network_state=network_state, source_total=source_total,
                 continuity=continuity, all_faults=path_faults_seen + source_faults,
                 counters=counters, source_gap=bool(source_faults),
+                source_since=tuple(int(f.since_ms) for f in source_faults),
             )
 
         # A source failing on its own is its own incident. It is only folded into
@@ -190,8 +191,19 @@ class IncidentTask:
         network_state: dict[str, Any] | None, source_total: int,
         continuity: dict[str, Any], all_faults: list[Fault], counters: dict[str, int],
         source_gap: bool = False, suppressed: bool = False,
+        source_since: tuple[int, ...] = (),
     ) -> None:
         existing = self.storage.open_for_scope(scope_kind, scope_key)
+        if scope_kind == "path" and existing is not None:
+            # A sensor that stops after delivery was already restored did not
+            # leave a gap in *this* incident's data, so it cannot make this
+            # incident's completeness unverifiable. A gap seen while the
+            # incident was live stays on the record after the sensor returns.
+            window_end = int(existing.get("restored_ms") or now_ms)
+            source_gap = (
+                any(since <= window_end for since in source_since)
+                or (existing.get("kpi") or {}).get("completeness") == kpi_mod.UNVERIFIABLE
+            )
 
         if not faults:
             if existing is None:
