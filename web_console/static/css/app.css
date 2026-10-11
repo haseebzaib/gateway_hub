@@ -11247,3 +11247,6 @@ body.anomaly-modal-open { overflow: hidden; }
 .ev-pager:has(.ev-page-num) .ev-page-label { margin-left: 0.6rem; }
 .ov-inc-pager:empty { display: none; }
 .ov-inc-pager { padding-bottom: 0; }
+
+/* A layer that failed after the incident began: shown, but not the cause. */
+.inc-ev-row.is-later .inc-ev-state { color: var(--accent-strong); }

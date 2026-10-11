@@ -132,7 +132,7 @@ const Incidents = (() => {
         const evidenceRows = (inc.evidence || []).map((e) => `
             <div class="inc-ev-row is-${e.state}">
                 <span class="inc-ev-check">${esc(e.check)}</span>
-                <span class="inc-ev-state">${esc(e.state)}</span>
+                <span class="inc-ev-state">${esc(e.state === "later" ? "failed later" : e.state)}</span>
                 <span>${esc(e.finding)}</span>
             </div>`).join("");
 

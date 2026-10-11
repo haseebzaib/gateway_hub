@@ -137,6 +137,25 @@ def for_source_outage(record: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def for_side_incident(record: dict[str, Any]) -> dict[str, Any]:
+    """Strip delivery figures from a gateway/network incident that began while
+    delivery was already interrupted.
+
+    The buffer and replay counters are already attributed to that delivery
+    incident; repeating them here would count the same records twice in a
+    pilot summary.
+    """
+    out = dict(record)
+    for key in ("buffered_peak", "replayed", "pending", "evicted", "accounted", "recovery_pct"):
+        out[key] = None
+    out["recovery_basis"] = (
+        "not applicable — data delivery during this period is accounted on the "
+        "delivery interruption incident that was already open"
+    )
+    out["side_incident"] = True
+    return out
+
+
 def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     """Roll several incidents' KPIs into one pilot summary.
 

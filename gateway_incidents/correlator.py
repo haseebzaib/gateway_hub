@@ -26,6 +26,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from .wording import local_clock
+
 
 # A fault must clear and stay clear this long before its incident is closed,
 # so a flapping link is one incident rather than one per flap.
@@ -40,6 +42,11 @@ STABILITY_WINDOW_MS = 5 * 60_000
 # those mean data is not being collected or not being delivered, which matters
 # immediately.
 NETWORK_FAULT_GRACE_MS = 2 * 60_000
+# A fault can only explain an incident if it began no later than the incident
+# did. The allowance covers detection lag between layers: a source is marked
+# down only after its poll times out, so the real stop precedes its record.
+CAUSE_TOLERANCE_MS = 5_000
+
 # How far back a correlation pass replays raw events to rebuild fault state.
 LOOKBACK_MS = 7 * 86_400_000
 
@@ -125,6 +132,9 @@ class Checks:
 
     verdicts: dict[str, bool | None] = field(default_factory=dict)
     findings: dict[str, str] = field(default_factory=dict)
+    # Layers that failed only after the incident began. They were healthy when
+    # it started, so they cannot have caused it; they are shown, not blamed.
+    later: set[str] = field(default_factory=set)
 
     def set(self, layer: str, ok: bool | None, finding: str) -> None:
         self.verdicts[layer] = ok
@@ -388,12 +398,29 @@ def replay_faults(signals: list[Signal]) -> tuple[dict[tuple[str, str], Fault], 
 
 # ── classification ───────────────────────────────────────────────────────
 
-def build_checks(faults: list[Fault], *, network_state: dict[str, Any] | None, source_total: int) -> Checks:
-    """Evaluate every layer, recording unknowns honestly."""
+def build_checks(
+    faults: list[Fault], *, network_state: dict[str, Any] | None, source_total: int,
+    root_ms: int | None = None, own: frozenset[tuple[str, str]] = frozenset(),
+) -> Checks:
+    """Evaluate every layer, recording unknowns honestly.
+
+    With `root_ms` (when the incident began) the checks describe the state at
+    that moment: a fault elsewhere that started later is reported as "failed
+    later" and kept out of the diagnosis. Without this, CPU load that began
+    after a server refused connections re-labelled the server outage as a
+    gateway fault. `own` are the incident's own faults, which define it and so
+    are never "later".
+    """
     checks = Checks()
     by_layer: dict[str, list[Fault]] = {}
+    later_by_layer: dict[str, list[Fault]] = {}
     for fault in faults:
-        by_layer.setdefault(fault.layer, []).append(fault)
+        is_later = (
+            root_ms is not None
+            and (fault.layer, fault.scope) not in own
+            and int(fault.since_ms) > int(root_ms) + CAUSE_TOLERANCE_MS
+        )
+        (later_by_layer if is_later else by_layer).setdefault(fault.layer, []).append(fault)
 
     down_sources = by_layer.get(SOURCE, [])
     if source_total == 0 and not down_sources:
@@ -429,6 +456,16 @@ def build_checks(faults: list[Fault], *, network_state: dict[str, Any] | None, s
         checks.set(DESTINATION, False, dest_faults[0].detail or "destination unreachable")
     else:
         checks.set(DESTINATION, True, "accepting data")
+    for layer, later in later_by_layer.items():
+        if checks.verdicts.get(layer) is False:
+            continue  # an earlier fault on this layer already counts
+        first = min(later, key=lambda f: int(f.since_ms))
+        names = ", ".join(sorted({f.label for f in later})) if layer == SOURCE else (first.detail or first.label)
+        checks.set(layer, True, (
+            f"healthy when this incident began; failed later at {local_clock(first.since_ms)}, "
+            f"so not the cause ({names})"
+        ))
+        checks.later.add(layer)
     return checks
 
 
@@ -499,7 +536,8 @@ def evidence_rows(checks: Checks) -> list[dict[str, Any]]:
         rows.append({
             "layer": layer,
             "check": labels[layer],
-            "state": "unknown" if ok is None else ("ok" if ok else "failed"),
+            "state": "later" if layer in checks.later
+                     else "unknown" if ok is None else ("ok" if ok else "failed"),
             "finding": checks.findings.get(layer, ""),
         })
     return rows

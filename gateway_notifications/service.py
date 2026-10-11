@@ -102,15 +102,19 @@ class NotificationService:
             previous = incident.get("notified_state")
             if previous == status:
                 continue
-            # Only two transitions are worth telling anyone about: it started,
-            # and it is over. "recovering" is an internal waiting state.
+            # One message per state a reader cares about: it broke, it is
+            # working again (sent the moment service returns, not 5 minutes
+            # later), and it is closed with final figures. A relapse inside the
+            # stability window is announced as active again.
             if previous is None and status in ("open", "recovering"):
-                notes.append(self._incident_note(incident, opened=True))
-            elif previous in ("open", "recovering") and status == "resolved":
-                notes.append(self._incident_note(incident, opened=False))
-            elif previous is None and status == "resolved":
-                # Opened and closed between two polls: one note covers it.
-                notes.append(self._incident_note(incident, opened=False))
+                notes.append(self._incident_note(incident, stage="open"))
+            elif previous == "open" and status == "recovering":
+                notes.append(self._incident_note(incident, stage="restored"))
+            elif previous == "recovering" and status == "open":
+                notes.append(self._incident_note(incident, stage="relapsed"))
+            elif status == "resolved":
+                # Also covers opened-and-closed between two polls.
+                notes.append(self._incident_note(incident, stage="closed"))
             if store is not None:
                 store.mark_notified(int(incident["id"]), status)
 
@@ -119,9 +123,10 @@ class NotificationService:
             notes.append(buffer_note)
         return notes
 
-    def _incident_note(self, incident: dict[str, Any], *, opened: bool) -> dict[str, Any]:
+    def _incident_note(self, incident: dict[str, Any], *, stage: str) -> dict[str, Any]:
         kpi = incident.get("kpi") or {}
-        details = incident_details(incident, opened=opened)
+        opened = stage in ("open", "relapsed")
+        details = incident_details(incident, stage=stage)
         ref = str(incident.get("ref") or "")
         domain = str(incident.get("domain") or "")
         # Opens the incident over the page that owns it, on every address the
@@ -139,6 +144,7 @@ class NotificationService:
             "failure_domain": domain_label(incident),
             "started_at": _iso(incident.get("started_ms")),
             "resolved_at": _iso(incident.get("restored_ms")) if not opened else None,
+            "stage": stage,
             # What is waiting to be delivered — not the whole queue's peak, and
             # nothing at all for a source that stopped, which buffers nothing.
             "buffered_records": None if kpi.get("source_outage") else kpi.get("pending"),

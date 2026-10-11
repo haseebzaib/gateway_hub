@@ -306,7 +306,7 @@ def _text_links(note: dict[str, Any]) -> list[str]:
 
 
 _STATE_COLOUR = {"open": "#d93025", "recovering": "#1e8e5a", "resolved": "#1e8e5a"}
-_CHECK_COLOUR = {"failed": "#d93025", "ok": "#1e8e5a"}
+_CHECK_COLOUR = {"failed": "#d93025", "ok": "#1e8e5a", "later": "#b06000"}
 
 
 def email_html(note: dict[str, Any]) -> str:

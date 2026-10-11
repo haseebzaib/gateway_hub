@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 from .correlator import (
+    CAUSE_TOLERANCE_MS,
     DESTINATION as DESTINATION_LAYER,
     DOMAIN_LABELS,
     GATEWAY as GATEWAY_LAYER,
@@ -32,6 +33,13 @@ from .storage import IncidentStorage
 LOGGER = logging.getLogger("edge_server")
 CORRELATE_INTERVAL_S = 20.0
 PATH_SCOPE_KEY = "delivery"
+# Titles for gateway/network incidents that began while delivery was already
+# interrupted, and so stand on their own.
+SIDE_TITLES = {
+    "gateway": "Gateway health degraded",
+    "local_network": "Local network interruption",
+    "uplink": "Internet uplink lost",
+}
 # A source must have reported this recently to count as affected by a delivery
 # interruption — anything older had nothing in flight to lose.
 ACTIVE_SOURCE_WINDOW_MS = 60 * 60_000
@@ -116,28 +124,53 @@ class IncidentTask:
         source_faults = [f for key, f in open_faults.items() if key[0] == SOURCE]
 
         # A shared-layer fault interrupts delivery for every device, so it is one
-        # incident naming all affected sources — not one per device.
-        self._reconcile(
-            scope_kind="path", scope_key=PATH_SCOPE_KEY, faults=path_faults,
-            cleared={k: v for k, v in cleared.items() if k[0] in PATH_LAYERS},
-            now_ms=now_ms, network_state=network_state, source_total=source_total,
-            continuity=continuity, all_faults=path_faults_seen + source_faults,
-            counters=counters, source_gap=bool(source_faults),
-        )
+        # incident naming all affected sources — not one per device. The
+        # exception is a gateway or network fault that begins while delivery is
+        # already interrupted: it did not cause that interruption, so folding it
+        # in would either hide it or re-diagnose the existing incident. It gets
+        # an incident of its own, keyed by layer.
+        delivery = self.storage.open_for_scope("path", PATH_SCOPE_KEY)
+        side_open = {
+            str(row.get("scope_key")) for row in self._open_path_incidents()
+            if row.get("scope_key") != PATH_SCOPE_KEY
+        }
+
+        def path_scope(fault: Fault) -> str:
+            if fault.layer == DESTINATION_LAYER:
+                return PATH_SCOPE_KEY
+            if fault.layer in side_open:
+                return fault.layer
+            if delivery is not None and int(fault.since_ms) > int(delivery["started_ms"]) + CAUSE_TOLERANCE_MS:
+                return fault.layer
+            return PATH_SCOPE_KEY
+
+        path_cleared = {k: v for k, v in cleared.items() if k[0] in PATH_LAYERS}
+        for scope_key in {PATH_SCOPE_KEY, *side_open, *(path_scope(f) for f in path_faults)}:
+            self._reconcile(
+                scope_kind="path", scope_key=scope_key,
+                faults=[f for f in path_faults if path_scope(f) == scope_key],
+                cleared={k: v for k, v in path_cleared.items() if path_scope(v) == scope_key},
+                now_ms=now_ms, network_state=network_state, source_total=source_total,
+                continuity=continuity, all_faults=path_faults_seen + source_faults,
+                counters=counters, source_gap=bool(source_faults),
+            )
 
         # A source failing on its own is its own incident. It is only folded into
         # the path incident when a fault that could plausibly *cause* it is open:
         # a degraded gateway or a downed local interface can stop sources being
         # polled, whereas an unreachable uplink or destination cannot — those are
         # downstream of the sensors, so a sensor failing at the same time is a
-        # genuinely separate problem and deserves its own incident.
-        explains_source_loss = any(f.layer in (GATEWAY_LAYER, LOCAL_NETWORK_LAYER) for f in path_faults_seen)
+        # genuinely separate problem and deserves its own incident. The cause
+        # must also have come first: CPU load that began after a sensor went
+        # quiet did not silence it.
+        causes = [f for f in path_faults_seen if f.layer in (GATEWAY_LAYER, LOCAL_NETWORK_LAYER)]
         for fault in source_faults:
+            explained = any(int(c.since_ms) <= int(fault.since_ms) + CAUSE_TOLERANCE_MS for c in causes)
             self._reconcile(
                 scope_kind="source", scope_key=fault.scope, faults=[fault],
                 cleared={}, now_ms=now_ms, network_state=network_state,
                 source_total=source_total, continuity=continuity,
-                all_faults=path_faults_seen + [fault], suppressed=explains_source_loss,
+                all_faults=path_faults_seen + [fault], suppressed=explained,
                 counters=counters, source_gap=True,
             )
         for key, fault in cleared.items():
@@ -206,17 +239,21 @@ class IncidentTask:
         if suppressed and existing is None:
             return
 
-        checks = build_checks(all_faults, network_state=network_state, source_total=source_total)
+        started = min(int(f.since_ms) for f in faults)
+        root_ms = int(existing["started_ms"]) if existing else started
+        checks = build_checks(
+            all_faults, network_state=network_state, source_total=source_total,
+            root_ms=root_ms, own=frozenset((f.layer, f.scope) for f in faults),
+        )
         domain, confidence = classify(checks, scope_kind=scope_kind)
         evidence = evidence_rows(checks)
         affected = self._affected(scope_kind, faults, source_total)
-        started = min(int(f.since_ms) for f in faults)
 
         if existing is None:
             ref = self.storage.next_ref()
             incident = self.storage.open_incident({
                 "ref": ref, "scope_kind": scope_kind, "scope_key": scope_key,
-                "title": self._title(scope_kind, affected, domain),
+                "title": self._title(scope_kind, scope_key, affected, domain),
                 "started_ms": started, "detected_ms": now_ms,
                 "domain": domain, "domain_conf": confidence,
                 "severity": self._severity(domain, continuity),
@@ -247,7 +284,7 @@ class IncidentTask:
             "domain": domain, "domain_conf": confidence,
             "severity": self._severity(domain, merged),
             "affected_json": affected, "evidence_json": evidence, "continuity_json": merged,
-            "title": self._title(scope_kind, affected, domain),
+            "title": self._title(scope_kind, scope_key, affected, domain),
             "kpi_json": self._kpi_for(existing, counters, merged, source_gap, now_ms),
         }
         if existing.get("status") == "recovering":
@@ -257,6 +294,12 @@ class IncidentTask:
         self.storage.update_incident(existing["id"], updates)
 
     # ── helpers ──────────────────────────────────────────────────────────
+    def _open_path_incidents(self) -> list[dict[str, Any]]:
+        try:
+            return [r for r in self.storage.open_incidents() if r.get("scope_kind") == "path"]
+        except Exception:
+            return []
+
     def _latest_clear(self, cleared: dict[tuple[str, str], Fault]) -> int | None:
         stamps = [f.cleared_ms for f in cleared.values() if f.cleared_ms]
         return max(stamps) if stamps else None
@@ -287,10 +330,12 @@ class IncidentTask:
             rows.append({"kind": fault.layer, "id": fault.scope, "name": fault.label})
         return rows
 
-    def _title(self, scope_kind: str, affected: list[dict[str, Any]], domain: str) -> str:
+    def _title(self, scope_kind: str, scope_key: str, affected: list[dict[str, Any]], domain: str) -> str:
         sources = [a["name"] for a in affected if a.get("kind") == "source"]
         if scope_kind == "source":
             return f"{sources[0] if sources else 'Source'} stopped reporting"
+        if scope_key != PATH_SCOPE_KEY:
+            return SIDE_TITLES.get(scope_key, f"{DOMAIN_LABELS.get(scope_key, 'Gateway')} degraded")
         if len(sources) == 1:
             return f"{sources[0]} data delivery interruption"
         if sources:
@@ -368,6 +413,8 @@ class IncidentTask:
         )
         if incident.get("scope_kind") == "source":
             record = kpi_mod.for_source_outage(record)
+        elif incident.get("scope_key") not in (None, PATH_SCOPE_KEY):
+            record = kpi_mod.for_side_incident(record)
         return record
 
     def _write_kpi(
@@ -421,7 +468,9 @@ class IncidentTask:
         except Exception:
             return {"pending": 0, "replayed": 0, "dropped": 0}
         return {
-            "pending": int(stats.get("total_pending") or 0),
+            # Outage backlog, not the live queue: records that arrived after
+            # recovery and are merely next in line are not undelivered.
+            "pending": int(stats.get("total_backlog", stats.get("total_pending")) or 0),
             "replayed": int(stats.get("total_replayed") or 0),
             "dropped": int(stats.get("total_dropped") or 0),
         }

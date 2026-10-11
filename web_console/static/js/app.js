@@ -374,7 +374,7 @@ document.addEventListener("DOMContentLoaded", () => {
         // The correlated "is anything actually wrong" answer. One list, most
         // urgent first, paged in place so a bad day never pushes the rest of
         // the page off screen and every incident stays reachable from here.
-        const OV_INC_PER_PAGE = 5;
+        const OV_INC_PER_PAGE = 3;
         let ovIncRows = [];
         let ovIncPage = 0;
 

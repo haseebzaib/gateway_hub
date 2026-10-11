@@ -45,11 +45,24 @@ ACTION_OPEN = {
     ),
 }
 
-_CHECK_RESULT = {"ok": "OK", "failed": "Failed", "unknown": "Not checked"}
+_CHECK_RESULT = {"ok": "OK", "failed": "Failed", "unknown": "Not checked", "later": "Failed later"}
 
 
-def incident_details(incident: dict[str, Any], *, opened: bool) -> dict[str, Any]:
-    """The full, structured explanation of one incident at this transition."""
+HEADLINES = {
+    "open": "Problem detected",
+    "relapsed": "Problem returned",
+    "restored": "Service restored",
+    "closed": "Resolved",
+}
+
+
+def incident_details(incident: dict[str, Any], *, stage: str) -> dict[str, Any]:
+    """The full, structured explanation of one incident at this transition.
+
+    `stage` is open, relapsed, restored or closed. Figures are final only at
+    closed; before that they are labelled as progress so far.
+    """
+    final = stage == "closed"
     view = dict(incident)
     view["timeline"] = wording.timeline_rows(incident)
     view["evidence"] = wording.evidence_rows(incident)
@@ -69,7 +82,7 @@ def incident_details(incident: dict[str, Any], *, opened: bool) -> dict[str, Any
         "status": status,
         "status_label": wording.status_label(status),
         "status_explain": wording.STATUS_EXPLAIN.get(status, ""),
-        "headline": "Problem detected" if opened else "Resolved",
+        "headline": HEADLINES.get(stage, "Update"),
         "summary": summary,
         "affected": {"sources": sources, "destinations": destinations},
         "cause": {
@@ -95,9 +108,9 @@ def incident_details(incident: dict[str, Any], *, opened: bool) -> dict[str, Any
             for row in view["timeline"]
         ],
         "facts": _facts(incident, kpi),
-        "data": _data_rows(kpi, opened=opened),
+        "data": _data_rows(kpi, final=final),
         "data_note": kpi.get("completeness_note") or "",
-        "action": _action(incident, kpi, destinations, domain, opened=opened),
+        "action": _action(incident, kpi, destinations, domain, stage=stage),
     }
 
 
@@ -141,27 +154,29 @@ def _facts(incident: dict[str, Any], kpi: dict[str, Any]) -> list[tuple[str, str
     return facts
 
 
-def _data_rows(kpi: dict[str, Any], *, opened: bool) -> list[tuple[str, str]]:
+def _data_rows(kpi: dict[str, Any], *, final: bool) -> list[tuple[str, str]]:
     """What the incident meant for the data — only figures the counters support."""
     if kpi.get("source_outage"):
         return [("Readings during the outage", "Not taken: the device was not answering")]
+    if kpi.get("side_incident"):
+        return [("Data delivery", "Counted on the delivery interruption incident that was already open")]
     if not kpi:
         return []
     rows: list[tuple[str, str]] = []
     if kpi.get("received_during") is not None:
         rows.append(("Records that reached the gateway since it began", f"{int(kpi['received_during']):,}"))
     if kpi.get("replayed") is not None:
-        rows.append(("Delivered from the buffer" if not opened else "Delivered from the buffer so far",
+        rows.append(("Delivered from the buffer" if final else "Delivered from the buffer so far",
                      f"{int(kpi['replayed']):,}"))
     if kpi.get("pending") is not None:
         # The live queue, which can include a few records from just before the
         # incident began — hence "now", not "from this incident".
-        rows.append(("Waiting in the buffer now", f"{int(kpi['pending']):,}"))
+        rows.append(("Still to be delivered from the outage", f"{int(kpi['pending']):,}"))
     if kpi.get("evicted"):
         rows.append(("Dropped because the buffer was full", f"{int(kpi['evicted']):,}"))
-    # Mid-outage a recovery percentage only measures how far replay has got,
-    # and "0% recovered" reads as loss; it is stated once the incident closes.
-    if opened:
+    # Before closing, a recovery percentage only measures how far replay has
+    # got, and "0% recovered" reads as loss; it is stated once the incident closes.
+    if not final:
         return rows
     if kpi.get("recovery_pct") is not None:
         rows.append(("Recovered", f"{kpi['recovery_pct']}% ({kpi.get('recovery_basis')})"))
@@ -172,11 +187,21 @@ def _data_rows(kpi: dict[str, Any], *, opened: bool) -> list[tuple[str, str]]:
 
 def _action(
     incident: dict[str, Any], kpi: dict[str, Any], destinations: list[str],
-    domain: str, *, opened: bool,
+    domain: str, *, stage: str,
 ) -> str:
-    if opened:
+    if stage in ("open", "relapsed"):
         template = ACTION_OPEN.get(domain, ACTION_OPEN["unknown"])
-        return template.format(destination=incident_report._join(destinations) or "the destination server")
+        text = template.format(destination=incident_report._join(destinations) or "the destination server")
+        if stage == "relapsed":
+            text = ("Service came back but failed again within 5 minutes, so this is the same "
+                    "incident, not a new one. " + text)
+        return text
+    if stage == "restored":
+        text = "No action needed now. Service is working again."
+        if domain in ("destination", "uplink") and kpi.get("pending"):
+            text += f" The {int(kpi['pending']):,} records held during the outage are being delivered now."
+        return text + (" The incident closes automatically after 5 minutes of stable service, and a "
+                       "final summary with the delivery figures follows then.")
     text = "No action needed. Service recovered and stayed healthy for 5 minutes, so the incident is closed."
     outstanding = int(kpi.get("pending") or 0)
     if outstanding and not kpi.get("source_outage"):

@@ -515,7 +515,7 @@ class ForwardingService:
 
     def buffer_stats(self) -> dict[str, Any]:
         profiles = []
-        total_pending = total_replayed = total_dropped = 0
+        total_pending = total_replayed = total_dropped = total_backlog = 0
         rates = []
         for profile in self.config.get("profiles", []):
             pid = profile["id"]
@@ -523,6 +523,15 @@ class ForwardingService:
             state = self._states.get(pid) or {}
             pending = self._pending(profile) if profile.get("enabled") else 0
             total_pending += pending
+            # Backlog is what queued while the destination was unreachable and
+            # has not been replayed yet. Once connected, the live queue also
+            # holds records that arrived seconds ago and are simply next in
+            # line; counting those as "undelivered" reported a clean recovery
+            # as 99.4% with 2 records lost.
+            if state.get("state") == "connected":
+                total_backlog += min(pending, max(0, int(state.get("replay_remaining") or 0)))
+            else:
+                total_backlog += pending
             total_replayed += counters["replayed"]
             total_dropped += counters["dropped"]
             attempts = state.get("publish_count", 0) + state.get("failed_count", 0)
@@ -543,6 +552,7 @@ class ForwardingService:
         return {
             "ok": True,
             "total_pending": total_pending,
+            "total_backlog": total_backlog,
             "total_replayed": total_replayed,
             "total_dropped": total_dropped,
             "success_rate": round(sum(rates) / len(rates)) if rates else 100,
