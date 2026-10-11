@@ -23,7 +23,7 @@ from . import channels as channel_delivery
 from .compose import domain_label, incident_details
 from .config import EVENT_TYPES, SEVERITIES, load_config
 from .console_links import console_links
-from gateway_incidents import INCIDENT_HOMES, incident_home
+from gateway_incidents import INCIDENT_HOMES, incident_home, wording
 
 
 LOGGER = logging.getLogger("edge_server")
@@ -171,7 +171,7 @@ class NotificationService:
             "incident_ref": ref,
             "status": details["status"],
             "status_label": details["status_label"],
-            "title": incident.get("title"),
+            "title": wording.incident_title(incident),
             "message": details["summary"],
             "failure_domain": domain_label(incident),
             "started_at": _iso(incident.get("started_ms")),

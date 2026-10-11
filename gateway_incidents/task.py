@@ -27,6 +27,7 @@ from .correlator import (
     retire_vanished,
 )
 from . import kpi as kpi_mod
+from . import wording as incident_wording
 from .storage import IncidentStorage
 
 
@@ -36,13 +37,6 @@ PATH_SCOPE_KEY = "delivery"
 NAMES_REFRESH_S = 60.0
 # Revisions closer together than this are one change of mind, not several.
 REVISION_COLLAPSE_MS = 5 * 60_000
-# Titles for gateway/network incidents that began while delivery was already
-# interrupted, and so stand on their own.
-SIDE_TITLES = {
-    "gateway": "Gateway health degraded",
-    "local_network": "Local network interruption",
-    "uplink": "Internet uplink lost",
-}
 # A source must have reported this recently to count as affected by a delivery
 # interruption — anything older had nothing in flight to lose.
 ACTIVE_SOURCE_WINDOW_MS = 60 * 60_000
@@ -273,7 +267,10 @@ class IncidentTask:
             ref = self.storage.next_ref()
             incident = self.storage.open_incident({
                 "ref": ref, "scope_kind": scope_kind, "scope_key": scope_key,
-                "title": self._title(scope_kind, scope_key, affected, domain),
+                "title": incident_wording.incident_title({
+                    "scope_kind": scope_kind, "scope_key": scope_key,
+                    "affected": affected, "domain": domain,
+                }),
                 "started_ms": started, "detected_ms": now_ms,
                 "domain": domain, "domain_conf": confidence,
                 "severity": self._severity(domain, continuity),
@@ -304,7 +301,10 @@ class IncidentTask:
             "domain": domain, "domain_conf": confidence,
             "severity": self._severity(domain, merged),
             "affected_json": affected, "evidence_json": evidence, "continuity_json": merged,
-            "title": self._title(scope_kind, scope_key, affected, domain),
+            "title": incident_wording.incident_title({
+                    "scope_kind": scope_kind, "scope_key": scope_key,
+                    "affected": affected, "domain": domain,
+                }),
             "kpi_json": self._kpi_for(existing, counters, merged, source_gap, now_ms),
         }
         if domain != existing.get("domain"):
@@ -382,18 +382,6 @@ class IncidentTask:
         for fault in faults:
             rows.append({"kind": fault.layer, "id": fault.scope, "name": fault.label})
         return rows
-
-    def _title(self, scope_kind: str, scope_key: str, affected: list[dict[str, Any]], domain: str) -> str:
-        sources = [a["name"] for a in affected if a.get("kind") == "source"]
-        if scope_kind == "source":
-            return f"{sources[0] if sources else 'Source'} stopped reporting"
-        if scope_key != PATH_SCOPE_KEY:
-            return SIDE_TITLES.get(scope_key, f"{DOMAIN_LABELS.get(scope_key, 'Gateway')} degraded")
-        if len(sources) == 1:
-            return f"{sources[0]} data delivery interruption"
-        if sources:
-            return f"Data delivery interruption — {len(sources)} sources"
-        return f"{DOMAIN_LABELS.get(domain, 'Delivery')} interruption"
 
     def _severity(self, domain: str, continuity: dict[str, Any]) -> str:
         if int(continuity.get("dropped") or 0) > 0:

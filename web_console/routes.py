@@ -2259,6 +2259,7 @@ def _incident_view(incident: dict[str, Any]) -> dict[str, Any]:
     duration_ms = max(0, (ended or _now_ms()) - started)
     return {
         **incident,
+        "title": incident_wording.incident_title(incident),
         "domain_label": INCIDENT_DOMAIN_LABELS.get(incident.get("domain", ""), "Unknown"),
         "duration_ms": duration_ms,
         # Only a fault that is still happening is "ongoing". A recovering
@@ -2541,7 +2542,7 @@ def insights_pilot_summary_csv(request: Request) -> Response:
         ended = int(row.get("restored_ms") or row.get("closed_ms") or 0)
         k = _incident_kpi(row, max(0, ended - started) if ended else 0)
         writer.writerow([
-            row.get("ref"), row.get("title"), row.get("status"),
+            row.get("ref"), incident_wording.incident_title(row), row.get("status"),
             INCIDENT_DOMAIN_LABELS.get(row.get("domain", ""), "Unknown"), row.get("domain_conf"),
             _iso_from_ms(row.get("started_ms")), _iso_from_ms(row.get("detected_ms")),
             _iso_from_ms(row.get("restored_ms")),

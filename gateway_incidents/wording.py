@@ -98,6 +98,62 @@ def local_clock(ms: Any) -> str:
     return datetime.fromtimestamp(int(ms) / 1000).astimezone().strftime("%d %b %Y, %H:%M:%S %Z")
 
 
+# Where an incident comes from, as the first word of its title, so a reader
+# knows which part of the system it concerns before reading further.
+ORIGIN_LABELS = {
+    "sensors": "Sensor",
+    "forwarding": "Data Forwarding",
+    "edge": "Edge Server",
+    "network": "Network",
+    "gateway": "Gateway",
+}
+
+
+def incident_title(incident: dict[str, Any]) -> str:
+    """"<Origin>: <named subject> <what happened>", built from the incident's
+    own fields every time it is shown.
+
+    Built rather than stored, so the wording applies to incidents recorded
+    earlier too, and the console, emails and reports always agree. Subjects
+    use the names the customer configured, and a delivery problem names the
+    server(s) that failed rather than counting the sources behind it.
+    """
+    from .correlator import incident_home  # the correlator imports this module
+
+    origin = ORIGIN_LABELS.get(incident_home(incident), "Gateway")
+    affected = incident.get("affected") or []
+    names = lambda kind: [str(a.get("name")) for a in affected if a.get("kind") == kind and a.get("name")]
+    scope_kind = str(incident.get("scope_kind") or "")
+    scope_key = str(incident.get("scope_key") or "")
+    domain = str(incident.get("domain") or "unknown")
+
+    if scope_kind == "source":
+        # Titled by where the problem showed up, whatever its likely cause:
+        # the cause has its own label next to the title.
+        edge = scope_key.startswith("edgeServer:")
+        subject = (names("source") or [scope_key.split(":", 1)[-1]])[0]
+        return (f"Edge Server: {subject} stopped sending data" if edge
+                else f"Sensor: {subject} stopped reporting")
+    if domain == "gateway":
+        return f"{origin}: health degraded"
+    if domain == "uplink":
+        return f"{origin}: internet uplink lost"
+    if domain == "local_network":
+        ifaces = names("local_network")
+        return f"{origin}: local network interface {_join(ifaces)} down" if ifaces else f"{origin}: local network interrupted"
+    servers = names("destination")
+    if domain == "destination" and servers:
+        verb = "is" if len(servers) == 1 else "are"
+        return f"{origin}: {_join(servers)} {verb} not accepting data"
+    return f"{origin}: data delivery interrupted"
+
+
+def _join(items: list[str]) -> str:
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + f" and {items[-1]}"
+
+
 def _domain_name(domain: Any) -> str:
     # Imported here: the correlator imports this module.
     from .correlator import DOMAIN_LABELS
