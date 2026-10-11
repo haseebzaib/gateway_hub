@@ -384,7 +384,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 const d = await r.json();
                 const all = d.incidents || [];
                 const open = all.filter((i) => i.ongoing);
-                const done = all.filter((i) => !i.ongoing);
+                const confirming = all.filter((i) => i.recovering);
+                const done = all.filter((i) => !i.ongoing && !i.recovering);
 
                 // A clean gateway says so in one line rather than hiding the
                 // section, so the absence of trouble is itself visible.
@@ -402,6 +403,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (counts) {
                     counts.innerHTML = `
                         <span class="ov-inc-count ${open.length ? "is-alert" : "is-clear"}">${open.length} ongoing</span>
+                        ${confirming.length ? `<span class="ov-inc-count is-confirming">${confirming.length} recovered · confirming</span>` : ""}
                         <span class="ov-inc-count">${done.length} resolved · 24 h</span>`;
                 }
 
@@ -409,11 +411,13 @@ document.addEventListener("DOMContentLoaded", () => {
                 // offers the subsystem page where it can actually be acted on —
                 // a forwarding failure is not fixed from the Insights page.
                 const row = (i, resolved) => `
-                    <a class="ov-incident-row${resolved ? " is-resolved" : ""}" href="/insights?incident=${encodeURIComponent(i.ref)}">
+                    <a class="ov-incident-row${resolved ? " is-resolved" : ""}${i.recovering ? " is-confirming" : ""}" href="${i.home || "/insights"}?incident=${encodeURIComponent(i.ref)}">
                         <span class="inc-ref">${esc(i.ref)}</span>
                         <span class="ov-incident-main">
                             <span class="ov-incident-title">${esc(i.title)}</span>
-                            ${resolved ? `<span class="ov-incident-note">Ended ${esc(Incidents.shortStamp(i.ended_ms))}${i.resolution ? ` · ${esc(i.resolution)}` : ""}</span>` : `<span class="ov-incident-note">Started ${esc(Incidents.shortStamp(i.started_ms))}</span>`}
+                            ${i.recovering
+                                ? `<span class="ov-incident-note">Service restored ${esc(Incidents.shortStamp(i.restored_ms))} · confirming it holds before closing</span>`
+                                : resolved ? `<span class="ov-incident-note">Ended ${esc(Incidents.shortStamp(i.ended_ms))}${i.resolution ? ` · ${esc(i.resolution)}` : ""}</span>` : `<span class="ov-incident-note">Started ${esc(Incidents.shortStamp(i.started_ms))}</span>`}
                         </span>
                         <span class="inc-domain-pill ${i.domain !== "unknown" ? "is-known" : "is-unknown"}">${esc(i.domain_label)}</span>
                         <span class="ov-incident-age" title="${esc(Incidents.stamp(i.started_ms))}">${dur(i.duration_ms)}</span>
@@ -432,6 +436,14 @@ document.addEventListener("DOMContentLoaded", () => {
                             <p class="ov-inc-group-label is-alert">Ongoing</p>
                             ${open.slice(0, OV_INC_MAX_OPEN).map((i) => row(i, false)).join("")}
                             ${more(open.length - OV_INC_MAX_OPEN)}
+                        </div>`);
+                }
+                if (confirming.length) {
+                    blocks.push(`
+                        <div class="ov-inc-group">
+                            <p class="ov-inc-group-label is-confirming">Recovered · confirming</p>
+                            ${confirming.slice(0, OV_INC_MAX_OPEN).map((i) => row(i, false)).join("")}
+                            ${more(confirming.length - OV_INC_MAX_OPEN)}
                         </div>`);
                 }
                 if (done.length) {
@@ -1653,7 +1665,10 @@ document.addEventListener("DOMContentLoaded", () => {
             if (tab.hasAttribute("disabled")) {
                 return;
             }
-            tab.addEventListener("click", () => syncNetworkPanels(tab.getAttribute("data-network-tab")));
+            tab.addEventListener("click", () => {
+                syncNetworkPanels(tab.getAttribute("data-network-tab"));
+                if (tab.getAttribute("data-network-tab") === "incidents") networkIncidents?.load();
+            });
         });
         connectivityShell.querySelector("[data-net-audit-window]")?.addEventListener("change", () => {
             netAuditPage = 0;
@@ -1674,6 +1689,9 @@ document.addEventListener("DOMContentLoaded", () => {
         if (initialTab) {
             syncNetworkPanels(initialTab.getAttribute("data-network-tab"));
         }
+        const networkIncidents = Incidents.attachPanel(
+            connectivityShell.querySelector('[data-incident-panel="network"]'), "network");
+        Incidents.openLinked(() => syncNetworkPanels("incidents"), networkIncidents?.drawer, networkIncidents?.load);
 
         wifiSubtabs.forEach((tab) => {
             tab.addEventListener("click", () => syncWifiSubpanels(tab.getAttribute("data-wifi-subtab")));
@@ -3867,8 +3885,12 @@ document.addEventListener("DOMContentLoaded", () => {
                 p.hidden = !cur;
             });
             if (tabId === "anomaly") anomalyController.activate();
+            if (tabId === "incidents") monitorIncidents?.load();
         };
+        const monitorIncidents = Incidents.attachPanel(
+            monitorShell.querySelector('[data-incident-panel="gateway"]'), "gateway");
         monitorTabs.forEach((t) => t.addEventListener("click", () => showMonitorTab(t.getAttribute("data-monitor-tab"))));
+        Incidents.openLinked(() => showMonitorTab("incidents"), monitorIncidents?.drawer, monitorIncidents?.load);
     }
 
 
@@ -7943,6 +7965,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }));
         syncFwTabs("status");
         fwIncLoad();
+        Incidents.openLinked(() => syncFwTabs("incidents"), fwIncDrawer, fwIncLoad);
 
         // Switch to profiles tab when form opens for a new profile
         fwShell.querySelectorAll("[data-fw-add]").forEach((btn) => {
@@ -10348,6 +10371,9 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
             });
         });
+        // A linked incident opens on this page's own Incidents tab.
+        Incidents.openLinked(
+            () => edgeShell.querySelector('[data-es-tab="incidents"]')?.click(), esIncDrawer, esIncLoad);
 
         edgeShell.querySelector("[data-es-history-device]")?.addEventListener("change", esRefreshDeviceHistory);
         edgeShell.querySelector("[data-es-history-protocol]")?.addEventListener("change", esRefreshDeviceHistory);

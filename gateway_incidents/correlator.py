@@ -131,6 +131,39 @@ class Checks:
         self.findings[layer] = finding
 
 
+# ── ownership ────────────────────────────────────────────────────────────
+
+# The page that owns each kind of incident: where it is listed, where its
+# detail opens, and where notification links point. Defined once so the page
+# filters, the Overview links and the alert links cannot drift apart — an
+# incident opened over the wrong page reads as belonging to the wrong system.
+INCIDENT_HOMES = {
+    "sensors": "/insights",
+    "forwarding": "/forwarding",
+    "edge": "/edge-server",
+    "network": "/connectivity",
+    "gateway": "/monitor",
+}
+
+
+def incident_home(incident: dict[str, Any]) -> str:
+    """The scope ("sensors", "forwarding", ...) an incident belongs to."""
+    domain = str(incident.get("domain") or "")
+    if str(incident.get("scope_key") or "").startswith("edgeServer:"):
+        return "edge"
+    if domain == "gateway":
+        return "gateway"
+    if domain in (UPLINK, LOCAL_NETWORK):
+        return "network"
+    if domain == DESTINATION:
+        return "forwarding"
+    if incident.get("scope_kind") == "source" or domain == SOURCE:
+        return "sensors"
+    # A delivery interruption whose cause could not be determined still
+    # belongs with delivery.
+    return "forwarding"
+
+
 # ── signal collection ────────────────────────────────────────────────────
 
 def collect_signals(

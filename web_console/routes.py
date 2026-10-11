@@ -29,7 +29,7 @@ from gateway_forwarding import (
     save_config as persist_forwarding_config,
     topics_for as forwarding_topics_for,
 )
-from gateway_incidents import DOMAIN_LABELS as INCIDENT_DOMAIN_LABELS, kpi as incident_kpi, report as incident_report
+from gateway_incidents import DOMAIN_LABELS as INCIDENT_DOMAIN_LABELS, INCIDENT_HOMES, incident_home, kpi as incident_kpi, report as incident_report
 import gateway_notifications as notifications
 from gateway_ipc import build_config_message, encode_message, headline_for_stored
 
@@ -1293,6 +1293,7 @@ async def connectivity_page(request: Request) -> HTMLResponse:
             {"id": "wifi", "label": "Wi-Fi", "active": False, "disabled": False},
             {"id": "cellular", "label": "Cellular", "active": False, "disabled": False},
             {"id": "policy", "label": "Uplink Policy", "active": False, "disabled": False},
+            {"id": "incidents", "label": "Incidents", "active": False, "disabled": False},
         ],
         "network_settings": CONFIGS["network"],
         "network_state": NETWORK_RUNTIME.state() or _network_state(),
@@ -2165,16 +2166,8 @@ def _incident_store(request: Request):
 # Which incidents belong to which page. Each page shows the incidents it can
 # actually act on; only the Overview shows everything.
 INCIDENT_SCOPES = {
-    "sensors": lambda inc: (
-        (inc.get("scope_kind") == "source" or inc.get("domain") == "source")
-        and not str(inc.get("scope_key") or "").startswith("edgeServer:")
-    ),
-    "forwarding": lambda inc: inc.get("domain") == "destination",
-    "network": lambda inc: inc.get("domain") in ("uplink", "local_network"),
-    "gateway": lambda inc: inc.get("domain") == "gateway",
-    # Inbound devices are identified by their scope key, since they share the
-    # source layer with polled sensors.
-    "edge": lambda inc: str(inc.get("scope_key") or "").startswith("edgeServer:"),
+    scope: (lambda inc, scope=scope: incident_home(inc) == scope)
+    for scope in INCIDENT_HOMES
 }
 
 
@@ -2327,12 +2320,19 @@ def _incident_view(incident: dict[str, Any]) -> dict[str, Any]:
         **incident,
         "domain_label": INCIDENT_DOMAIN_LABELS.get(incident.get("domain", ""), "Unknown"),
         "duration_ms": duration_ms,
-        "ongoing": incident.get("status") != "resolved",
+        # Only a fault that is still happening is "ongoing". A recovering
+        # incident has had service restored and is just waiting out its
+        # stability window — calling that ongoing told operators things were
+        # still broken after they had already been fixed.
+        "ongoing": incident.get("status") == "open",
+        "recovering": incident.get("status") == "recovering",
         "resolution": _incident_resolution(incident, duration_ms),
         "timeline": _incident_timeline(incident),
         "evidence": [row for row in incident.get("evidence") or [] if row.get("layer") in keep],
         "ended_ms": ended or None,
         "kpi": _incident_kpi(incident, duration_ms),
+        # Where this incident lives, so every link opens it over its own page.
+        "home": INCIDENT_HOMES[incident_home(incident)],
     }
 
 

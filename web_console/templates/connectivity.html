@@ -670,6 +670,15 @@
             </div>
         </section>
 
+        {# Sustained network outages only — brief failovers stay in the Outage &
+           Failover Audit as raw events and never become incidents. #}
+        <section class="system-panel system-panel-wide is-hidden" data-network-panel="incidents">
+            <div class="system-panel-head"><div>
+                <p class="hero-band-eyebrow">Correlated</p><h2>Network incidents</h2>
+            </div></div>
+            <div data-incident-panel="network"></div>
+        </section>
+
         <section class="system-panel system-panel-wide is-hidden" data-network-panel="policy">
             <div class="system-panel-head">
                 <div>

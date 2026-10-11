@@ -17,6 +17,15 @@
         <button type="button" class="monitor-tab" data-monitor-tab="anomaly" role="tab" aria-selected="false">
             Anomaly Detection
         </button>
+        <button type="button" class="monitor-tab" data-monitor-tab="incidents" role="tab" aria-selected="false">
+            Incidents
+        </button>
+    </div>
+
+    <!-- Gateway-health incidents: the gateway itself degraded (CPU, memory,
+         storage, temperature). Same panel as every other page's incidents. -->
+    <div class="monitor-panel is-hidden" data-monitor-panel="incidents" hidden>
+        <div data-incident-panel="gateway"></div>
     </div>
 
     <!-- ───────────────────────── LIVE METRICS ───────────────────────── -->

@@ -21,6 +21,7 @@ from typing import Any
 
 from . import channels as channel_delivery
 from .config import EVENT_TYPES, SEVERITIES, load_config
+from gateway_incidents import INCIDENT_HOMES, incident_home
 
 
 LOGGER = logging.getLogger("edge_server")
@@ -46,9 +47,6 @@ class NotificationService:
         self.base_url: str = ""
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
-        # Incident ref -> the last lifecycle state we notified about, so a
-        # long-running incident is announced once, not on every pass.
-        self._announced: dict[str, str] = {}
         self._buffer_warned = False
         self._sent_times: deque[float] = deque(maxlen=1000)
         self._log: deque[dict[str, Any]] = deque(maxlen=MAX_LOG_ENTRIES)
@@ -69,9 +67,6 @@ class NotificationService:
                 pass
 
     async def _run(self) -> None:
-        # Adopt whatever is already open without announcing it: a hub restart
-        # should not re-page for incidents the operator already knows about.
-        await asyncio.to_thread(self._prime)
         while not self._stop_event.is_set():
             try:
                 await asyncio.to_thread(self.poll_once)
@@ -85,29 +80,24 @@ class NotificationService:
             except TimeoutError:
                 continue
 
-    def _prime(self) -> None:
-        for incident in self._open_incidents():
-            self._announced[str(incident.get("ref"))] = str(incident.get("status"))
-
     # ── detection ────────────────────────────────────────────────────────
     def poll_once(self) -> None:
         config = load_config()
+        notes = self._pending_notifications(config)
+        # Transitions are recorded even with no channel enabled, so adding a
+        # channel later does not suddenly announce a backlog of old incidents.
         if not any(c.get("enabled") for c in config.get("channels") or []):
             return
-        for note in self._pending_notifications(config):
+        for note in notes:
             self._dispatch(config, note)
 
     def _pending_notifications(self, config: dict[str, Any]) -> list[dict[str, Any]]:
         notes: list[dict[str, Any]] = []
-        seen: set[str] = set()
+        store = getattr(self.incidents, "storage", None)
 
         for incident in self._recent_incidents():
-            ref = str(incident.get("ref") or "")
-            if not ref:
-                continue
-            seen.add(ref)
             status = str(incident.get("status") or "")
-            previous = self._announced.get(ref)
+            previous = incident.get("notified_state")
             if previous == status:
                 continue
             # Only two transitions are worth telling anyone about: it started,
@@ -116,12 +106,11 @@ class NotificationService:
                 notes.append(self._incident_note(incident, opened=True))
             elif previous in ("open", "recovering") and status == "resolved":
                 notes.append(self._incident_note(incident, opened=False))
-            self._announced[ref] = status
-
-        # Forget incidents that have aged out, so the map cannot grow forever.
-        for ref in list(self._announced):
-            if ref not in seen:
-                self._announced.pop(ref, None)
+            elif previous is None and status == "resolved":
+                # Opened and closed between two polls: one note covers it.
+                notes.append(self._incident_note(incident, opened=False))
+            if store is not None:
+                store.mark_notified(int(incident["id"]), status)
 
         buffer_note = self._buffer_note(config)
         if buffer_note is not None:
@@ -145,7 +134,8 @@ class NotificationService:
             "resolved_at": _iso(incident.get("restored_ms")) if not opened else None,
             "buffered_records": buffered,
             "affected": sources,
-            "dashboard_url": self._dashboard_url(ref),
+            # Opens the incident over the page that owns it.
+            "dashboard_url": self._dashboard_url(ref, path=INCIDENT_HOMES[incident_home(incident)]),
             "gateway_id": self.gateway_id,
             "timestamp": _iso(int(time.time() * 1000)),
         }

@@ -44,6 +44,11 @@ const Incidents = (() => {
 
     // A KPI that was never measured is shown as "—", not as 0: zero would read
     // as "nothing was recovered", a stronger claim than the data supports.
+    // What each lifecycle state is called on screen. "recovering" is shown as
+    // recovered-and-confirming, never as a live fault.
+    const STATUS_TEXT = { open: "ongoing", recovering: "recovered · confirming", resolved: "resolved" };
+    const statusText = (s) => STATUS_TEXT[s] || s;
+
     const num = (v) => (v === null || v === undefined) ? "—" : v.toLocaleString();
 
     /** KPI strip: the numbers a pilot report is written from.
@@ -142,8 +147,9 @@ const Incidents = (() => {
             <div class="inc-d-head">
                 <span class="inc-ref">${esc(inc.ref)}</span>
                 <h3 class="inc-d-title">${esc(inc.title)}</h3>
-                <span class="inc-status-badge is-${inc.status}">${esc(inc.status)}</span>
+                <span class="inc-status-badge is-${inc.status}">${esc(statusText(inc.status))}</span>
             </div>
+            ${inc.recovering ? `<p class="inc-confirming">Service was restored at ${stamp(inc.restored_ms)}. The gateway keeps the incident open for a few minutes to confirm it holds, then closes it.</p>` : ""}
 
             <div class="inc-export">
                 <span class="inc-export-label">Export incident</span>
@@ -348,7 +354,7 @@ const Incidents = (() => {
             <div class="inc-row-top">
                 <span class="inc-ref">${esc(inc.ref)}</span>
                 <span class="inc-title">${esc(inc.title)}</span>
-                <span class="inc-status-badge is-${inc.status}">${esc(inc.status)}</span>
+                <span class="inc-status-badge is-${inc.status}">${esc(statusText(inc.status))}</span>
                 <span class="inc-domain-pill ${inc.domain !== "unknown" ? "is-known" : "is-unknown"}">${esc(inc.domain_label)}</span>
                 <a class="inc-row-export" data-inc-row-export
                    href="/api/insights/incidents/${encodeURIComponent(inc.ref)}/report"
@@ -390,7 +396,83 @@ const Incidents = (() => {
             <div class="inc-sum-label">Total in window</div>
         </div>`;
 
+    /** The incident a page was opened for, from ?incident=MC-1042. */
+    const linkedRef = () => new URLSearchParams(window.location.search).get("incident");
+
+    /**
+     * A complete, self-contained incidents section for a page: summary, pilot
+     * summary, paginated list and an in-place detail drawer, scoped to the
+     * incidents that page owns. Returns { load }.
+     */
+    const attachPanel = (host, scope, { windowKey = "7d", label = "7 d" } = {}) => {
+        if (!host) return null;
+        host.innerHTML = `
+            <div class="inc-summary" data-p-summary></div>
+            <div class="pilot-panel" data-pilot-panel>
+                <div class="pilot-head">
+                    <button class="ev-view-btn" data-pilot-toggle>Pilot Summary</button>
+                    <div class="pilot-range ov-hidden" data-pilot-range>
+                        <label>From <input type="date" class="sv-date-input" data-pilot-from></label>
+                        <label>To <input type="date" class="sv-date-input" data-pilot-to></label>
+                        <button class="ev-win-btn" data-pilot-apply>Show</button>
+                        <a class="inc-export-btn" data-pilot-csv href="#">↓ CSV</a>
+                    </div>
+                </div>
+                <div class="pilot-body ov-hidden" data-pilot-body></div>
+            </div>
+            <div class="inc-list" data-p-list></div>
+            <div class="ev-pager" data-p-pager></div>
+            <div class="ev-empty ov-hidden" data-p-empty><p>No incidents in the last ${esc(label)}.</p></div>
+            <div class="inc-drawer ov-hidden" data-inc-drawer>
+                <div class="inc-drawer-scrim" data-inc-drawer-close></div>
+                <aside class="inc-drawer-panel" data-inc-drawer-body></aside>
+            </div>`;
+        const list = host.querySelector("[data-p-list]");
+        const pager = host.querySelector("[data-p-pager]");
+        const empty = host.querySelector("[data-p-empty]");
+        const summary = host.querySelector("[data-p-summary]");
+        const drawer = attachDrawer(host.querySelector("[data-inc-drawer]"));
+        attachPilotSummary(host.querySelector("[data-pilot-panel]"), scope);
+        let rows = [];
+        let page = 0;
+
+        const render = () => {
+            empty.classList.toggle("ov-hidden", rows.length > 0);
+            const { pageCount, current, slice } = paginate(rows, page, 8);
+            page = current;
+            list.innerHTML = slice.map(rowHtml).join("");
+            bindRows(list, drawer);
+            pager.innerHTML = pagerHtml(current, pageCount, rows.length);
+            pager.querySelector("[data-inc-page-prev]")?.addEventListener("click", () => { page -= 1; render(); });
+            pager.querySelector("[data-inc-page-next]")?.addEventListener("click", () => { page += 1; render(); });
+        };
+
+        const load = async () => {
+            try {
+                const r = await fetch(`/api/insights/incidents?window=${windowKey}&scope=${scope}`);
+                if (!r.ok) return;
+                rows = (await r.json()).incidents || [];
+                const open = rows.filter((i) => i.ongoing).length;
+                summary.innerHTML = summaryHtml(open, rows.length - open, rows.length, `Resolved · ${label}`);
+                render();
+            } catch (e) {
+                console.warn(`[Incidents:${scope}] load failed`, e);
+            }
+        };
+        return { load, drawer };
+    };
+
+    /** Open the linked incident on arrival: switch to its tab, then its detail. */
+    const openLinked = async (showTab, drawer, load) => {
+        const ref = linkedRef();
+        if (!ref || !drawer) return;
+        showTab?.();
+        await load?.();
+        drawer.open(ref);
+    };
+
     return {
+        attachPanel, openLinked, linkedRef,
         esc, stamp, shortStamp, duration, detailHtml, attachDrawer,
         paginate, pagerHtml, rowHtml, bindRows, summaryHtml, attachPilotSummary, DOMAIN_PAGE,
     };

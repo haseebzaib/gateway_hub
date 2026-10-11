@@ -82,14 +82,32 @@ class IncidentStorage:
         # kpi_json arrived after the first incidents were recorded, so it is added
         # by migration rather than in the CREATE above.
         self._ensure_columns_locked("incidents", {"kpi_json": "TEXT"})
+        # Which lifecycle state the operator has been told about. Kept here, not
+        # in the notifier's memory, so a restart neither re-announces incidents
+        # nor silently drops ones that opened just before it.
+        if self._ensure_columns_locked("incidents", {"notified_state": "TEXT"}):
+            # Incidents that predate this column were handled by the old
+            # in-memory notifier; treat them as already announced.
+            self._conn.execute("UPDATE incidents SET notified_state = status WHERE notified_state IS NULL")
         self._conn.commit()
 
-    def _ensure_columns_locked(self, table: str, columns: dict[str, str]) -> None:
+    def _ensure_columns_locked(self, table: str, columns: dict[str, str]) -> bool:
+        """Add missing columns; returns whether any were added."""
         assert self._conn is not None
         existing = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+        added = False
         for name, definition in columns.items():
             if name not in existing:
                 self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+                added = True
+        return added
+
+    def mark_notified(self, incident_id: int, state: str) -> None:
+        with self._lock:
+            self.open()
+            assert self._conn is not None
+            self._conn.execute("UPDATE incidents SET notified_state = ? WHERE id = ?", (state, int(incident_id)))
+            self._conn.commit()
 
     # ── writes ───────────────────────────────────────────────────────────
     def open_incident(self, incident: dict[str, Any]) -> dict[str, Any]:

@@ -11217,3 +11217,19 @@ body.anomaly-modal-open { overflow: hidden; }
     line-height: 1.5;
     color: var(--muted);
 }
+
+/* Recovered and confirming stability: green, not the red of a live fault. */
+.inc-status-badge.is-recovering { background: rgba(98,211,158,0.12); color: var(--success); }
+.inc-row.is-recovering { border-left-color: rgba(98,211,158,0.45); background: transparent; }
+.ov-inc-count.is-confirming { background: rgba(98,211,158,0.14); color: var(--success); }
+.ov-inc-group-label.is-confirming { color: var(--success); }
+.ov-incident-row.is-confirming .inc-ref { color: var(--success); }
+.inc-confirming {
+    margin: -0.4rem 0 1.1rem;
+    padding: 0.6rem 0.8rem;
+    border-radius: 0.6rem;
+    background: rgba(98,211,158,0.08);
+    border: 1px solid rgba(98,211,158,0.25);
+    font-size: 0.8rem;
+    color: var(--muted);
+}

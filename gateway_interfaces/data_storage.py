@@ -11,6 +11,8 @@ from typing import Any
 
 DEFAULT_DB_PATH = Path("/opt/metacrust/data/gateway_interfaces/gateway_interfaces.db")
 DEFAULT_RETENTION_DAYS = 31
+# Status values that mean a source is not delivering.
+_DOWN_STATUSES = {"disconnected", "error", "offline", "silent", "timeout"}
 VACUUM_FREE_BYTES = 64 * 1024 * 1024
 
 
@@ -38,6 +40,7 @@ class GatewayInterfacesDataStorage:
         self.retention_days = max(1, int(os.environ.get("METACRUST_INTERFACES_RETENTION_DAYS", DEFAULT_RETENTION_DAYS)))
         self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = None
+        self._last_status: dict[tuple[str, str], str | None] = {}
 
     def open(self) -> None:
         with self._lock:
@@ -199,8 +202,35 @@ class GatewayInterfacesDataStorage:
                     rows,
                 )
             self._upsert_source_locked(source_type, source_id, ts_ms, "online" if ok else "error", _first_error(errors), 1)
+            if ok:
+                self._record_recovery_locked(source_type, source_id, ts_ms)
             self._conn.commit()
             return message_id
+
+    def _record_recovery_locked(self, source_type: str, source_id: str, ts_ms: int) -> None:
+        """Record "connected" when data resumes after a failure.
+
+        gateway_core reports a source going *down* (status "disconnected") but
+        never reports it coming back — recovery shows up only as readings
+        arriving again. Without this, the status history ends on its last
+        failure forever, and anything built on it (incidents, notifications,
+        the events timeline) believes a working sensor is still offline.
+        """
+        key = (source_type, source_id)
+        if key not in self._last_status:
+            row = self._conn.execute(
+                """SELECT status FROM sensor_status_events
+                   WHERE source_type = ? AND source_id = ? ORDER BY id DESC LIMIT 1""",
+                key,
+            ).fetchone()
+            self._last_status[key] = row["status"] if row else None
+        if str(self._last_status[key] or "").lower() not in _DOWN_STATUSES:
+            return
+        self._conn.execute(
+            "INSERT INTO sensor_status_events (ts_ms, source_type, source_id, status, error) VALUES (?, ?, ?, 'connected', NULL)",
+            (ts_ms, source_type, source_id),
+        )
+        self._last_status[key] = "connected"
 
     def add_sniffer_frame(self, data: dict[str, Any]) -> int:
         ts_ms = _timestamp_ms(data)
@@ -251,6 +281,7 @@ class GatewayInterfacesDataStorage:
                     "INSERT INTO sensor_status_events (ts_ms, source_type, source_id, status, error) VALUES (?, ?, ?, ?, ?)",
                     (ts_ms, source_type, source_id, status, error),
                 ).lastrowid)
+            self._last_status[(source_type, source_id)] = status
             self._upsert_source_locked(source_type, source_id, ts_ms, status, error, 0)
             self._conn.commit()
             return row_id
