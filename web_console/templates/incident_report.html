@@ -100,7 +100,7 @@
             </p>
             {% endif %}
             <p class="ident">
-                Status <span class="pill {{ report.status }}">{{ report.status }}</span>
+                Status <span class="pill {{ report.status }}">{{ report.status_label or report.status }}</span>
                 &nbsp;·&nbsp; Report generated {{ report.generated_at }}
             </p>
         </header>

@@ -370,91 +370,88 @@ document.addEventListener("DOMContentLoaded", () => {
         refreshOverviewState();
         window.setInterval(refreshOverviewState, 5000);
 
-        // ── Active incidents band ──────────────────────────────────────────
-        // The correlated "is anything actually wrong" answer. Stays hidden on a
-        // healthy gateway rather than showing a reassuring empty box.
+        // ── Incidents band ─────────────────────────────────────────────────
+        // The correlated "is anything actually wrong" answer. One list, most
+        // urgent first, paged in place so a bad day never pushes the rest of
+        // the page off screen and every incident stays reachable from here.
+        const OV_INC_PER_PAGE = 5;
+        let ovIncRows = [];
+        let ovIncPage = 0;
+
+        // Each row deep-links to the incident's detail on the page that owns
+        // it — a forwarding failure is acted on from Data Forwarding.
+        const ovIncidentRow = (i) => {
+            const esc = Incidents.esc;
+            const note = i.status === "open"
+                ? `Started ${esc(Incidents.shortStamp(i.started_ms))}`
+                : i.status === "recovering"
+                ? `Working again since ${esc(Incidents.shortStamp(i.restored_ms))} · closes after 5 min stable`
+                : `Ended ${esc(Incidents.shortStamp(i.ended_ms))}${i.resolution ? ` · ${esc(i.resolution)}` : ""}`;
+            return `
+                <a class="ov-incident-row is-${esc(i.status)}${i.status === "resolved" ? " is-resolved" : ""}${i.status === "recovering" ? " is-confirming" : ""}" href="${i.home || "/insights"}?incident=${encodeURIComponent(i.ref)}">
+                    <span class="inc-ref">${esc(i.ref)}</span>
+                    <span class="ov-incident-main">
+                        <span class="ov-incident-title">${esc(i.title)}</span>
+                        <span class="ov-incident-note">${note}</span>
+                    </span>
+                    <span class="inc-status-badge is-${esc(i.status)}">${esc(Incidents.statusText(i.status))}</span>
+                    <span class="inc-domain-pill ${i.domain !== "unknown" ? "is-known" : "is-unknown"}">${esc(i.domain_label)}</span>
+                    <span class="ov-incident-age" title="Lasted / running for · started ${esc(Incidents.stamp(i.started_ms))}">${Incidents.duration(i.duration_ms)}</span>
+                    <span class="ov-incident-go">→</span>
+                </a>`;
+        };
+
+        const renderOverviewIncidents = () => {
+            const list = document.querySelector("[data-ov-incidents-list]");
+            const pager = document.querySelector("[data-ov-inc-pager]");
+            if (!list) return;
+            const { pageCount, current, slice } = Incidents.paginate(ovIncRows, ovIncPage, OV_INC_PER_PAGE);
+            ovIncPage = current;
+            list.innerHTML = slice.map(ovIncidentRow).join("");
+            if (pager) {
+                pager.innerHTML = Incidents.pagerHtml(current, pageCount, ovIncRows.length);
+                Incidents.bindPager(pager, (n) => { ovIncPage = n; renderOverviewIncidents(); });
+            }
+        };
+
         const refreshOverviewIncidents = async () => {
             const band = document.querySelector("[data-ov-incidents]");
             const list = document.querySelector("[data-ov-incidents-list]");
             if (!band || !list) return;
             const counts = document.querySelector("[data-ov-inc-counts]");
+            const pager = document.querySelector("[data-ov-inc-pager]");
             try {
                 const r = await fetch("/api/insights/incidents?window=24h");
                 if (!r.ok) return;
                 const d = await r.json();
-                const all = d.incidents || [];
-                const open = all.filter((i) => i.ongoing);
-                const confirming = all.filter((i) => i.recovering);
-                const done = all.filter((i) => !i.ongoing && !i.recovering);
+                // Active, then restored (waiting out the stability window), then
+                // closed — newest first within each.
+                const RANK = { open: 0, recovering: 1, resolved: 2 };
+                const all = (d.incidents || []).slice().sort((x, y) =>
+                    (RANK[x.status] ?? 3) - (RANK[y.status] ?? 3) || (y.started_ms || 0) - (x.started_ms || 0));
+                const open = all.filter((i) => i.status === "open");
+                const restored = all.filter((i) => i.status === "recovering");
+                const closed = all.filter((i) => i.status === "resolved");
+                ovIncRows = all;
 
                 // A clean gateway says so in one line rather than hiding the
                 // section, so the absence of trouble is itself visible.
                 if (!all.length) {
                     band.classList.remove("is-alert");
                     if (counts) counts.innerHTML = "";
+                    if (pager) pager.innerHTML = "";
                     list.innerHTML = `<p class="ov-inc-clear">No incidents in the last 24 hours.</p>`;
                     return;
                 }
                 band.classList.toggle("is-alert", open.length > 0);
 
-                const esc = Incidents.esc;
-                const dur = Incidents.duration;
-
                 if (counts) {
                     counts.innerHTML = `
-                        <span class="ov-inc-count ${open.length ? "is-alert" : "is-clear"}">${open.length} ongoing</span>
-                        ${confirming.length ? `<span class="ov-inc-count is-confirming">${confirming.length} recovered · confirming</span>` : ""}
-                        <span class="ov-inc-count">${done.length} resolved · 24 h</span>`;
+                        <span class="ov-inc-count ${open.length ? "is-alert" : "is-clear"}">${open.length} active</span>
+                        ${restored.length ? `<span class="ov-inc-count is-confirming" title="Service is working again; each closes after 5 minutes of stable service">${restored.length} restored</span>` : ""}
+                        <span class="ov-inc-count">${closed.length} closed · 24 h</span>`;
                 }
-
-                // Each row deep-links to the incident's own detail, which in turn
-                // offers the subsystem page where it can actually be acted on —
-                // a forwarding failure is not fixed from the Insights page.
-                const row = (i, resolved) => `
-                    <a class="ov-incident-row${resolved ? " is-resolved" : ""}${i.recovering ? " is-confirming" : ""}" href="${i.home || "/insights"}?incident=${encodeURIComponent(i.ref)}">
-                        <span class="inc-ref">${esc(i.ref)}</span>
-                        <span class="ov-incident-main">
-                            <span class="ov-incident-title">${esc(i.title)}</span>
-                            ${i.recovering
-                                ? `<span class="ov-incident-note">Service restored ${esc(Incidents.shortStamp(i.restored_ms))} · confirming it holds before closing</span>`
-                                : resolved ? `<span class="ov-incident-note">Ended ${esc(Incidents.shortStamp(i.ended_ms))}${i.resolution ? ` · ${esc(i.resolution)}` : ""}</span>` : `<span class="ov-incident-note">Started ${esc(Incidents.shortStamp(i.started_ms))}</span>`}
-                        </span>
-                        <span class="inc-domain-pill ${i.domain !== "unknown" ? "is-known" : "is-unknown"}">${esc(i.domain_label)}</span>
-                        <span class="ov-incident-age" title="${esc(Incidents.stamp(i.started_ms))}">${dur(i.duration_ms)}</span>
-                        <span class="ov-incident-go">→</span>
-                    </a>`;
-
-                const OV_INC_MAX_OPEN = 3;
-                const OV_INC_MAX_DONE = 2;
-                const more = (n) => n > 0
-                    ? `<a class="ov-inc-more" href="/insights?view=incidents">+${n} more →</a>` : "";
-
-                const blocks = [];
-                if (open.length) {
-                    blocks.push(`
-                        <div class="ov-inc-group">
-                            <p class="ov-inc-group-label is-alert">Ongoing</p>
-                            ${open.slice(0, OV_INC_MAX_OPEN).map((i) => row(i, false)).join("")}
-                            ${more(open.length - OV_INC_MAX_OPEN)}
-                        </div>`);
-                }
-                if (confirming.length) {
-                    blocks.push(`
-                        <div class="ov-inc-group">
-                            <p class="ov-inc-group-label is-confirming">Recovered · confirming</p>
-                            ${confirming.slice(0, OV_INC_MAX_OPEN).map((i) => row(i, false)).join("")}
-                            ${more(confirming.length - OV_INC_MAX_OPEN)}
-                        </div>`);
-                }
-                if (done.length) {
-                    blocks.push(`
-                        <div class="ov-inc-group">
-                            <p class="ov-inc-group-label">Recently resolved</p>
-                            ${done.slice(0, OV_INC_MAX_DONE).map((i) => row(i, true)).join("")}
-                            ${more(done.length - OV_INC_MAX_DONE)}
-                        </div>`);
-                }
-                list.innerHTML = blocks.join("");
+                renderOverviewIncidents();
             } catch (e) {
                 console.warn("Failed to refresh overview incidents", e);
             }

@@ -54,11 +54,11 @@
             <div class="ov-inc-head">
                 <p class="ov-section-eyebrow">Incidents</p>
                 <div class="ov-inc-counts" data-ov-inc-counts></div>
-                <a href="/insights?view=incidents" class="ov-dsc-open">View all →</a>
             </div>
-            {# Capped so a bad week cannot push the rest of the page off screen;
-               anything beyond the cap is reachable through "View all". #}
+            {# Paged in place so a bad week cannot push the rest of the page off
+               screen, and every incident is still reachable from here. #}
             <div class="ov-inc-groups" data-ov-incidents-list></div>
+            <div class="ev-pager ov-inc-pager" data-ov-inc-pager></div>
         </section>
 
         {# Right: Connectivity summary (clickable → /connectivity) #}

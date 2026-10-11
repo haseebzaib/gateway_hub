@@ -10688,7 +10688,7 @@ body.anomaly-modal-open { overflow: hidden; }
    instead of shifting with each title's length. */
 .ov-incident-row {
     display: grid;
-    grid-template-columns: 5.5rem 1fr auto 4.5rem 1rem;
+    grid-template-columns: 5.5rem 1fr auto auto 4.5rem 1rem;
     align-items: center;
     gap: 1rem;
     padding: 0.85rem 1rem;
@@ -11233,3 +11233,17 @@ body.anomaly-modal-open { overflow: hidden; }
     font-size: 0.8rem;
     color: var(--muted);
 }
+
+/* Numbered incident pages: any page is one click away. */
+.ev-pager .ev-page-num { min-width: 2.1rem; padding: 0.3rem 0.55rem; }
+.ev-pager .ev-page-num.is-current {
+    color: var(--accent-cool);
+    border-color: rgba(57,208,200,0.55);
+    background: rgba(57,208,200,0.1);
+    cursor: default;
+}
+.ev-pager .ev-page-gap { color: var(--muted); font-size: 0.8rem; }
+.ev-pager:has(.ev-page-num) { gap: 0.4rem; flex-wrap: wrap; }
+.ev-pager:has(.ev-page-num) .ev-page-label { margin-left: 0.6rem; }
+.ov-inc-pager:empty { display: none; }
+.ov-inc-pager { padding-bottom: 0; }

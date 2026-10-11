@@ -20,7 +20,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from . import channels as channel_delivery
+from .compose import domain_label, incident_details
 from .config import EVENT_TYPES, SEVERITIES, load_config
+from .console_links import console_links
 from gateway_incidents import INCIDENT_HOMES, incident_home
 
 
@@ -118,69 +120,35 @@ class NotificationService:
         return notes
 
     def _incident_note(self, incident: dict[str, Any], *, opened: bool) -> dict[str, Any]:
-        domain = str(incident.get("domain") or "")
         kpi = incident.get("kpi") or {}
-        buffered = kpi.get("buffered_peak")
-        sources = [a.get("name") for a in incident.get("affected") or [] if a.get("kind") == "source"]
+        details = incident_details(incident, opened=opened)
         ref = str(incident.get("ref") or "")
+        domain = str(incident.get("domain") or "")
+        # Opens the incident over the page that owns it, on every address the
+        # gateway can be reached at.
+        path = INCIDENT_HOMES[incident_home(incident)]
+        links = self._links(ref, path)
         return {
             "event": "recovery" if not opened else _DOMAIN_EVENT.get(domain, "source_offline"),
             "severity": "info" if not opened else _severity_for(incident),
             "incident_ref": ref,
+            "status": details["status"],
+            "status_label": details["status_label"],
             "title": incident.get("title"),
-            "message": self._incident_message(incident, opened=opened),
-            "failure_domain": incident.get("domain_label"),
+            "message": details["summary"],
+            "failure_domain": domain_label(incident),
             "started_at": _iso(incident.get("started_ms")),
             "resolved_at": _iso(incident.get("restored_ms")) if not opened else None,
-            "buffered_records": buffered,
-            "affected": sources,
-            # Opens the incident over the page that owns it.
-            "dashboard_url": self._dashboard_url(ref, path=INCIDENT_HOMES[incident_home(incident)]),
+            # What is waiting to be delivered — not the whole queue's peak, and
+            # nothing at all for a source that stopped, which buffers nothing.
+            "buffered_records": None if kpi.get("source_outage") else kpi.get("pending"),
+            "affected": details["affected"]["sources"],
+            "details": details,
+            "links": links,
+            "dashboard_url": links[0]["url"] if links else "",
             "gateway_id": self.gateway_id,
             "timestamp": _iso(int(time.time() * 1000)),
         }
-
-    def _incident_message(self, incident: dict[str, Any], *, opened: bool) -> str:
-        """Plain prose, matching what the incident report says."""
-        kpi = incident.get("kpi") or {}
-        sources = [a.get("name") for a in incident.get("affected") or [] if a.get("kind") == "source"]
-        who = ", ".join(str(s) for s in sources) or "This gateway"
-        destinations = [a.get("name") for a in incident.get("affected") or [] if a.get("kind") == "destination"]
-        domain = str(incident.get("domain") or "")
-
-        if not opened:
-            parts = [f"{incident.get('title')} has recovered."]
-            replayed = kpi.get("replayed")
-            if replayed:
-                parts.append(f"{int(replayed):,} buffered records were delivered.")
-            outstanding = (kpi.get("pending") or 0) + (kpi.get("evicted") or 0)
-            if outstanding:
-                parts.append(f"{int(outstanding):,} records remain undelivered.")
-            return " ".join(parts)
-
-        if domain == "destination":
-            target = ", ".join(str(d) for d in destinations) or "the configured destination"
-            message = (
-                f"{who} data cannot currently be delivered to {target}. "
-                "Source data is still arriving and is being buffered locally."
-            )
-        elif domain == "source":
-            message = f"{who} has stopped reporting to the gateway."
-        elif domain in ("uplink", "local_network"):
-            message = "The gateway has lost its network uplink. Data is being buffered locally."
-        elif domain == "gateway":
-            message = "The gateway itself is degraded."
-        else:
-            message = f"{incident.get('title')}."
-
-        message += f" Likely failure domain: {incident.get('domain_label')}."
-        started = _clock(incident.get("started_ms"))
-        if started:
-            message += f" Started {started}."
-        buffered = kpi.get("buffered_peak")
-        if buffered:
-            message += f" Current buffered records: {int(buffered):,}."
-        return message
 
     def _buffer_note(self, config: dict[str, Any]) -> dict[str, Any] | None:
         """Warn once while there is still room to act, and reset on recovery."""
@@ -208,6 +176,7 @@ class NotificationService:
             "resolved_at": None,
             "buffered_records": self._buffer_pending(),
             "affected": [],
+            "links": self._links(None, "/forwarding"),
             "dashboard_url": self._dashboard_url(None, path="/forwarding"),
             "gateway_id": self.gateway_id,
             "timestamp": _iso(int(time.time() * 1000)),
@@ -295,12 +264,13 @@ class NotificationService:
                 "This is a test from the MetaCrust Edge Gateway. If you can read this, "
                 "the channel is configured correctly."
             ),
-            "failure_domain": "Destination/Server",
+            "failure_domain": None,
             "started_at": _iso(int(time.time() * 1000)),
             "resolved_at": None,
-            "buffered_records": 0,
+            "buffered_records": None,
             "affected": [],
-            "dashboard_url": self._dashboard_url("MC-TEST"),
+            "links": self._links(None, "/"),
+            "dashboard_url": self._dashboard_url(None, path="/"),
             "gateway_id": self.gateway_id,
             "timestamp": _iso(int(time.time() * 1000)),
         })
@@ -348,11 +318,20 @@ class NotificationService:
         except Exception:
             return None
 
+    def _links(self, ref: str | None, path: str) -> list[dict[str, str]]:
+        """Console links on every reachable address, Tailscale first."""
+        suffix = f"{path}?incident={ref}" if ref else path
+        try:
+            bases = console_links(self.base_url or "")
+        except Exception:
+            bases = []
+        if not bases and self.base_url:
+            bases = [{"label": "Gateway console", "url": self.base_url.rstrip("/")}]
+        return [{"label": b["label"], "url": b["url"] + suffix} for b in bases]
+
     def _dashboard_url(self, ref: str | None, path: str = "/insights") -> str:
-        base = (self.base_url or "").rstrip("/")
-        if not base:
-            return ""
-        return f"{base}{path}?incident={ref}" if ref else f"{base}{path}"
+        links = self._links(ref, path)
+        return links[0]["url"] if links else ""
 
 
 def _severity_for(incident: dict[str, Any]) -> str:
@@ -364,11 +343,6 @@ def _iso(ms: Any) -> str | None:
         return None
     return datetime.fromtimestamp(int(ms) / 1000, UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
-
-def _clock(ms: Any) -> str:
-    if not ms:
-        return ""
-    return datetime.fromtimestamp(int(ms) / 1000, UTC).strftime("%H:%M:%S on %d %b %Y") + " UTC"
 
 
 __all__ = ["NotificationService", "EVENT_TYPES"]

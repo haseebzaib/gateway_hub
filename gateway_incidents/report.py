@@ -19,6 +19,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from . import wording
+
 
 BRANDING_PATH = Path(
     os.environ.get("METACRUST_REPORT_BRANDING_PATH", "/opt/metacrust/config/reports/branding.json")
@@ -89,6 +91,7 @@ def build(
             if show_ids and (brand.get("company") or brand.get("site")) else None
         ),
         "status": incident.get("status"),
+        "status_label": wording.status_label(incident.get("status")),
         "title": incident.get("title"),
         "started_at": _iso(incident.get("started_ms")),
         "detected_at": _iso(incident.get("detected_ms")),
@@ -124,8 +127,13 @@ def build(
 def summary_prose(
     incident: dict[str, Any], kpi: dict[str, Any],
     sources: list[str], destinations: list[str],
+    *, still_open: str = "The condition had not cleared when this report was produced.",
 ) -> str:
-    """The paragraph a non-technical reader gets, assembled from facts."""
+    """The paragraph a non-technical reader gets, assembled from facts.
+
+    `still_open` is the sentence for an incident that has not cleared; a live
+    notification says "is still active" rather than speaking of a report.
+    """
     domain = str(incident.get("domain") or "unknown")
     who = _join(sources) if sources else "device"
     started = _clock(incident.get("started_ms"))
@@ -159,7 +167,7 @@ def summary_prose(
     if restored:
         parts.append(f"Normal operation resumed at {_clock(restored)}.")
     else:
-        parts.append("The condition had not cleared when this report was produced.")
+        parts.append(still_open)
 
     parts.append(_replay_sentence(kpi))
 
@@ -173,6 +181,11 @@ def summary_prose(
 
 def _replay_sentence(kpi: dict[str, Any]) -> str:
     """What recovered — stated only as far as the counters actually support."""
+    if kpi.get("source_outage"):
+        return (
+            "A device that stops reporting sends nothing for the gateway to buffer, so "
+            "readings for the outage period were never taken and cannot be recovered."
+        )
     replayed = kpi.get("replayed")
     pending = kpi.get("pending")
     evicted = kpi.get("evicted")
@@ -206,7 +219,11 @@ def measurement_statement(incident: dict[str, Any], kpi: dict[str, Any]) -> dict
         "Incident start, detection and restoration times.",
         "Which connectivity checks passed or failed during the interruption.",
     ]
-    if kpi.get("replayed") is not None:
+    if kpi.get("source_outage"):
+        measured.append(
+            "Buffer and replay volumes do not apply: a stopped source sends nothing to buffer."
+        )
+    elif kpi.get("replayed") is not None:
         measured.append("Records buffered, replayed and left outstanding, taken from gateway counters.")
     else:
         measured.append("Buffer and replay volumes were not recorded for this incident.")
@@ -289,9 +306,7 @@ def _iso(ms: Any) -> str | None:
 
 
 def _clock(ms: Any) -> str:
-    if not ms:
-        return "an unrecorded time"
-    return datetime.fromtimestamp(int(ms) / 1000, UTC).strftime("%H:%M:%S on %d %b %Y") + " UTC"
+    return wording.local_clock(ms)
 
 
 def _duration(ms: Any) -> str | None:

@@ -186,7 +186,15 @@ class IncidentTask:
                 # Still inside the stability window. Keep refreshing continuity so
                 # the operator can watch the buffered backlog drain during replay.
                 merged = {**(existing.get("continuity") or {}), **continuity}
-                updates: dict[str, Any] = {"restored_ms": int(restored), "continuity_json": merged}
+                updates: dict[str, Any] = {
+                    "restored_ms": int(restored), "continuity_json": merged,
+                    # Replay happens in this window, so the KPI must follow it;
+                    # otherwise a restored incident shows "0 replayed" until close.
+                    "kpi_json": self._kpi_for(
+                        {**existing, "restored_ms": int(restored)},
+                        counters, merged, source_gap, now_ms,
+                    ),
+                }
                 if existing.get("status") != "recovering":
                     timeline = list(existing.get("timeline") or [])
                     timeline.append({"ts_ms": int(restored), "kind": "restored"})
@@ -348,7 +356,7 @@ class IncidentTask:
         baseline = stored.get("baseline") or kpi_mod.baseline_from(counters)
         started = int(incident.get("started_ms") or 0)
         ended = int(incident.get("restored_ms") or 0) or now_ms
-        return kpi_mod.compute(
+        record = kpi_mod.compute(
             incident=incident,
             baseline=baseline,
             counters=counters,
@@ -358,6 +366,9 @@ class IncidentTask:
             source_gap=source_gap,
             now_ms=now_ms,
         )
+        if incident.get("scope_kind") == "source":
+            record = kpi_mod.for_source_outage(record)
+        return record
 
     def _write_kpi(
         self, incident: dict[str, Any], counters: dict[str, int],

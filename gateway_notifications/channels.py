@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import html
 import json
 import smtplib
 import ssl
@@ -75,7 +76,11 @@ def _generic_body(note: dict[str, Any]) -> dict[str, Any]:
         "resolved_at": note.get("resolved_at"),
         "buffered_records": note.get("buffered_records"),
         "affected": note.get("affected") or [],
+        "status": note.get("status"),
+        "status_label": note.get("status_label"),
+        "details": note.get("details"),
         "dashboard_url": note.get("dashboard_url"),
+        "links": note.get("links") or [],
         "timestamp": note.get("timestamp"),
     }
 
@@ -166,7 +171,7 @@ def _facts(note: dict[str, Any]) -> list[tuple[str, Any]]:
     if note.get("resolved_at"):
         facts.append(("Resolved", note["resolved_at"]))
     if note.get("buffered_records") is not None:
-        facts.append(("Buffered records", f"{int(note['buffered_records']):,}"))
+        facts.append(("Records waiting in buffer", f"{int(note['buffered_records']):,}"))
     affected = note.get("affected") or []
     if affected:
         facts.append(("Affected", ", ".join(str(a) for a in affected)))
@@ -178,7 +183,8 @@ def _subject(note: dict[str, Any]) -> str:
     # subjects, which some clients render raw as "=?utf-8?b?...?=".
     ref = note.get("incident_ref")
     title = note.get("title") or "Gateway notification"
-    return f"MetaCrust Incident {ref} - {title}" if ref else f"MetaCrust - {title}"
+    status = f"[{note['status_label']}] " if note.get("status_label") else ""
+    return f"MetaCrust {status}Incident {ref} - {title}" if ref else f"MetaCrust - {title}"
 
 
 # ── transport ────────────────────────────────────────────────────────────
@@ -212,13 +218,8 @@ def _send_email(channel: dict[str, Any], note: dict[str, Any]) -> None:
     message["Subject"] = _subject(note)
     message["From"] = settings.get("from_address") or settings.get("username") or "gateway@metacrust"
     message["To"] = ", ".join(recipients)
-    lines = [note.get("message") or ""]
-    facts = _facts(note)
-    if facts:
-        lines += ["", *[f"{key}: {value}" for key, value in facts]]
-    if note.get("dashboard_url"):
-        lines += ["", f"Open in the gateway console: {note['dashboard_url']}"]
-    message.set_content("\n".join(lines))
+    message.set_content(email_text(note))
+    message.add_alternative(email_html(note), subtype="html")
 
     # Encryption is chosen explicitly rather than inferred from the port, so
     # what the operator selected is what actually happens on the wire.
@@ -243,3 +244,186 @@ def _authenticate(smtp: smtplib.SMTP, settings: dict[str, Any]) -> None:
     password = str(settings.get("password") or "")
     if username and password:
         smtp.login(username, password)
+
+
+# ── email body ───────────────────────────────────────────────────────────
+# The email is meant to be read on its own: everything the console would show
+# about the incident is in it, so the reader can judge and act without first
+# reaching the gateway. The links come last, for those who want to dig in.
+
+def email_text(note: dict[str, Any]) -> str:
+    d = note.get("details")
+    if not d:
+        lines = [note.get("message") or ""]
+        if facts := _facts(note):
+            lines += ["", *[f"{k}: {v}" for k, v in facts]]
+        lines += ["", *_text_links(note)]
+        return "\n".join(lines)
+
+    out = [f"{d['headline'].upper()}: {note.get('title')}", ""]
+    out += [f"Status: {d['status_label']} - {d['status_explain']}", ""]
+    out += _section("What happened", [d["summary"]])
+    out += _section("What to do", [d["action"]])
+    out += _section("Details", [f"{k}: {v}" for k, v in d["facts"]])
+    affected = d["affected"]
+    rows = []
+    if affected["sources"]:
+        rows.append("Sources: " + ", ".join(affected["sources"]))
+    if affected["destinations"]:
+        rows.append("Destinations: " + ", ".join(affected["destinations"]))
+    out += _section("Affected", rows)
+    cause = d["cause"]
+    out += _section("Likely cause (inferred)", [
+        f"{cause['domain']} - {cause['confidence']} confidence.",
+        f"Basis: {cause['basis']}.",
+        cause["note"],
+    ])
+    out += _section("What the gateway checked", [
+        f"[{c['result']}] {c['check']}: {c['finding']}" for c in d["checks"]
+    ])
+    out += _section("Timeline", [
+        f"{t['at']}  {t['event']}" + (f"\n    {t['detail']}" if t.get("detail") else "")
+        for t in d["timeline"]
+    ])
+    out += _section("Data", [f"{k}: {v}" for k, v in d["data"]] + ([d["data_note"]] if d["data_note"] else []))
+    out += _text_links(note)
+    out += ["", f"Gateway: {note.get('gateway_id') or 'MetaCrust Edge Gateway'}"]
+    return "\n".join(out)
+
+
+def _section(title: str, rows: list[str]) -> list[str]:
+    rows = [r for r in rows if r]
+    return [title.upper(), *rows, ""] if rows else []
+
+
+def _text_links(note: dict[str, Any]) -> list[str]:
+    links = note.get("links") or []
+    if links:
+        return ["OPEN IN THE GATEWAY CONSOLE", *[f"{l['label']}: {l['url']}" for l in links]]
+    if note.get("dashboard_url"):
+        return ["", f"Open in the gateway console: {note['dashboard_url']}"]
+    return []
+
+
+_STATE_COLOUR = {"open": "#d93025", "recovering": "#1e8e5a", "resolved": "#1e8e5a"}
+_CHECK_COLOUR = {"failed": "#d93025", "ok": "#1e8e5a"}
+
+
+def email_html(note: dict[str, Any]) -> str:
+    """Inline-styled HTML; mail clients ignore stylesheets and most layout."""
+    e = html.escape
+    d = note.get("details")
+    if not d:
+        body = f"<p>{e(note.get('message') or '')}</p>" + _html_facts(_facts(note)) + _html_links(note)
+        return _html_page(e(note.get("title") or "Gateway notification"), "#39d0c8", "", body)
+
+    colour = _STATE_COLOUR.get(d["status"], "#5f6368")
+    affected = d["affected"]
+    affected_rows = []
+    if affected["sources"]:
+        affected_rows.append(("Sources", ", ".join(affected["sources"])))
+    if affected["destinations"]:
+        affected_rows.append(("Destinations", ", ".join(affected["destinations"])))
+    cause = d["cause"]
+
+    checks = "".join(
+        f"<tr><td style='padding:6px 10px;border-bottom:1px solid #eee;white-space:nowrap;"
+        f"color:{_CHECK_COLOUR.get(str(c['state']), '#5f6368')};font-weight:600'>{e(c['result'])}</td>"
+        f"<td style='padding:6px 10px;border-bottom:1px solid #eee;white-space:nowrap'>{e(str(c['check']))}</td>"
+        f"<td style='padding:6px 10px;border-bottom:1px solid #eee;color:#3c4043'>{e(str(c['finding'] or ''))}</td></tr>"
+        for c in d["checks"]
+    )
+    timeline = "".join(
+        f"<tr><td style='padding:6px 10px;border-bottom:1px solid #eee;white-space:nowrap;color:#5f6368;"
+        f"vertical-align:top'>{e(t['at'])}</td><td style='padding:6px 10px;border-bottom:1px solid #eee'>"
+        f"<strong>{e(str(t['event']))}</strong>"
+        + (f"<br><span style='color:#5f6368;font-size:13px'>{e(t['detail'])}</span>" if t.get("detail") else "")
+        + "</td></tr>"
+        for t in d["timeline"]
+    )
+
+    body = "".join([
+        f"<p style='margin:0 0 16px;font-size:15px;line-height:1.5'>{e(d['summary'])}</p>",
+        _html_box("What to do", f"<p style='margin:0;line-height:1.5'>{e(d['action'])}</p>", colour),
+        _html_h("Details"), _html_facts(d["facts"]),
+        (_html_h("Affected") + _html_facts(affected_rows)) if affected_rows else "",
+        _html_h("Likely cause <span style='font-weight:400;color:#5f6368'>(inferred)</span>"),
+        f"<p style='margin:0 0 4px'><strong>{e(str(cause['domain']))}</strong> &middot; "
+        f"{e(str(cause['confidence']))} confidence</p>"
+        f"<p style='margin:0 0 4px;color:#3c4043'>Basis: {e(cause['basis'])}.</p>"
+        f"<p style='margin:0;color:#5f6368;font-size:13px'>{e(cause['note'])}</p>",
+        (_html_h("What the gateway checked") + _html_table(checks)) if checks else "",
+        (_html_h("Timeline") + _html_table(timeline)) if timeline else "",
+        (_html_h("Data") + _html_facts(d["data"])
+         + (f"<p style='margin:8px 0 0;color:#5f6368;font-size:13px'>{e(d['data_note'])}</p>" if d["data_note"] else ""))
+        if d["data"] or d["data_note"] else "",
+        _html_links(note),
+    ])
+    banner = (f"{e(d['headline'])} &middot; {e(d['status_label'])}",
+              e(d["status_explain"]))
+    return _html_page(e(str(note.get("title") or "")), colour, banner, body,
+                      ref=e(str(note.get("incident_ref") or "")), gateway=e(str(note.get("gateway_id") or "")))
+
+
+def _html_page(title: str, colour: str, banner: Any, body: str, *, ref: str = "", gateway: str = "") -> str:
+    head, explain = banner if banner else ("", "")
+    return (
+        "<!doctype html><html><body style='margin:0;padding:0;background:#f4f5f7'>"
+        "<table role='presentation' width='100%' cellpadding='0' cellspacing='0' style='background:#f4f5f7'>"
+        "<tr><td align='center' style='padding:24px 12px'>"
+        "<table role='presentation' width='100%' cellpadding='0' cellspacing='0' style='max-width:680px;"
+        "background:#ffffff;border-radius:10px;overflow:hidden;font-family:Segoe UI,Helvetica,Arial,sans-serif;"
+        "font-size:14px;color:#202124'>"
+        f"<tr><td style='background:{colour};color:#ffffff;padding:16px 24px'>"
+        f"<div style='font-size:12px;letter-spacing:.06em;text-transform:uppercase;opacity:.9'>"
+        f"MetaCrust Edge Gateway{(' &middot; ' + ref) if ref else ''}</div>"
+        f"<div style='font-size:20px;font-weight:600;margin-top:4px'>{title}</div>"
+        + (f"<div style='margin-top:8px;font-size:14px;font-weight:600'>{head}</div>"
+           f"<div style='font-size:13px;opacity:.95;margin-top:2px'>{explain}</div>" if head else "")
+        + f"</td></tr><tr><td style='padding:20px 24px'>{body}</td></tr>"
+        f"<tr><td style='padding:12px 24px;background:#fafafa;color:#80868b;font-size:12px'>"
+        f"Sent by gateway {gateway or 'MetaCrust Edge Gateway'}. Times are the gateway's local time.</td></tr>"
+        "</table></td></tr></table></body></html>"
+    )
+
+
+def _html_h(text: str) -> str:
+    return (f"<h3 style='margin:22px 0 8px;font-size:13px;letter-spacing:.05em;text-transform:uppercase;"
+            f"color:#202124'>{text}</h3>")
+
+
+def _html_box(title: str, inner: str, colour: str) -> str:
+    return (f"<div style='border-left:4px solid {colour};background:#f8f9fa;padding:12px 14px;"
+            f"border-radius:4px'><div style='font-weight:600;margin-bottom:4px'>{html.escape(title)}</div>"
+            f"{inner}</div>")
+
+
+def _html_table(rows: str) -> str:
+    return f"<table role='presentation' width='100%' cellpadding='0' cellspacing='0' style='border-collapse:collapse'>{rows}</table>"
+
+
+def _html_facts(facts: list[tuple[str, Any]]) -> str:
+    if not facts:
+        return ""
+    rows = "".join(
+        f"<tr><td style='padding:5px 10px 5px 0;color:#5f6368;white-space:nowrap;vertical-align:top;width:1%'>"
+        f"{html.escape(str(k))}</td><td style='padding:5px 0'>{html.escape(str(v))}</td></tr>"
+        for k, v in facts
+    )
+    return _html_table(rows)
+
+
+def _html_links(note: dict[str, Any]) -> str:
+    links = note.get("links") or (
+        [{"label": "Gateway console", "url": note["dashboard_url"]}] if note.get("dashboard_url") else []
+    )
+    if not links:
+        return ""
+    items = "".join(
+        f"<p style='margin:6px 0'><a href='{html.escape(l['url'], quote=True)}' style='display:inline-block;"
+        f"padding:8px 14px;border-radius:6px;text-decoration:none;font-weight:600;"
+        f"{'background:#1a73e8;color:#ffffff' if i == 0 else 'border:1px solid #dadce0;color:#1a73e8'}'>"
+        f"{html.escape(l['label'])}</a> <span style='color:#80868b;font-size:12px'>{html.escape(l['url'])}</span></p>"
+        for i, l in enumerate(links)
+    )
+    return _html_h("Open in the gateway console") + items

@@ -44,9 +44,11 @@ const Incidents = (() => {
 
     // A KPI that was never measured is shown as "—", not as 0: zero would read
     // as "nothing was recovered", a stronger claim than the data supports.
-    // What each lifecycle state is called on screen. "recovering" is shown as
-    // recovered-and-confirming, never as a live fault.
-    const STATUS_TEXT = { open: "ongoing", recovering: "recovered · confirming", resolved: "resolved" };
+    // What each lifecycle state is called on screen — the same words as
+    // gateway_incidents/wording.py, so the emails and the console agree.
+    // "recovering" means service is back and the incident is waiting out its
+    // stability window, never a live fault.
+    const STATUS_TEXT = { open: "Active", recovering: "Restored", resolved: "Closed" };
     const statusText = (s) => STATUS_TEXT[s] || s;
 
     const num = (v) => (v === null || v === undefined) ? "—" : v.toLocaleString();
@@ -149,7 +151,7 @@ const Incidents = (() => {
                 <h3 class="inc-d-title">${esc(inc.title)}</h3>
                 <span class="inc-status-badge is-${inc.status}">${esc(statusText(inc.status))}</span>
             </div>
-            ${inc.recovering ? `<p class="inc-confirming">Service was restored at ${stamp(inc.restored_ms)}. The gateway keeps the incident open for a few minutes to confirm it holds, then closes it.</p>` : ""}
+            ${inc.recovering ? `<p class="inc-confirming">Service came back at ${stamp(inc.restored_ms)} and is working now. This incident closes automatically after 5 minutes of stable service, so a brief relapse is caught as the same incident rather than a new one.</p>` : ""}
 
             <div class="inc-export">
                 <span class="inc-export-label">Export incident</span>
@@ -164,8 +166,8 @@ const Incidents = (() => {
                     <span class="inc-when-value">${stamp(inc.started_ms)}</span>
                 </div>
                 <div>
-                    <span class="inc-when-label">${inc.ongoing ? "Ongoing for" : "Ended"}</span>
-                    <span class="inc-when-value">${inc.ongoing ? duration(inc.duration_ms) : stamp(inc.ended_ms)}</span>
+                    <span class="inc-when-label">${inc.ongoing ? "Active for" : inc.recovering ? "Restored" : "Ended"}</span>
+                    <span class="inc-when-value">${inc.ongoing ? duration(inc.duration_ms) : inc.recovering ? stamp(inc.restored_ms) : stamp(inc.ended_ms)}</span>
                 </div>
                 ${inc.ongoing ? "" : `
                 <div>
@@ -344,10 +346,32 @@ const Incidents = (() => {
         return { pageCount, current, slice: rows.slice(current * perPage, (current + 1) * perPage) };
     };
 
+    // Numbered pages, so any page is one click away. Long runs collapse to
+    // first · neighbours · last with an ellipsis between.
+    const pageNumbers = (current, pageCount) => {
+        const keep = new Set([0, pageCount - 1, current - 1, current, current + 1]);
+        const out = [];
+        for (let i = 0; i < pageCount; i += 1) {
+            if (keep.has(i)) out.push(i);
+            else if (out[out.length - 1] !== "…") out.push("…");
+        }
+        return out;
+    };
+
     const pagerHtml = (current, pageCount, total) => pageCount > 1 ? `
-        <button class="ev-page-btn" data-inc-page-prev ${current === 0 ? "disabled" : ""}>← Newer</button>
-        <span class="ev-page-label">Page ${current + 1} of ${pageCount} · ${total} incidents</span>
-        <button class="ev-page-btn" data-inc-page-next ${current >= pageCount - 1 ? "disabled" : ""}>Older →</button>` : "";
+        <button class="ev-page-btn" data-inc-page="${current - 1}" ${current === 0 ? "disabled" : ""} aria-label="Previous page">‹</button>
+        ${pageNumbers(current, pageCount).map((n) => n === "…"
+            ? `<span class="ev-page-gap">…</span>`
+            : `<button class="ev-page-btn ev-page-num${n === current ? " is-current" : ""}" data-inc-page="${n}" ${n === current ? 'aria-current="page"' : ""}>${n + 1}</button>`).join("")}
+        <button class="ev-page-btn" data-inc-page="${current + 1}" ${current >= pageCount - 1 ? "disabled" : ""} aria-label="Next page">›</button>
+        <span class="ev-page-label">${total} incidents</span>` : "";
+
+    /** Wire a rendered pager: every button carries the page it goes to. */
+    const bindPager = (pager, go) => {
+        pager.querySelectorAll("[data-inc-page]").forEach((b) => {
+            b.addEventListener("click", () => go(Number(b.dataset.incPage)));
+        });
+    };
 
     const rowHtml = (inc) => `
         <div class="inc-row is-${inc.status}" data-inc-ref="${esc(inc.ref)}">
@@ -363,7 +387,10 @@ const Incidents = (() => {
             <div class="inc-row-meta">
                 <span>Started <strong>${shortStamp(inc.started_ms)}</strong></span>
                 ${inc.ongoing
-                    ? `<span>Ongoing for <strong>${duration(inc.duration_ms)}</strong></span>`
+                    ? `<span>Active for <strong>${duration(inc.duration_ms)}</strong></span>`
+                    : inc.recovering
+                    ? `<span>Restored <strong>${shortStamp(inc.restored_ms)}</strong></span>
+                       <span>Closes after 5 min stable</span>`
                     : `<span>Ended <strong>${shortStamp(inc.ended_ms)}</strong></span>
                        <span>Lasted <strong>${duration(inc.duration_ms)}</strong></span>`}
                 ${inc.resolution ? `<span>${esc(inc.resolution)}</span>` : ""}
@@ -385,7 +412,7 @@ const Incidents = (() => {
     const summaryHtml = (open, resolved, total, resolvedLabel = "Resolved in window") => `
         <div class="inc-sum-card${open > 0 ? " is-alert" : ""}">
             <div class="inc-sum-value">${open}</div>
-            <div class="inc-sum-label">Ongoing now</div>
+            <div class="inc-sum-label">Active now</div>
         </div>
         <div class="inc-sum-card">
             <div class="inc-sum-value">${resolved}</div>
@@ -443,8 +470,7 @@ const Incidents = (() => {
             list.innerHTML = slice.map(rowHtml).join("");
             bindRows(list, drawer);
             pager.innerHTML = pagerHtml(current, pageCount, rows.length);
-            pager.querySelector("[data-inc-page-prev]")?.addEventListener("click", () => { page -= 1; render(); });
-            pager.querySelector("[data-inc-page-next]")?.addEventListener("click", () => { page += 1; render(); });
+            bindPager(pager, (n) => { page = n; render(); });
         };
 
         const load = async () => {
@@ -474,6 +500,6 @@ const Incidents = (() => {
     return {
         attachPanel, openLinked, linkedRef,
         esc, stamp, shortStamp, duration, detailHtml, attachDrawer,
-        paginate, pagerHtml, rowHtml, bindRows, summaryHtml, attachPilotSummary, DOMAIN_PAGE,
+        statusText, paginate, pagerHtml, bindPager, rowHtml, bindRows, summaryHtml, attachPilotSummary, DOMAIN_PAGE,
     };
 })();

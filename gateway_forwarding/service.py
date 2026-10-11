@@ -152,6 +152,12 @@ class ForwardingService:
                     # so reaching "connected" has to wait for a pump that did not
                     # raise. Announcing it at build time logged a connect for a
                     # link that was never up.
+                    # Measure the backlog before the first delivery attempt
+                    # while offline. Arming it only after a successful pump (in
+                    # _mark_online) counted that first batch as live traffic, so
+                    # 488 buffered records were reported as 318 replayed.
+                    if state["state"] != "connected":
+                        state["replay_remaining"] = self._pending(profile)
                     busy = await self._pump_once(profile, publisher, state)
                     # A pump with nothing queued performs no HTTPS request, so
                     # it proves nothing about reachability — treating it as a
@@ -192,7 +198,6 @@ class ForwardingService:
         state["last_error"] = None
         state["outage_signature"] = None
         state["outage_repeats"] = 0
-        state["replay_remaining"] = self._pending(profile)
         self.storage.add_event(pid, "info", "connected", self._destination(profile))
 
     def _mark_offline(self, pid: str, state: dict[str, Any], exc: Exception) -> None:

@@ -110,6 +110,33 @@ def compute(
     }
 
 
+def for_source_outage(record: dict[str, Any]) -> dict[str, Any]:
+    """Strip delivery figures from an incident about a source going quiet.
+
+    The buffer and replay counters belong to the forwarding queue, which keeps
+    moving for every other source while this one is down. Attributing them to
+    a stopped sensor reported "134 records recovered" for readings that were
+    never taken. A silent source has nothing in the buffer to recover, so the
+    honest values are "not applicable", and completeness is unverifiable by
+    definition.
+    """
+    out = dict(record)
+    for key in ("buffered_peak", "replayed", "pending", "evicted", "accounted",
+                "uplink_switches", "forwarding_failures", "recovery_pct"):
+        out[key] = None
+    out["recovery_basis"] = (
+        "not applicable — readings from a stopped source were never taken, so "
+        "nothing reached the gateway buffer to recover"
+    )
+    out["completeness"] = UNVERIFIABLE
+    out["completeness_note"] = (
+        "The source stopped reporting, so readings for that period were never taken. "
+        "They cannot be recovered or counted."
+    )
+    out["source_outage"] = True
+    return out
+
+
 def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     """Roll several incidents' KPIs into one pilot summary.
 
