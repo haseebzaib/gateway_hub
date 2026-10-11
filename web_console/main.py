@@ -18,7 +18,13 @@ from gateway_ipc import GatewayCoreIpcTask
 
 from .engine_client import EngineClient
 from .network_runtime import RUNTIME as network_runtime
-from .routes import load_saved_edge_server_config, load_saved_sensor_configs, router, send_saved_sensor_configs_to_core
+from .routes import (
+    configured_source_names,
+    load_saved_edge_server_config,
+    load_saved_sensor_configs,
+    router,
+    send_saved_sensor_configs_to_core,
+)
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -59,6 +65,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     incidents.forwarding = forwarding_service
     incidents.network_runtime = network_runtime
     incidents.edge_server = edge_server_task
+    incidents.source_names = lambda: configured_source_names(ipc_task.interface_storage)
     incidents.start()
     app.state.incidents = incidents
     LOGGER.info("hub_lifespan incident_correlator_started")

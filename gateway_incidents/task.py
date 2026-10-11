@@ -33,6 +33,7 @@ from .storage import IncidentStorage
 LOGGER = logging.getLogger("edge_server")
 CORRELATE_INTERVAL_S = 20.0
 PATH_SCOPE_KEY = "delivery"
+NAMES_REFRESH_S = 60.0
 # Revisions closer together than this are one change of mind, not several.
 REVISION_COLLAPSE_MS = 5 * 60_000
 # Titles for gateway/network incidents that began while delivery was already
@@ -58,6 +59,10 @@ class IncidentTask:
         self.network_runtime: Any = None
         self.monitor_storage: Any = None
         self.edge_server: Any = None
+        # Returns {"modbusTcp:sim_process": "Process Skid", ...} from the
+        # interfaces configuration, which this package cannot import itself.
+        self.source_names: Any = None
+        self._names_cache: tuple[float, dict[str, str]] = (0.0, {})
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
 
@@ -109,6 +114,7 @@ class IncidentTask:
             edge_server=self.edge_server,
             from_ms=now_ms - LOOKBACK_MS,
             to_ms=now_ms,
+            source_names=self._display_names(),
         )
         open_faults, cleared = replay_faults(signals)
         # Anything that has left the configuration can never report recovery, so
@@ -328,6 +334,18 @@ class IncidentTask:
         self.storage.update_incident(existing["id"], updates)
 
     # ── helpers ──────────────────────────────────────────────────────────
+    def _display_names(self) -> dict[str, str]:
+        """Configured source names, refreshed at most once a minute."""
+        fetched_at, names = self._names_cache
+        if self.source_names is None or time.monotonic() - fetched_at < NAMES_REFRESH_S:
+            return names
+        try:
+            names = dict(self.source_names() or {})
+        except Exception as exc:
+            LOGGER.warning("incident_source_names_failed error=%s", exc)
+        self._names_cache = (time.monotonic(), names)
+        return names
+
     def _open_path_incidents(self) -> list[dict[str, Any]]:
         try:
             return [r for r in self.storage.open_incidents() if r.get("scope_kind") == "path"]
@@ -353,10 +371,11 @@ class IncidentTask:
                     continue
                 if str(row.get("last_status") or "").lower() in _DOWN_STATUSES:
                     continue
+                scope = f"{row['source_type']}:{row['source_id']}"
                 rows.append({
                     "kind": "source",
-                    "id": f"{row['source_type']}:{row['source_id']}",
-                    "name": row["source_id"],
+                    "id": scope,
+                    "name": self._display_names().get(scope, row["source_id"]),
                 })
         except Exception:
             pass

@@ -180,9 +180,10 @@ def collect_signals(
     *, interfaces_storage: Any = None, forwarding: Any = None,
     network_runtime: Any = None, monitor_storage: Any = None,
     edge_server: Any = None, from_ms: int, to_ms: int,
+    source_names: dict[str, str] | None = None,
 ) -> list[Signal]:
     signals: list[Signal] = []
-    signals += _source_signals(interfaces_storage, from_ms, to_ms)
+    signals += _source_signals(interfaces_storage, from_ms, to_ms, source_names)
     signals += _edge_signals(edge_server, from_ms)
     signals += _destination_signals(forwarding, from_ms)
     signals += _network_signals(network_runtime, from_ms)
@@ -191,14 +192,18 @@ def collect_signals(
     return signals
 
 
-def _source_signals(storage: Any, from_ms: int, to_ms: int) -> list[Signal]:
+def _source_signals(
+    storage: Any, from_ms: int, to_ms: int, display_names: dict[str, str] | None = None,
+) -> list[Signal]:
     if storage is None:
         return []
     try:
         rows = storage.status_events(from_ms=from_ms, to_ms=to_ms, limit=5000)
     except Exception:
         return []
-    names = _source_names(storage)
+    # Configured names ("Process Skid") over internal IDs ("sim_process"):
+    # incidents, emails and reports are read by people who never see the IDs.
+    names = {**_source_names(storage), **(display_names or {})}
     out: list[Signal] = []
     for row in rows:
         scope = f"{row['source_type']}:{row['source_id']}"

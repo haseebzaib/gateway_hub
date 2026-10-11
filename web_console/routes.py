@@ -2056,6 +2056,11 @@ def _configured_devices(storage: object | None) -> list[dict[str, Any]]:
     return insights_data.configured_devices(INTERFACES_SERVICE.snapshot(), storage)
 
 
+def configured_source_names(storage: object | None) -> dict[str, str]:
+    """Display name per source scope, as the incident correlator keys them."""
+    return {f"{d['source']}:{d['device_id']}": str(d["name"]) for d in _configured_devices(storage)}
+
+
 def _insights_configured(request: Request) -> list[dict[str, Any]]:
     return _configured_devices(_interface_data_storage(request))
 
@@ -2196,9 +2201,13 @@ def _incident_resolution(incident: dict[str, Any], duration_ms: int) -> str:
     if "retired" in closing or "no longer configured" in closing:
         return "Ended because the failing item was removed from configuration"
     minutes = max(1, round(duration_ms / 60000))
-    recovered = int((incident.get("continuity") or {}).get("replayed") or 0)
-    if recovered:
-        return f"Recovered after {minutes} min · {recovered:,} buffered messages delivered"
+    # The incident's own replay count, and only where buffering applies: a
+    # sensor that stopped sent nothing to buffer, and a gateway incident opened
+    # during an outage has its delivery counted on that outage's incident.
+    kpi = incident.get("kpi") or {}
+    recovered = int(kpi.get("replayed") or 0)
+    if recovered and not kpi.get("source_outage") and not kpi.get("side_incident"):
+        return f"Recovered after {minutes} min · {recovered:,} buffered records delivered"
     return f"Recovered after {minutes} min · service returned to normal"
 
 
